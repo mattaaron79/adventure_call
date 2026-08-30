@@ -19,5 +19,11 @@ export default defineConfig({
     // The data layer is pure; nothing under test touches the DOM yet.
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    // The default 'threads'/'forks' pools fail to provide the vitest worker
+    // state in this environment (every suite dies at its first describe with
+    // "Cannot read properties of undefined (reading 'config')"); vmThreads
+    // sets the state up inside the VM context and is the only pool that
+    // runs.  Revisit if a vitest upgrade fixes the worker bootstrap.
+    pool: 'vmThreads',
   },
 })

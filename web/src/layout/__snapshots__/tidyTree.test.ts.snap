@@ -1,0 +1,248 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden snapshot > matches the committed golden file > connectors 1`] = `
+[
+  {
+    "id": "src->src/api",
+    "points": [
+      140,
+      375,
+      172,
+      375,
+      172,
+      114,
+      204,
+      114,
+    ],
+  },
+  {
+    "id": "src/api->api.py",
+    "points": [
+      324,
+      114,
+      406,
+      114,
+      406,
+      90,
+      488,
+      90,
+    ],
+  },
+  {
+    "id": "src/api->routes.py",
+    "points": [
+      324,
+      114,
+      406,
+      114,
+      406,
+      210,
+      488,
+      210,
+    ],
+  },
+  {
+    "id": "src->src/auth",
+    "points": [
+      140,
+      375,
+      172,
+      375,
+      172,
+      409,
+      204,
+      409,
+    ],
+  },
+  {
+    "id": "src/auth->auth.py",
+    "points": [
+      324,
+      409,
+      406,
+      409,
+      406,
+      310,
+      488,
+      310,
+    ],
+  },
+  {
+    "id": "src/auth->tokens.py",
+    "points": [
+      324,
+      409,
+      406,
+      409,
+      406,
+      410,
+      488,
+      410,
+    ],
+  },
+  {
+    "id": "src/auth->src/auth/handlers",
+    "points": [
+      324,
+      409,
+      406,
+      409,
+      406,
+      509,
+      488,
+      509,
+    ],
+  },
+  {
+    "id": "src/auth/handlers->login.py",
+    "points": [
+      608,
+      509,
+      710,
+      509,
+      710,
+      485,
+      812,
+      485,
+    ],
+  },
+  {
+    "id": "src/auth/handlers->logout.py",
+    "points": [
+      608,
+      509,
+      710,
+      509,
+      710,
+      560,
+      812,
+      560,
+    ],
+  },
+  {
+    "id": "src->models.py",
+    "points": [
+      140,
+      375,
+      172,
+      375,
+      172,
+      670,
+      204,
+      670,
+    ],
+  },
+]
+`;
+
+exports[`golden snapshot > matches the committed golden file > groups 1`] = `
+[
+  {
+    "id": "src:group",
+    "rect": {
+      "height": 774,
+      "width": 1036,
+      "x": -12,
+      "y": -12,
+    },
+  },
+  {
+    "id": "src/api:group",
+    "rect": {
+      "height": 252,
+      "width": 568,
+      "x": 192,
+      "y": -12,
+    },
+  },
+  {
+    "id": "src/auth:group",
+    "rect": {
+      "height": 362,
+      "width": 832,
+      "x": 192,
+      "y": 228,
+    },
+  },
+  {
+    "id": "src/auth/handlers:group",
+    "rect": {
+      "height": 162,
+      "width": 548,
+      "x": 476,
+      "y": 428,
+    },
+  },
+]
+`;
+
+exports[`golden snapshot > matches the committed golden file 1`] = `
+{
+  "api.py": {
+    "height": 180,
+    "width": 260,
+    "x": 488,
+    "y": 0,
+  },
+  "auth.py": {
+    "height": 140,
+    "width": 240,
+    "x": 488,
+    "y": 240,
+  },
+  "login.py": {
+    "height": 90,
+    "width": 200,
+    "x": 812,
+    "y": 440,
+  },
+  "logout.py": {
+    "height": 36,
+    "width": 120,
+    "x": 812,
+    "y": 542,
+  },
+  "models.py": {
+    "height": 160,
+    "width": 220,
+    "x": 204,
+    "y": 590,
+  },
+  "routes.py": {
+    "height": 36,
+    "width": 120,
+    "x": 488,
+    "y": 192,
+  },
+  "src": {
+    "height": 40,
+    "width": 140,
+    "x": 0,
+    "y": 355,
+  },
+  "src/api": {
+    "height": 36,
+    "width": 120,
+    "x": 204,
+    "y": 96,
+  },
+  "src/auth": {
+    "height": 36,
+    "width": 120,
+    "x": 204,
+    "y": 391,
+  },
+  "src/auth/handlers": {
+    "height": 36,
+    "width": 120,
+    "x": 488,
+    "y": 491,
+  },
+  "tokens.py": {
+    "height": 36,
+    "width": 120,
+    "x": 488,
+    "y": 392,
+  },
+}
+`;
