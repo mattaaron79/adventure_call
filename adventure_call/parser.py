@@ -1,0 +1,836 @@
+"""Tree-sitter driven extraction of definitions, imports and call sites.
+
+The parser never raises on bad input.  Anything it cannot make sense of -- an
+unreadable file, a binary blob, a syntax error, an unresolvable callee -- turns
+into a :class:`~adventure_call.models.ParseDiagnostic` attached to the file, and
+the walk continues.  Tree-sitter's error recovery means a file with a syntax
+error still yields every definition that parsed cleanly around the damage.
+"""
+
+from __future__ import annotations
+
+import ast
+import fnmatch
+import inspect
+import logging
+import os
+from bisect import bisect_right
+from pathlib import Path, PurePosixPath
+from typing import Iterable, Iterator, Sequence
+
+from tree_sitter import Node, QueryCursor
+
+from adventure_call.languages import (
+    GrammarUnavailable,
+    LanguageSpec,
+    load_language,
+    module_name_for_path,
+    spec_for_path,
+)
+from adventure_call.models import (
+    CallSite,
+    ImportRecord,
+    Param,
+    ParseDiagnostic,
+    ParsedFile,
+    SymbolDef,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _normalise_newlines(text: str) -> str:
+    """CRLF and CR sources become LF so downstream text handling stays simple."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _dedent(text: str) -> str:
+    """Strip the common leading indentation from ``text``.
+
+    :func:`textwrap.dedent` is not used because it treats a line holding only a
+    stray carriage return as unindented content, which silently defeats it on
+    CRLF sources.
+    """
+    lines = text.splitlines(keepends=True)
+    margin: str | None = None
+    for line in lines:
+        content = line.rstrip("\r\n")
+        if not content.strip():
+            continue
+        indent = content[: len(content) - len(content.lstrip(" \t"))]
+        if margin is None:
+            margin = indent
+        else:
+            shared = 0
+            while shared < min(len(margin), len(indent)) and margin[shared] == indent[shared]:
+                shared += 1
+            margin = margin[:shared]
+        if not margin:
+            return text
+    if not margin:
+        return text
+    return "".join(line[len(margin) :] if line.startswith(margin) else line for line in lines)
+
+
+DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "env",
+        ".env",
+        "node_modules",
+        "__pycache__",
+        "build",
+        "dist",
+        "site-packages",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+    }
+)
+
+DEFAULT_MAX_FILE_BYTES = 1 << 20  # 1 MiB
+MAX_DIAGNOSTICS_PER_FILE = 25
+_BINARY_SNIFF_BYTES = 8192
+
+#: Node types that introduce a new named scope in Python.
+_DEF_NODE_TYPES = frozenset({"function_definition", "class_definition"})
+
+
+class CodebaseParser:
+    """Walk a directory tree and extract graph material from every source file.
+
+    Args:
+        root: Directory to traverse.
+        strip_prefix: Path prefix removed when deriving module names, e.g.
+            ``"src"`` turns ``src/auth.py`` into module ``auth``.
+        exclude_dirs: Directory names pruned during the walk, on top of
+            :data:`DEFAULT_EXCLUDE_DIRS`.
+        exclude_globs: Glob patterns matched against repo-relative POSIX paths.
+        max_file_bytes: Files larger than this are skipped with a diagnostic.
+        follow_symlinks: Off by default; symlinked trees invite walk cycles.
+        module_prefix: Prepended to every module name.  Defaults to the root
+            directory's own name when it is a package (it holds an
+            ``__init__.py``), so absolute imports still resolve when you point
+            the parser straight at a package.  Pass ``""`` to opt out.
+    """
+
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        strip_prefix: str = "",
+        exclude_dirs: Iterable[str] = (),
+        exclude_globs: Iterable[str] = (),
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        follow_symlinks: bool = False,
+        module_prefix: str | None = None,
+    ) -> None:
+        self.root = Path(root).resolve()
+        self.strip_prefix = strip_prefix
+        # Pointing at a package directory (`.../networkx`) rather than the repo
+        # root would otherwise strip the package name off every module id and
+        # leave absolute imports unresolvable.
+        base = self.root.parent if self.root.is_file() else self.root
+        self.module_prefix = (
+            module_prefix
+            if module_prefix is not None
+            else (base.name if (base / "__init__.py").exists() else "")
+        )
+        self.exclude_dirs = DEFAULT_EXCLUDE_DIRS | set(exclude_dirs)
+        self.exclude_globs = tuple(exclude_globs)
+        self.max_file_bytes = max_file_bytes
+        self.follow_symlinks = follow_symlinks
+
+    # -- traversal ---------------------------------------------------------
+
+    def iter_source_files(self) -> Iterator[Path]:
+        """Yield every file in the tree that an enabled language claims."""
+        if self.root.is_file():
+            if spec_for_path(self.root):
+                yield self.root
+            return
+
+        for dirpath, dirnames, filenames in os.walk(
+            self.root, topdown=True, followlinks=self.follow_symlinks
+        ):
+            here = Path(dirpath)
+            dirnames[:] = sorted(
+                name
+                for name in dirnames
+                if name not in self.exclude_dirs
+                and not self._is_excluded(here / name)
+            )
+            for name in sorted(filenames):
+                path = here / name
+                if spec_for_path(path) and not self._is_excluded(path):
+                    yield path
+
+    def _is_excluded(self, path: Path) -> bool:
+        if not self.exclude_globs:
+            return False
+        rel = self.relative_path(path)
+        return any(
+            fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(PurePosixPath(rel).name, pattern)
+            for pattern in self.exclude_globs
+        )
+
+    def module_name(self, path: Path | str) -> str:
+        """Dotted module name for a path, package prefix included."""
+        name = module_name_for_path(self.relative_path(Path(path)), self.strip_prefix)
+        if not self.module_prefix:
+            return name
+        return f"{self.module_prefix}.{name}" if name else self.module_prefix
+
+    def relative_path(self, path: Path) -> str:
+        """Repo-relative POSIX path, falling back to the name when outside root."""
+        try:
+            return PurePosixPath(Path(path).resolve().relative_to(self.root)).as_posix()
+        except ValueError:
+            return Path(path).name
+
+    # -- entry points ------------------------------------------------------
+
+    def parse_tree(self) -> list[ParsedFile]:
+        """Parse every supported file under ``root``."""
+        return [self.parse_file(path) for path in self.iter_source_files()]
+
+    def parse_file(self, path: Path | str) -> ParsedFile:
+        """Parse a single file, returning diagnostics instead of raising."""
+        path = Path(path)
+        rel = self.relative_path(path)
+        module = self.module_name(path)
+        spec = spec_for_path(path)
+
+        if spec is None:
+            return ParsedFile(
+                file_path=rel,
+                module=module,
+                language="unknown",
+                diagnostics=[
+                    ParseDiagnostic(rel, "unsupported", f"no grammar for suffix {path.suffix!r}")
+                ],
+            )
+
+        try:
+            size = path.stat().st_size
+            if size > self.max_file_bytes:
+                return ParsedFile(
+                    file_path=rel,
+                    module=module,
+                    language=spec.name,
+                    diagnostics=[
+                        ParseDiagnostic(
+                            rel,
+                            "skipped",
+                            f"file is {size} bytes, over the {self.max_file_bytes} byte limit",
+                        )
+                    ],
+                )
+            source = path.read_bytes()
+        except OSError as exc:
+            return ParsedFile(
+                file_path=rel,
+                module=module,
+                language=spec.name,
+                diagnostics=[ParseDiagnostic(rel, "read_error", str(exc))],
+            )
+
+        if b"\x00" in source[:_BINARY_SNIFF_BYTES]:
+            return ParsedFile(
+                file_path=rel,
+                module=module,
+                language=spec.name,
+                diagnostics=[ParseDiagnostic(rel, "skipped", "file looks binary")],
+            )
+
+        return self.parse_source(source, file_path=rel, module=module, spec=spec)
+
+    def parse_source(
+        self,
+        source: bytes,
+        *,
+        file_path: str,
+        module: str,
+        spec: LanguageSpec | None = None,
+    ) -> ParsedFile:
+        """Parse in-memory source bytes.  Nothing is written to disk."""
+        spec = spec or spec_for_path(file_path)
+        if spec is None:
+            return ParsedFile(
+                file_path=file_path,
+                module=module,
+                language="unknown",
+                diagnostics=[ParseDiagnostic(file_path, "unsupported", "no grammar")],
+            )
+
+        try:
+            loaded = load_language(spec)
+        except GrammarUnavailable as exc:
+            return ParsedFile(
+                file_path=file_path,
+                module=module,
+                language=spec.name,
+                diagnostics=[ParseDiagnostic(file_path, "unsupported", str(exc))],
+            )
+
+        try:
+            tree = loaded.parser.parse(source)
+            extractor = _PythonExtractor(source, file_path=file_path, module=module)
+            matches = QueryCursor(loaded.query).matches(tree.root_node)
+            return extractor.extract(tree.root_node, matches)
+        except RecursionError as exc:  # pragma: no cover - pathological input
+            return ParsedFile(
+                file_path=file_path,
+                module=module,
+                language=spec.name,
+                diagnostics=[ParseDiagnostic(file_path, "internal_error", f"tree too deep: {exc}")],
+            )
+        except Exception as exc:  # pragma: no cover - defensive backstop
+            logger.exception("unexpected failure parsing %s", file_path)
+            return ParsedFile(
+                file_path=file_path,
+                module=module,
+                language=spec.name,
+                diagnostics=[ParseDiagnostic(file_path, "internal_error", repr(exc))],
+            )
+
+
+class _PythonExtractor:
+    """Turns one parsed Python tree into definitions, imports and call sites."""
+
+    def __init__(self, source: bytes, *, file_path: str, module: str) -> None:
+        self.source = source
+        self.file_path = file_path
+        self.module = module
+        self.diagnostics: list[ParseDiagnostic] = []
+
+    # -- helpers -----------------------------------------------------------
+
+    def text(self, node: Node | None) -> str:
+        """Decode a node's byte range.  Undecodable bytes degrade, never raise."""
+        if node is None:
+            return ""
+        return self.source[node.start_byte : node.end_byte].decode("utf-8", "replace")
+
+    def slice(self, start: int, end: int) -> str:
+        return self.source[start:end].decode("utf-8", "replace")
+
+    def dedented_slice(self, start: int, end: int) -> str:
+        """Source text with the definition's own indentation removed.
+
+        A method sliced straight out of the file starts flush at ``def`` but
+        keeps its body indented, which is not valid Python on its own.  Putting
+        the leading indentation back before dedenting fixes the whole block.
+        Line endings are normalised to ``\\n`` on the way out; byte offsets on
+        the symbol still point into the original file.
+        """
+        raw = self.slice(start, end)
+        line_start = self.source.rfind(b"\n", 0, start) + 1
+        indent = self.slice(line_start, start)
+        if indent and not indent.isspace():
+            return _normalise_newlines(raw)  # something shares the line
+        return _dedent(_normalise_newlines(indent + raw))
+
+    def note(self, kind: str, detail: str, line: int = 0) -> None:
+        if len(self.diagnostics) < MAX_DIAGNOSTICS_PER_FILE:
+            self.diagnostics.append(ParseDiagnostic(self.file_path, kind, detail, line))  # type: ignore[arg-type]
+
+    # -- top level ---------------------------------------------------------
+
+    def extract(
+        self, root: Node, matches: Sequence[tuple[int, dict[str, list[Node]]]]
+    ) -> ParsedFile:
+        self._collect_syntax_errors(root)
+
+        def_matches: list[tuple[Node, dict[str, list[Node]]]] = []
+        import_nodes: list[tuple[str, Node]] = []
+        call_matches: list[dict[str, list[Node]]] = []
+
+        for _pattern, caps in matches:
+            if "def.function" in caps or "def.class" in caps:
+                node = (caps.get("def.function") or caps.get("def.class"))[0]
+                if not self._inside_error(node):
+                    def_matches.append((node, caps))
+            elif "import.plain" in caps:
+                import_nodes.append(("plain", caps["import.plain"][0]))
+            elif "import.from" in caps:
+                import_nodes.append(("from", caps["import.from"][0]))
+            elif "call.site" in caps:
+                call_matches.append(caps)
+
+        symbols = self._build_symbols(def_matches)
+        imports = self._build_imports(import_nodes)
+        calls = self._build_calls(call_matches, symbols)
+
+        return ParsedFile(
+            file_path=self.file_path,
+            module=self.module,
+            language="python",
+            symbols=symbols,
+            imports=imports,
+            calls=calls,
+            diagnostics=self.diagnostics,
+            module_docstring=self._docstring_of_block(root),
+        )
+
+    def _collect_syntax_errors(self, root: Node) -> None:
+        """Record ERROR/MISSING nodes without descending into the wreckage."""
+        if not root.has_error:
+            return
+        stack: list[Node] = [root]
+        while stack:
+            node = stack.pop()
+            if node.is_missing:
+                self.note(
+                    "missing_node",
+                    f"missing {node.type!r}",
+                    node.start_point.row + 1,
+                )
+                continue
+            if node.type == "ERROR" or node.is_error:
+                self.note(
+                    "syntax_error",
+                    f"unparseable region: {self.text(node)[:60]!r}",
+                    node.start_point.row + 1,
+                )
+                continue  # do not descend; the subtree is not trustworthy
+            if node.has_error:
+                stack.extend(node.children)
+
+    @staticmethod
+    def _inside_error(node: Node) -> bool:
+        """True when a captured node sits inside an unparseable region."""
+        parent = node.parent
+        while parent is not None:
+            if parent.type == "ERROR" or parent.is_error:
+                return True
+            parent = parent.parent
+        return False
+
+    # -- definitions -------------------------------------------------------
+
+    def _build_symbols(
+        self, def_matches: Sequence[tuple[Node, dict[str, list[Node]]]]
+    ) -> list[SymbolDef]:
+        symbols: list[SymbolDef] = []
+        for node, caps in sorted(def_matches, key=lambda item: item[0].start_byte):
+            if self._header_damaged(node):
+                self.note(
+                    "syntax_error",
+                    f"skipping definition with an unparseable header: "
+                    f"{self.slice(node.start_byte, min(node.end_byte, node.start_byte + 40))!r}",
+                    node.start_point.row + 1,
+                )
+                continue
+            try:
+                symbols.append(self._build_symbol(node, caps))
+            except Exception as exc:  # pragma: no cover - defensive per-node guard
+                self.note(
+                    "internal_error",
+                    f"could not extract definition: {exc!r}",
+                    node.start_point.row + 1,
+                )
+        symbols.sort(key=lambda s: (s.start_byte, -s.end_byte))
+        return symbols
+
+    def _build_symbol(self, node: Node, caps: dict[str, list[Node]]) -> SymbolDef:
+        is_class = node.type == "class_definition"
+        name_nodes = caps.get("def.name") or []
+        name = self.text(name_nodes[0]) if name_nodes else "<anonymous>"
+
+        qualifiers = self._enclosing_names(node)
+        parent_id = ".".join(filter(None, [self.module, *qualifiers])) or None
+        symbol_id = ".".join(filter(None, [self.module, *qualifiers, name]))
+
+        enclosing = self._nearest_def(node)
+        in_class_body = enclosing is not None and enclosing.type == "class_definition"
+        kind = "class" if is_class else ("method" if in_class_body else "function")
+
+        decorated = node.parent if node.parent and node.parent.type == "decorated_definition" else None
+        decorators = (
+            [self.text(child) for child in decorated.children if child.type == "decorator"]
+            if decorated
+            else []
+        )
+
+        body = (caps.get("def.body") or [None])[0]
+        start_byte = decorated.start_byte if decorated else node.start_byte
+        end_byte = node.end_byte
+
+        signature = self._signature(node, body)
+        params = (
+            []
+            if is_class
+            else self._params(node.child_by_field_name("parameters"))
+        )
+        bases = self._bases(node) if is_class else []
+        docstring = self._docstring_of_block(body)
+        is_async = any(child.type == "async" for child in node.children)
+
+        return SymbolDef(
+            symbol_id=symbol_id,
+            name=name,
+            kind=kind,  # type: ignore[arg-type]
+            file_path=self.file_path,
+            module=self.module,
+            parent=parent_id if qualifiers else None,
+            start_byte=start_byte,
+            end_byte=end_byte,
+            start_line=(decorated or node).start_point.row + 1,
+            end_line=node.end_point.row + 1,
+            params=params,
+            signature=signature,
+            docstring=docstring,
+            decorators=decorators,
+            bases=bases,
+            is_async=is_async,
+            code=self.dedented_slice(start_byte, end_byte),
+            stub=self._stub(signature, docstring, decorators),
+        )
+
+    @staticmethod
+    def _header_damaged(node: Node) -> bool:
+        """True when the signature of a definition did not parse cleanly.
+
+        A body full of syntax errors still leaves a usable signature, so only
+        damage *before* the body disqualifies a definition.  Without this a
+        half-recovered ``def broken(:`` produces a symbol whose name, params and
+        signature are all nonsense.
+        """
+        if node.child_by_field_name("name") is None:
+            return True
+        body = node.child_by_field_name("body")
+        limit = body.start_byte if body is not None else node.end_byte
+        for child in node.children:
+            if child.start_byte >= limit:
+                break
+            if child.is_missing or child.has_error or child.type == "ERROR":
+                return True
+        return False
+
+    @staticmethod
+    def _nearest_def(node: Node) -> Node | None:
+        """The definition node immediately enclosing ``node``, if any."""
+        parent = node.parent
+        while parent is not None:
+            if parent.type in _DEF_NODE_TYPES:
+                return parent
+            parent = parent.parent
+        return None
+
+    def _enclosing_names(self, node: Node) -> list[str]:
+        """Names of the definitions enclosing ``node``, outermost first."""
+        names: list[str] = []
+        parent = node.parent
+        while parent is not None:
+            if parent.type in _DEF_NODE_TYPES:
+                name_node = parent.child_by_field_name("name")
+                names.append(self.text(name_node) if name_node else "<anonymous>")
+            parent = parent.parent
+        names.reverse()
+        return names
+
+    def _signature(self, node: Node, body: Node | None) -> str:
+        """Source text from the ``def``/``class`` keyword through the colon."""
+        end = body.start_byte if body is not None else node.end_byte
+        raw = self.slice(node.start_byte, end).rstrip()
+        # Trim the trailing block opener remnants, then flatten wrapped params.
+        raw = raw.rstrip()
+        if "\n" in raw:
+            raw = " ".join(raw.split())
+        return raw
+
+    def _params(self, params_node: Node | None) -> list[Param]:
+        """Destructure a ``parameters`` node into typed :class:`Param` records."""
+        if params_node is None:
+            return []
+
+        params: list[Param] = []
+        kwonly = False
+        posonly_upto = -1
+
+        for child in params_node.named_children:
+            ctype = child.type
+            if ctype == "comment":
+                continue
+            if ctype == "positional_separator":
+                posonly_upto = len(params)
+                continue
+            if ctype == "keyword_separator":
+                kwonly = True
+                continue
+
+            kind = "kwonly" if kwonly else "positional"
+            name = annotation = default = None
+
+            if ctype == "identifier":
+                name = self.text(child)
+            elif ctype == "typed_parameter":
+                # The parameter itself may still be a splat: `*args: int`.
+                annotation = self.text(child.child_by_field_name("type"))
+                inner = child.named_children[0] if child.named_children else None
+                inner_type = inner.type if inner is not None else ""
+                if inner_type in ("list_splat_pattern", "list_splat"):
+                    name = self.text(inner).lstrip("*")
+                    kind = "vararg"
+                    kwonly = True
+                elif inner_type in ("dictionary_splat_pattern", "dictionary_splat"):
+                    name = self.text(inner).lstrip("*")
+                    kind = "kwarg"
+                else:
+                    name = self.text(inner)
+            elif ctype == "default_parameter":
+                name = self.text(child.child_by_field_name("name"))
+                default = self.text(child.child_by_field_name("value"))
+            elif ctype == "typed_default_parameter":
+                name = self.text(child.child_by_field_name("name"))
+                annotation = self.text(child.child_by_field_name("type"))
+                default = self.text(child.child_by_field_name("value"))
+            elif ctype in ("list_splat_pattern", "list_splat"):
+                name = self.text(child).lstrip("*")
+                kind = "vararg"
+                kwonly = True  # everything after *args is keyword-only
+            elif ctype in ("dictionary_splat_pattern", "dictionary_splat"):
+                name = self.text(child).lstrip("*")
+                kind = "kwarg"
+            elif ctype == "tuple_pattern":  # legacy nested params
+                name = self.text(child)
+            else:
+                # Unknown shape: keep the source text so nothing silently vanishes.
+                name = self.text(child)
+                self.note(
+                    "syntax_error",
+                    f"unrecognised parameter node {ctype!r}",
+                    child.start_point.row + 1,
+                )
+
+            params.append(
+                Param(
+                    name=name or "",
+                    annotation=annotation or None,
+                    default=default or None,
+                    kind=kind,  # type: ignore[arg-type]
+                )
+            )
+
+        if posonly_upto >= 0:
+            params = [
+                Param(p.name, p.annotation, p.default, "posonly") if i < posonly_upto else p
+                for i, p in enumerate(params)
+            ]
+        return params
+
+    def _bases(self, class_node: Node) -> list[str]:
+        """Superclass expressions as written, e.g. ``["Base", "Mixin"]``."""
+        arglist = class_node.child_by_field_name("superclasses")
+        if arglist is None:
+            return []
+        return [
+            self.text(child)
+            for child in arglist.named_children
+            if child.type not in ("comment",)
+        ]
+
+    def _docstring_of_block(self, block: Node | None) -> str | None:
+        """The leading string literal of a block or module, cleaned up."""
+        if block is None:
+            return None
+        for child in block.named_children:
+            if child.type == "comment":
+                continue
+            if child.type != "expression_statement" or not child.named_children:
+                return None
+            literal = child.named_children[0]
+            if literal.type != "string":
+                return None
+            raw = self.text(literal)
+            try:
+                value = ast.literal_eval(raw)
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                return None  # f-string or otherwise not a plain literal
+            if not isinstance(value, str):
+                return None
+            return inspect.cleandoc(_normalise_newlines(value))
+        return None
+
+    @staticmethod
+    def _stub(signature: str, docstring: str | None, decorators: Sequence[str]) -> str:
+        """Signature + docstring with the body replaced by ``...``."""
+        lines = list(decorators)
+        lines.append(signature)
+        if docstring:
+            quoted = docstring.replace('"""', r"\"\"\"")
+            if "\n" in quoted:
+                lines.append('    """')
+                lines.extend(f"    {line}".rstrip() for line in quoted.splitlines())
+                lines.append('    """')
+            else:
+                lines.append(f'    """{quoted}"""')
+        lines.append("    ...")
+        return "\n".join(lines)
+
+    # -- imports -----------------------------------------------------------
+
+    def _build_imports(self, import_nodes: Sequence[tuple[str, Node]]) -> list[ImportRecord]:
+        records: list[ImportRecord] = []
+        for flavour, node in sorted(import_nodes, key=lambda item: item[1].start_byte):
+            if self._inside_error(node):
+                continue
+            try:
+                if flavour == "plain":
+                    records.extend(self._plain_import(node))
+                else:
+                    records.extend(self._from_import(node))
+            except Exception as exc:  # pragma: no cover - defensive per-node guard
+                self.note(
+                    "internal_error",
+                    f"could not extract import: {exc!r}",
+                    node.start_point.row + 1,
+                )
+        return records
+
+    def _plain_import(self, node: Node) -> Iterator[ImportRecord]:
+        """``import a.b`` binds ``a``; ``import a.b as c`` binds ``c``."""
+        line = node.start_point.row + 1
+        for child in node.children_by_field_name("name"):
+            if child.type == "aliased_import":
+                target = self.text(child.child_by_field_name("name"))
+                alias = self.text(child.child_by_field_name("alias"))
+            elif child.type == "dotted_name":
+                target = self.text(child)
+                alias = target.split(".", 1)[0]
+            else:
+                continue
+            yield ImportRecord(
+                module=self.module,
+                alias=alias,
+                target_module=target,
+                target_symbol=None,
+                line=line,
+            )
+
+    def _from_import(self, node: Node) -> Iterator[ImportRecord]:
+        """``from .pkg import a as b`` -- resolve dots, alias and symbol names."""
+        line = node.start_point.row + 1
+        module_node = node.child_by_field_name("module_name")
+        level = 0
+        target_module = ""
+
+        if module_node is not None and module_node.type == "relative_import":
+            prefix = next(
+                (c for c in module_node.children if c.type == "import_prefix"), None
+            )
+            level = len(self.text(prefix)) if prefix is not None else 0
+            dotted = next((c for c in module_node.children if c.type == "dotted_name"), None)
+            target_module = self.text(dotted) if dotted is not None else ""
+        elif module_node is not None:
+            target_module = self.text(module_node)
+
+        is_relative = level > 0
+
+        if any(child.type == "wildcard_import" for child in node.children):
+            yield ImportRecord(
+                module=self.module,
+                alias="*",
+                target_module=target_module,
+                target_symbol=None,
+                is_relative=is_relative,
+                level=level,
+                is_wildcard=True,
+                line=line,
+            )
+            return
+
+        for child in node.children_by_field_name("name"):
+            if child.type == "aliased_import":
+                symbol = self.text(child.child_by_field_name("name"))
+                alias = self.text(child.child_by_field_name("alias"))
+            elif child.type == "dotted_name":
+                symbol = self.text(child)
+                alias = symbol.split(".", 1)[0]
+            else:
+                continue
+            yield ImportRecord(
+                module=self.module,
+                alias=alias,
+                target_module=target_module,
+                target_symbol=symbol,
+                is_relative=is_relative,
+                level=level,
+                line=line,
+            )
+
+    # -- call sites --------------------------------------------------------
+
+    def _build_calls(
+        self, call_matches: Sequence[dict[str, list[Node]]], symbols: Sequence[SymbolDef]
+    ) -> list[CallSite]:
+        starts = [s.start_byte for s in symbols]
+        calls: list[CallSite] = []
+
+        for caps in call_matches:
+            site = caps["call.site"][0]
+            callee_nodes = caps.get("call.callee") or []
+            if not callee_nodes or self._inside_error(site):
+                continue
+            callee = callee_nodes[0]
+
+            path = self._attribute_path(callee)
+            raw_name = self.text(callee)
+            root = path[0] if path else ""
+            attr_path = path[1:] if path else []
+
+            calls.append(
+                CallSite(
+                    module=self.module,
+                    file_path=self.file_path,
+                    raw_name=raw_name,
+                    root=root,
+                    attr_path=attr_path,
+                    caller_id=self._enclosing_symbol(site.start_byte, symbols, starts),
+                    line=site.start_point.row + 1,
+                    start_byte=site.start_byte,
+                    end_byte=site.end_byte,
+                )
+            )
+
+        calls.sort(key=lambda c: c.start_byte)
+        return calls
+
+    def _attribute_path(self, callee: Node) -> list[str]:
+        """Flatten ``a.b.c`` into ``["a", "b", "c"]``.
+
+        Returns an empty list when the base of the chain is computed (e.g.
+        ``factory().method``), which marks the call as statically unresolvable.
+        """
+        if callee.type == "identifier":
+            return [self.text(callee)]
+        if callee.type == "attribute":
+            obj = callee.child_by_field_name("object")
+            attr = callee.child_by_field_name("attribute")
+            if obj is None or attr is None:
+                return []
+            base = self._attribute_path(obj)
+            if not base:
+                return []
+            return [*base, self.text(attr)]
+        return []
+
+    @staticmethod
+    def _enclosing_symbol(
+        byte: int, symbols: Sequence[SymbolDef], starts: Sequence[int]
+    ) -> str | None:
+        """Innermost definition containing ``byte``, or None at module level."""
+        index = bisect_right(starts, byte) - 1
+        while index >= 0:
+            candidate = symbols[index]
+            if candidate.end_byte > byte:
+                return candidate.symbol_id
+            index -= 1
+        return None

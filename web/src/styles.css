@@ -1,0 +1,144 @@
+/* Workspace chrome.  The canvas paints itself; this is only the shell. */
+:root {
+  --bg: #11111b;
+  --surface: #181825;
+  --surface-2: #1e1e2e;
+  --line: #313244;
+  --text: #cdd6f4;
+  --text-dim: #a6adc8;
+  --text-faint: #6c7086;
+  --accent: #89b4fa;
+  --module: #89b4fa;
+  --class: #a6e3a1;
+  --function: #f9e2af;
+  --method: #fab387;
+  --variable: #cba6f7;
+  --dir: #94e2d5;
+
+  color-scheme: dark;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100%;
+}
+
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.sidebar h1 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+
+.sidebar .root-path {
+  margin: 0 0 16px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  word-break: break-all;
+}
+
+.sidebar h2 {
+  margin: 18px 0 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 10px;
+  font-size: 12px;
+}
+.stat-grid dt { color: var(--text-dim); }
+.stat-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.stage-host {
+  position: relative;
+  overflow: hidden;
+}
+
+.placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--text-faint);
+}
+.placeholder strong { color: var(--text-dim); font-weight: 500; }
+
+.error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #f38ba8;
+  border-radius: 6px;
+  background: #2a1a24;
+  color: #f38ba8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.error code {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-faint);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.reload-flash {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-size: 11.5px;
+  pointer-events: none;
+  animation: fade 1.6s ease-out forwards;
+}
+@keyframes fade {
+  0%, 55% { opacity: 1; }
+  100% { opacity: 0; }
+}

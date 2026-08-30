@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+
+# Tool output
+codebase_graph.json
+symbol_registry.json
+out/
+
+# Web frontend
+web/node_modules/
+web/dist/
+web/.vite/
+web/*.tsbuildinfo

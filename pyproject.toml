@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "adventure-call"
+version = "0.1.0"
+description = "Build a codebase dependency graph with Tree-sitter and NetworkX, and serve 1-hop LOD context for any symbol."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-python>=0.25,<0.26",
+    "networkx>=3.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+js = ["tree-sitter-javascript>=0.25,<0.26", "tree-sitter-typescript>=0.23"]
+
+[project.scripts]
+adventure-call = "adventure_call.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["adventure_call"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
