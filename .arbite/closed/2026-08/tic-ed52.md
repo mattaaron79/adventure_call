@@ -26,7 +26,7 @@ Stand up the SPA shell in web/ and the dev harness.
 - web/ with Vite + React + TypeScript + konva/react-konva + zustand. Scripts: dev, build, preview, test (vitest).
 - web/plugins/outData.ts (dev-only Vite plugin): middleware mapping /data/codebase_graph.json and /data/symbol_registry.json to <repoRoot>/out/. Register those files on Vite's existing server.watcher; on change send server.ws.send({type:'custom', event:'out-data:changed'}). Client subscribes via import.meta.hot.on and refetches. No extra deps, no second server process.
 - .vscode/tasks.json: background task running 'npm run dev' in web/ with a problem matcher that resolves once Vite prints its URL.
-- .vscode/launch.json: Chrome/Edge launch at http://localhost:5173 with preLaunchTask pointing at the dev task, sourcemaps on.
+- .vscode/launch.json: Chrome/Edge launch at http://localhost:5175 with preLaunchTask pointing at the dev task, sourcemaps on.
 - Add web/node_modules and web/dist to .gitignore.
 
 EXIT: F5 in VS Code builds, serves, opens the browser with the debugger attached, and the page shows node/edge counts read live from /out.

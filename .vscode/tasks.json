@@ -13,14 +13,6 @@
         "clear": true
       },
       "problemMatcher": {
-        "owner": "vite",
-        "fileLocation": ["relative", "${workspaceFolder}/web"],
-        "pattern": {
-          "regexp": "^\s*(.*)$",
-          "file": 1,
-          "location": 1,
-          "message": 1
-        },
         "background": {
           "activeOnStart": true,
           "beginsPattern": ".*VITE.*",
