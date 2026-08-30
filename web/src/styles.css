@@ -143,6 +143,57 @@ html, body, #root {
   100% { opacity: 0; }
 }
 
+/* Canvas surface and its floating toolbar. */
+.workspace {
+  position: absolute;
+  inset: 0;
+  /* The canvas owns every gesture; a stray text selection during a marquee
+     drag would leave the browser's own highlight over the page. */
+  user-select: none;
+  touch-action: none;
+}
+
+.hud {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.hud button {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.hud button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.hud button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.hud-stat {
+  padding: 0 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Derived filesystem tree. */
 .tree, .tree ul {
   list-style: none;

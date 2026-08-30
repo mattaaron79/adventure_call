@@ -3,7 +3,9 @@ import { deriveWorkspace } from './data/derive'
 import { readExcludes, writeExcludes } from './data/filters'
 import { loadGraph, onDataChanged } from './data/load'
 import type { CodebaseGraph } from './data/types'
-import { StageHost } from './canvas/StageHost'
+import { Workspace } from './canvas/Workspace'
+import { placeholderScene } from './canvas/placeholderScene'
+import { EMPTY_SCENE } from './canvas/scene'
 import { Sidebar } from './ui/Sidebar'
 
 type Status =
@@ -50,6 +52,9 @@ export function App() {
     [graph, excludes],
   )
 
+  // Stands in for a real mode until tic-cdeb lays one out properly.
+  const scene = useMemo(() => (workspace ? placeholderScene(workspace) : EMPTY_SCENE), [workspace])
+
   return (
     <div className="app">
       <Sidebar
@@ -59,14 +64,10 @@ export function App() {
         onExcludesChange={changeExcludes}
       />
       <div className="stage-host">
-        <StageHost />
-        {workspace && (
+        <Workspace scene={scene} />
+        {workspace === null && status.phase !== 'error' && (
           <div className="placeholder">
-            <strong>Workspace canvas lands next</strong>
-            <span>
-              {workspace.tree.fileCount.toLocaleString()} files ·{' '}
-              {workspace.fileImports.length.toLocaleString()} file-to-file import edges
-            </span>
+            <strong>Reading /out…</strong>
           </div>
         )}
         {reloadedAt !== null && (
