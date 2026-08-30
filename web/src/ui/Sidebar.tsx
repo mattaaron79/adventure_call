@@ -1,4 +1,7 @@
+import type { Workspace } from '../data/derive'
 import type { CodebaseGraph, SymbolKind } from '../data/types'
+import { ExcludeEditor } from './ExcludeEditor'
+import { FileTree } from './FileTree'
 
 const KIND_COLOR: Record<SymbolKind, string> = {
   module: 'var(--module)',
@@ -14,9 +17,13 @@ interface Props {
     | { phase: 'loading' }
     | { phase: 'ready'; graph: CodebaseGraph }
     | { phase: 'error'; error: string }
+  /** The derived view of `status.graph`; null until the graph is ready. */
+  workspace: Workspace | null
+  excludes: readonly string[]
+  onExcludesChange: (next: string[]) => void
 }
 
-export function Sidebar({ status }: Props) {
+export function Sidebar({ status, workspace, excludes, onExcludesChange }: Props) {
   return (
     <aside className="sidebar">
       <h1>Adventure Call</h1>
@@ -36,12 +43,19 @@ export function Sidebar({ status }: Props) {
         </p>
       )}
 
-      {status.phase === 'ready' && <Stats graph={status.graph} />}
+      {status.phase === 'ready' && workspace && (
+        <>
+          <Stats graph={status.graph} workspace={workspace} />
+          <ExcludeEditor excludes={excludes} onChange={onExcludesChange} />
+          <h2>Files</h2>
+          <FileTree root={workspace.tree} />
+        </>
+      )}
     </aside>
   )
 }
 
-function Stats({ graph }: { graph: CodebaseGraph }) {
+function Stats({ graph, workspace }: { graph: CodebaseGraph; workspace: Workspace }) {
   const { stats, generated_at } = graph.graph
   const kinds = Object.entries(stats.node_kinds) as [SymbolKind, number][]
   const edges = Object.entries(stats.edge_types)
@@ -58,6 +72,18 @@ function Stats({ graph }: { graph: CodebaseGraph }) {
         <dd>{stats.nodes.toLocaleString()}</dd>
         <dt>Edges</dt>
         <dd>{stats.edges.toLocaleString()}</dd>
+      </dl>
+
+      <h2>Workspace</h2>
+      <dl className="stat-grid">
+        <dt>Files shown</dt>
+        <dd>{workspace.tree.fileCount.toLocaleString()}</dd>
+        <dt>Excluded</dt>
+        <dd>{workspace.excludedFiles.toLocaleString()}</dd>
+        <dt>Symbols</dt>
+        <dd>{(workspace.nodes.length - workspace.modules.length).toLocaleString()}</dd>
+        <dt>File imports</dt>
+        <dd>{workspace.fileImports.length.toLocaleString()}</dd>
       </dl>
 
       <h2>Node kinds</h2>
