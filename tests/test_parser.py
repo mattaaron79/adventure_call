@@ -64,6 +64,65 @@ def test_module_docstrings_are_captured(files_by_module):
     assert files_by_module["src.auth"].module_docstring == "Authentication helpers."
 
 
+# -- assignments -----------------------------------------------------------
+
+
+def test_module_level_assignments_become_variables(symbol):
+    sessions = symbol("src.auth.SESSIONS")
+    assert sessions.kind == "variable"
+    assert sessions.parent is None
+    assert sessions.signature == "SESSIONS: dict[str, User] = {}"
+    assert sessions.params == [] and sessions.docstring is None
+
+
+def test_class_body_assignments_become_attributes(symbol):
+    role = symbol("src.models.User.role")
+    assert role.kind == "attribute"
+    assert role.parent == "src.models.User"
+    assert role.signature == 'role: str = "guest"'
+    assert symbol("src.models.User.name").signature == "name: str"  # bare annotation
+
+
+def test_locals_and_instance_attributes_are_not_symbols(analyse):
+    _, files, _ = analyse(
+        {
+            "m.py": """
+            TOP = 1
+
+            class C:
+                shared = []
+
+                def __init__(self):
+                    local = 2
+                    self.instance = 3
+            """
+        }
+    )
+    ids = {s.symbol_id for f in files for s in f.symbols}
+    assert {"m.TOP", "m.C.shared"} <= ids
+    assert not {"m.C.__init__.local", "m.C.instance", "m.C.__init__.instance"} & ids
+
+
+def test_only_plain_name_targets_are_captured(analyse):
+    _, files, _ = analyse({"m.py": "a, b = 1, 2\nc = d = 3\nlookup['e'] = 4\n"})
+    names = {s.name for f in files for s in f.symbols}
+    assert names == {"c", "d"}, "tuple and subscript targets are not names we can index"
+
+
+def test_long_assignment_values_are_truncated(analyse):
+    _, files, _ = analyse({"m.py": "BIG = [\n" + "    'x',\n" * 40 + "]\n"})
+    variable = next(s for f in files for s in f.symbols)
+    assert variable.signature.endswith("...")
+    assert len(variable.signature) < 100
+    assert "\n" not in variable.signature
+
+
+def test_nested_class_attributes_nest_their_ids(analyse):
+    _, files, _ = analyse({"m.py": "class Outer:\n    class Inner:\n        depth = 1\n"})
+    ids = {s.symbol_id for f in files for s in f.symbols}
+    assert "m.Outer.Inner.depth" in ids
+
+
 # -- stubs and code --------------------------------------------------------
 
 
@@ -131,6 +190,13 @@ def test_calls_are_attributed_to_the_enclosing_definition(files_by_module):
 
 def test_module_level_calls_have_no_caller(analyse):
     _, files, _ = analyse({"m.py": "def go(): ...\n\ngo()\n"})
+    call = next(c for f in files for c in f.calls)
+    assert call.caller_id is None
+
+
+def test_calls_in_a_module_level_assignment_belong_to_the_module(analyse):
+    # The variable is a symbol now, but it owns no body, so it cannot own a call.
+    _, files, _ = analyse({"m.py": "def go(): ...\n\nRESULT = go()\n"})
     call = next(c for f in files for c in f.calls)
     assert call.caller_id is None
 

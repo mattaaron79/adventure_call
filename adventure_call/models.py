@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-SymbolKind = Literal["module", "function", "method", "class"]
+SymbolKind = Literal["module", "function", "method", "class", "variable", "attribute"]
 ParamKind = Literal["positional", "posonly", "kwonly", "vararg", "kwarg"]
 DiagnosticKind = Literal[
     "syntax_error",

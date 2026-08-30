@@ -93,6 +93,28 @@ def test_contains_edges_are_opt_in(parsed_files, index):
     assert data["type"] == CONTAINS
 
 
+def test_variables_and_attributes_are_nodes(builder):
+    kinds = {node: data["kind"] for node, data in builder.graph.nodes(data=True)}
+    assert kinds["src.auth.SESSIONS"] == "variable"
+    assert kinds["src.models.User.role"] == "attribute"
+    assert builder.graph.nodes["src.auth.SESSIONS"]["stub"] == "SESSIONS: dict[str, User] = {}"
+
+
+def test_no_call_edge_ever_lands_on_a_variable(builder):
+    graph = builder.graph
+    assert not [
+        (u, v)
+        for u, v, data in graph.edges(data=True)
+        if data["type"] == CALLS and graph.nodes[v]["kind"] in ("variable", "attribute")
+    ]
+
+
+def test_contains_edges_reach_variables_and_attributes(parsed_files, index):
+    graph = GraphBuilder(parsed_files, index, contains_edges=True).build()
+    assert graph.edges["src.auth", "src.auth.SESSIONS"]["type"] == CONTAINS
+    assert graph.edges["src.models.User", "src.models.User.role"]["type"] == CONTAINS
+
+
 # -- room context ----------------------------------------------------------
 
 

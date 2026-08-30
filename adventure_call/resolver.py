@@ -30,6 +30,9 @@ from adventure_call.models import (
 
 BindingKind = Literal["module", "symbol", "external"]
 
+# Variables and class attributes are symbols, but they are not call targets:
+# they are indexed and reachable, and never the answer to "what does this call?"
+_CALLABLE_KINDS = frozenset({"function", "method", "class"})
 _BUILTIN_NAMES = frozenset(dir(builtins))
 _SELF_NAMES = frozenset({"self", "cls"})
 _MAX_MRO_DEPTH = 8
@@ -127,6 +130,11 @@ class SymbolResolver:
                     # which matches "the definition a reader meets first".
                     continue
                 self.symbols[symbol.symbol_id] = symbol
+                if symbol.kind not in _CALLABLE_KINDS:
+                    # Indexed above so the graph and registry carry it, but kept
+                    # out of every lookup table below -- otherwise a constant
+                    # sharing a function's name would make that name ambiguous.
+                    continue
                 self.by_name[symbol.name].append(symbol.symbol_id)
                 if symbol.parent is None:
                     self.module_members[symbol.module][symbol.name] = symbol.symbol_id
@@ -208,11 +216,18 @@ class SymbolResolver:
             call_type: str = "call",
             reason: str | None = None,
         ) -> Resolution:
-            if callee_id and call_type == "call":
-                kind = self.symbols[callee_id].kind
-                call_type = (
-                    "constructor" if kind == "class" else "method" if kind == "method" else "call"
-                )
+            if callee_id:
+                target = self.symbols[callee_id]
+                if target.kind not in _CALLABLE_KINDS:
+                    # A binding can point straight at a constant (`from cfg
+                    # import LIMIT`); calling it is not something we can follow.
+                    callee_id, confidence = None, "unresolved"
+                    reason = f"{target.kind} {target.symbol_id!r} is not callable"
+                elif call_type == "call":
+                    kind = target.kind
+                    call_type = (
+                        "constructor" if kind == "class" else "method" if kind == "method" else "call"
+                    )
             return Resolution(
                 caller_id=caller_id,
                 raw_name=call.raw_name,
@@ -299,6 +314,11 @@ class SymbolResolver:
             return outcome(None, "unresolved", reason=f"unknown receiver {receiver!r}")
         return outcome(None, "unresolved", reason="not defined in project")
 
+    def _is_callable(self, symbol_id: str) -> bool:
+        """True when ``symbol_id`` names something a call could land on."""
+        symbol = self.symbols.get(symbol_id)
+        return symbol is not None and symbol.kind in _CALLABLE_KINDS
+
     def _enclosing_class(self, symbol_id: str) -> str | None:
         """The class owning ``symbol_id``, walking out through nested defs."""
         current = self.symbols.get(symbol_id)
@@ -353,7 +373,7 @@ class SymbolResolver:
             if not scope:
                 continue
             candidate = f"{scope}.{name}"
-            if candidate in self.symbols:
+            if self._is_callable(candidate):
                 return candidate
         return None
 
@@ -385,11 +405,11 @@ class SymbolResolver:
                     current = found
                     continue
             candidate = f"{current}.{segment}"
-            if candidate in self.symbols or candidate in self.modules:
+            if self._is_callable(candidate) or candidate in self.modules:
                 current = candidate
                 continue
             return None
-        return current if current in self.symbols else None
+        return current if self._is_callable(current) else None
 
     def _module_member(
         self, module: str, name: str, seen: set[str] | None = None, depth: int = 0

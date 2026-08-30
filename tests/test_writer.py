@@ -71,6 +71,19 @@ def test_registry_holds_full_metadata(tmp_path, builder, index, parsed_files):
     assert data["bindings"]["src.auth"]["User"]["target"] == "src.models.User"
 
 
+def test_stats_count_the_new_symbol_kinds(tmp_path, builder, index, parsed_files):
+    data = json.loads(_write(tmp_path, builder, index, parsed_files)["graph"].read_text("utf-8"))
+    kinds = data["graph"]["stats"]["node_kinds"]
+    assert kinds["variable"] == 1 and kinds["attribute"] == 2
+
+
+def test_registry_lists_variables_among_a_module_symbols(tmp_path, builder, index, parsed_files):
+    data = json.loads(_write(tmp_path, builder, index, parsed_files)["registry"].read_text("utf-8"))
+    assert "src.auth.SESSIONS" in data["modules"]["src.auth"]["symbol_ids"]
+    assert data["symbols"]["src.auth.SESSIONS"]["kind"] == "variable"
+    assert data["schema_version"] == 1, "new kinds are additive; the schema is unchanged"
+
+
 def test_registry_reports_unresolved_calls_and_diagnostics(
     tmp_path, builder, index, parsed_files
 ):

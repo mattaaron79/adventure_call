@@ -174,6 +174,52 @@ def test_module_level_calls_are_attributed_to_the_module(analyse):
     assert _edge(idx, "m", "go").callee_id == "m.go"
 
 
+def test_variables_are_indexed_but_never_call_targets(index):
+    # The constant is a symbol...
+    assert index.symbols["src.auth.SESSIONS"].kind == "variable"
+    # ...and no call anywhere resolved to it, or to any other non-callable.
+    kinds = {index.symbols[r.callee_id].kind for r in index.resolved}
+    assert kinds <= {"function", "method", "class"}
+
+
+def test_calling_an_imported_constant_is_unresolved(analyse):
+    _, _, idx = analyse(
+        {
+            "cfg.py": "LIMIT = 10\n",
+            "app.py": "from cfg import LIMIT\n\n\ndef go():\n    return LIMIT()\n",
+        }
+    )
+    resolution = _edge(idx, "app.go", "LIMIT")
+    assert resolution.callee_id is None
+    assert resolution.reason == "variable 'cfg.LIMIT' is not callable"
+
+
+def test_unique_name_fallback_ignores_variables(analyse):
+    # `handler` is the only thing in the project with that name, but it is a
+    # constant, so the heuristic must not hand it to the caller as a callee.
+    _, _, idx = analyse(
+        {
+            "a.py": "handler = None\n",
+            "b.py": "def go(thing):\n    return thing.handler()\n",
+        }
+    )
+    resolution = _edge(idx, "b.go", "thing.handler")
+    assert resolution.callee_id is None
+    assert resolution.reason == "unknown receiver 'thing'"
+
+
+def test_a_variable_never_shadows_a_function_of_the_same_name(analyse):
+    _, _, idx = analyse(
+        {
+            "a.py": "def run(): ...\n",
+            "b.py": "run = 1\n",
+            "c.py": "def go(thing):\n    return thing.run()\n",
+        }
+    )
+    resolution = _edge(idx, "c.go", "thing.run")
+    assert resolution.callee_id == "a.run", "the constant must not make 'run' ambiguous"
+
+
 # -- unresolved reasons ----------------------------------------------------
 
 

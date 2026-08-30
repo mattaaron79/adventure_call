@@ -31,3 +31,14 @@
 ;; --------------------------------------------------------------------------
 (call
   function: [(identifier) (attribute)] @call.callee) @call.site
+
+;; --------------------------------------------------------------------------
+;; Assignments -- module-level constants and class attributes.
+;; `X = 1`, `X: int = 1` and the bare `X: int` all parse as an `assignment`
+;; with an identifier on the left, so one pattern covers the three.  Tuple
+;; targets, subscripts and `self.x = ...` have a different left-hand shape and
+;; are deliberately left out.  The parser drops whatever turns out to sit
+;; inside a function body -- locals are not symbols.
+;; --------------------------------------------------------------------------
+(assignment
+  left: (identifier) @assign.name) @assign.site

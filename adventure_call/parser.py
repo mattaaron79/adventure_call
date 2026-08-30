@@ -100,6 +100,9 @@ _BINARY_SNIFF_BYTES = 8192
 
 #: Node types that introduce a new named scope in Python.
 _DEF_NODE_TYPES = frozenset({"function_definition", "class_definition"})
+# Kinds that own a body and can therefore enclose a call site.
+_CALLABLE_KINDS = frozenset({"function", "method", "class"})
+_MAX_VALUE_CHARS = 80  # assignment right-hand sides are summarised, not stored
 
 
 class CodebaseParser:
@@ -349,6 +352,7 @@ class _PythonExtractor:
         self._collect_syntax_errors(root)
 
         def_matches: list[tuple[Node, dict[str, list[Node]]]] = []
+        assign_matches: list[tuple[Node, dict[str, list[Node]]]] = []
         import_nodes: list[tuple[str, Node]] = []
         call_matches: list[dict[str, list[Node]]] = []
 
@@ -357,6 +361,10 @@ class _PythonExtractor:
                 node = (caps.get("def.function") or caps.get("def.class"))[0]
                 if not self._inside_error(node):
                     def_matches.append((node, caps))
+            elif "assign.site" in caps:
+                node = caps["assign.site"][0]
+                if not self._inside_error(node):
+                    assign_matches.append((node, caps))
             elif "import.plain" in caps:
                 import_nodes.append(("plain", caps["import.plain"][0]))
             elif "import.from" in caps:
@@ -364,7 +372,7 @@ class _PythonExtractor:
             elif "call.site" in caps:
                 call_matches.append(caps)
 
-        symbols = self._build_symbols(def_matches)
+        symbols = self._build_symbols(def_matches, assign_matches)
         imports = self._build_imports(import_nodes)
         calls = self._build_calls(call_matches, symbols)
 
@@ -416,7 +424,9 @@ class _PythonExtractor:
     # -- definitions -------------------------------------------------------
 
     def _build_symbols(
-        self, def_matches: Sequence[tuple[Node, dict[str, list[Node]]]]
+        self,
+        def_matches: Sequence[tuple[Node, dict[str, list[Node]]]],
+        assign_matches: Sequence[tuple[Node, dict[str, list[Node]]]] = (),
     ) -> list[SymbolDef]:
         symbols: list[SymbolDef] = []
         for node, caps in sorted(def_matches, key=lambda item: item[0].start_byte):
@@ -436,6 +446,20 @@ class _PythonExtractor:
                     f"could not extract definition: {exc!r}",
                     node.start_point.row + 1,
                 )
+
+        for node, caps in sorted(assign_matches, key=lambda item: item[0].start_byte):
+            try:
+                symbol = self._build_assignment(node, caps)
+            except Exception as exc:  # pragma: no cover - defensive per-node guard
+                self.note(
+                    "internal_error",
+                    f"could not extract assignment: {exc!r}",
+                    node.start_point.row + 1,
+                )
+                continue
+            if symbol is not None:
+                symbols.append(symbol)
+
         symbols.sort(key=lambda s: (s.start_byte, -s.end_byte))
         return symbols
 
@@ -493,6 +517,66 @@ class _PythonExtractor:
             code=self.dedented_slice(start_byte, end_byte),
             stub=self._stub(signature, docstring, decorators),
         )
+
+    def _build_assignment(
+        self, node: Node, caps: dict[str, list[Node]]
+    ) -> SymbolDef | None:
+        """Turn a name-binding assignment into a variable or attribute symbol.
+
+        Only two scopes produce a symbol: the module top level (``variable``)
+        and a class body (``attribute``).  Anything assigned inside a function
+        is a local -- invisible from outside, so not part of the graph.
+        """
+        enclosing = self._nearest_def(node)
+        if enclosing is not None and enclosing.type == "function_definition":
+            return None
+        kind = "attribute" if enclosing is not None else "variable"
+
+        name_nodes = caps.get("assign.name") or []
+        if not name_nodes:  # pragma: no cover - the query always binds the name
+            return None
+        name = self.text(name_nodes[0])
+
+        qualifiers = self._enclosing_names(node)
+        parent_id = ".".join(filter(None, [self.module, *qualifiers])) or None
+        symbol_id = ".".join(filter(None, [self.module, *qualifiers, name]))
+
+        annotation = self.text(node.child_by_field_name("type")) or None
+        value = self._truncate_value(node.child_by_field_name("right"))
+        signature = name
+        if annotation:
+            signature += f": {annotation}"
+        if value is not None:
+            signature += f" = {value}"
+
+        return SymbolDef(
+            symbol_id=symbol_id,
+            name=name,
+            kind=kind,  # type: ignore[arg-type]
+            file_path=self.file_path,
+            module=self.module,
+            parent=parent_id if qualifiers else None,
+            start_byte=node.start_byte,
+            end_byte=node.end_byte,
+            start_line=node.start_point.row + 1,
+            end_line=node.end_point.row + 1,
+            signature=signature,
+            code=self.dedented_slice(node.start_byte, node.end_byte),
+            stub=signature,
+        )
+
+    def _truncate_value(self, value: Node | None) -> str | None:
+        """One-line summary of an assignment's right-hand side.
+
+        A constant may be a hundred-line dict literal; the graph wants to know
+        *that a name is bound and roughly to what*, not to carry the payload.
+        """
+        if value is None:
+            return None
+        text = " ".join(self.text(value).split())
+        if len(text) > _MAX_VALUE_CHARS:
+            return text[: _MAX_VALUE_CHARS - 3].rstrip() + "..."
+        return text
 
     @staticmethod
     def _header_damaged(node: Node) -> bool:
@@ -771,7 +855,11 @@ class _PythonExtractor:
     def _build_calls(
         self, call_matches: Sequence[dict[str, list[Node]]], symbols: Sequence[SymbolDef]
     ) -> list[CallSite]:
-        starts = [s.start_byte for s in symbols]
+        # Only definitions can own a call: a call in `X = compute()` belongs to
+        # the module, not to `X`, so variables and attributes stay out of the
+        # enclosing-symbol search.
+        owners = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+        starts = [s.start_byte for s in owners]
         calls: list[CallSite] = []
 
         for caps in call_matches:
@@ -793,7 +881,7 @@ class _PythonExtractor:
                     raw_name=raw_name,
                     root=root,
                     attr_path=attr_path,
-                    caller_id=self._enclosing_symbol(site.start_byte, symbols, starts),
+                    caller_id=self._enclosing_symbol(site.start_byte, owners, starts),
                     line=site.start_point.row + 1,
                     start_byte=site.start_byte,
                     end_byte=site.end_byte,
