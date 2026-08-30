@@ -33,12 +33,22 @@
   function: [(identifier) (attribute)] @call.callee) @call.site
 
 ;; --------------------------------------------------------------------------
-;; Assignments -- module-level constants and class attributes.
+;; Assignments -- module-level constants, class attributes, instance attributes.
 ;; `X = 1`, `X: int = 1` and the bare `X: int` all parse as an `assignment`
 ;; with an identifier on the left, so one pattern covers the three.  Tuple
-;; targets, subscripts and `self.x = ...` have a different left-hand shape and
-;; are deliberately left out.  The parser drops whatever turns out to sit
-;; inside a function body -- locals are not symbols.
+;; targets and subscripts have a different left-hand shape and are deliberately
+;; left out.  The parser drops whatever turns out to sit inside a function body
+;; -- locals are not symbols.
 ;; --------------------------------------------------------------------------
 (assignment
   left: (identifier) @assign.name) @assign.site
+
+;; `self.x = ...` inside a method.  Requiring a plain identifier as the object
+;; keeps deeper chains such as `self.a.b = ...` out -- only a one-level
+;; attribute is a name worth indexing.  The receiver is captured rather than
+;; matched here so the parser can check it is `self`/`cls` (`other.x = ...` is
+;; someone else's business) and hang the symbol off the owning class.
+(assignment
+  left: (attribute
+          object: (identifier) @assign.receiver
+          attribute: (identifier) @assign.name)) @assign.site

@@ -83,7 +83,7 @@ def test_class_body_assignments_become_attributes(symbol):
     assert symbol("src.models.User.name").signature == "name: str"  # bare annotation
 
 
-def test_locals_and_instance_attributes_are_not_symbols(analyse):
+def test_locals_are_not_symbols_but_instance_attributes_are(analyse):
     _, files, _ = analyse(
         {
             "m.py": """
@@ -98,9 +98,76 @@ def test_locals_and_instance_attributes_are_not_symbols(analyse):
             """
         }
     )
+    symbols = {s.symbol_id: s for f in files for s in f.symbols}
+    assert {"m.TOP", "m.C.shared", "m.C.instance"} <= set(symbols)
+    assert not {"m.C.__init__.local", "m.C.__init__.instance"} & set(symbols)
+
+    instance = symbols["m.C.instance"]
+    assert instance.kind == "attribute"
+    assert instance.name == "instance"
+    assert instance.parent == "m.C", "the class owns it, not the method that assigns it"
+    assert instance.signature == "self.instance = 3"
+
+
+def test_instance_attributes_carry_annotations_and_nest_with_their_class(analyse):
+    _, files, _ = analyse(
+        {
+            "m.py": """
+            class Outer:
+                class Inner:
+                    def setup(self):
+                        self.depth: int = 1
+
+                    @classmethod
+                    def build(cls):
+                        cls.registry = {}
+            """
+        }
+    )
+    symbols = {s.symbol_id: s for f in files for s in f.symbols}
+    assert symbols["m.Outer.Inner.depth"].signature == "self.depth: int = 1"
+    assert symbols["m.Outer.Inner.registry"].signature == "cls.registry = {}"
+    assert symbols["m.Outer.Inner.registry"].parent == "m.Outer.Inner"
+
+
+def test_first_assignment_wins_for_a_repeated_attribute(analyse):
+    _, files, _ = analyse(
+        {
+            "m.py": """
+            class C:
+                role = "guest"
+
+                def __init__(self):
+                    self.role = "admin"
+                    self.count = 0
+
+                def reset(self):
+                    self.count = -1
+            """
+        }
+    )
+    symbols = [s for f in files for s in f.symbols if s.name in ("role", "count")]
+    assert [s.signature for s in symbols] == ['role = "guest"', "self.count = 0"]
+
+
+def test_only_self_receivers_in_methods_become_attributes(analyse):
+    _, files, _ = analyse(
+        {
+            "m.py": """
+            def helper(self):
+                self.cache = 1
+
+            class C:
+                def run(self, other):
+                    other.field = 1
+                    self.state.nested = 1
+                    self.kept = 1
+            """
+        }
+    )
     ids = {s.symbol_id for f in files for s in f.symbols}
-    assert {"m.TOP", "m.C.shared"} <= ids
-    assert not {"m.C.__init__.local", "m.C.instance", "m.C.__init__.instance"} & ids
+    assert "m.C.kept" in ids
+    assert not {"m.cache", "m.helper.cache", "m.C.field", "m.C.nested"} & ids
 
 
 def test_only_plain_name_targets_are_captured(analyse):

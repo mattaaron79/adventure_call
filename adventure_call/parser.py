@@ -100,6 +100,8 @@ _BINARY_SNIFF_BYTES = 8192
 
 #: Node types that introduce a new named scope in Python.
 _DEF_NODE_TYPES = frozenset({"function_definition", "class_definition"})
+# Receivers an assignment target may name to mean "the instance this method is on".
+_SELF_NAMES = frozenset({"self", "cls"})
 # Kinds that own a body and can therefore enclose a call site.
 _CALLABLE_KINDS = frozenset({"function", "method", "class"})
 _MAX_VALUE_CHARS = 80  # assignment right-hand sides are summarised, not stored
@@ -447,6 +449,11 @@ class _PythonExtractor:
                     node.start_point.row + 1,
                 )
 
+        # An instance attribute may be assigned in several methods, and may
+        # collide with a class-body attribute of the same name.  All of those
+        # describe one member, so the first binding in source order wins --
+        # the same rule ``resolver._build_indexes`` applies across files.
+        taken = {symbol.symbol_id for symbol in symbols}
         for node, caps in sorted(assign_matches, key=lambda item: item[0].start_byte):
             try:
                 symbol = self._build_assignment(node, caps)
@@ -457,8 +464,10 @@ class _PythonExtractor:
                     node.start_point.row + 1,
                 )
                 continue
-            if symbol is not None:
-                symbols.append(symbol)
+            if symbol is None or symbol.symbol_id in taken:
+                continue
+            taken.add(symbol.symbol_id)
+            symbols.append(symbol)
 
         symbols.sort(key=lambda s: (s.start_byte, -s.end_byte))
         return symbols
@@ -523,27 +532,39 @@ class _PythonExtractor:
     ) -> SymbolDef | None:
         """Turn a name-binding assignment into a variable or attribute symbol.
 
-        Only two scopes produce a symbol: the module top level (``variable``)
-        and a class body (``attribute``).  Anything assigned inside a function
-        is a local -- invisible from outside, so not part of the graph.
+        Three scopes produce a symbol: the module top level (``variable``), a
+        class body (``attribute``) and ``self.x = ...`` inside a method, which
+        is an ``attribute`` on the class rather than on the method that happens
+        to assign it.  A plain local is invisible from outside, so not a symbol.
         """
-        enclosing = self._nearest_def(node)
-        if enclosing is not None and enclosing.type == "function_definition":
-            return None
-        kind = "attribute" if enclosing is not None else "variable"
-
+        receiver_nodes = caps.get("assign.receiver") or []
         name_nodes = caps.get("assign.name") or []
         if not name_nodes:  # pragma: no cover - the query always binds the name
             return None
         name = self.text(name_nodes[0])
 
-        qualifiers = self._enclosing_names(node)
+        if receiver_nodes:
+            qualifiers = self._instance_attribute_owner(node, receiver_nodes[0])
+            if qualifiers is None:
+                return None
+            # `self.` is kept in the signature: it is what the source says, and
+            # it separates an instance attribute from a class-body one without
+            # needing a second SymbolKind for it.
+            kind = "attribute"
+            display = f"{self.text(receiver_nodes[0])}.{name}"
+        else:
+            enclosing = self._nearest_def(node)
+            if enclosing is not None and enclosing.type == "function_definition":
+                return None
+            kind = "attribute" if enclosing is not None else "variable"
+            qualifiers, display = self._enclosing_names(node), name
+
         parent_id = ".".join(filter(None, [self.module, *qualifiers])) or None
         symbol_id = ".".join(filter(None, [self.module, *qualifiers, name]))
 
         annotation = self.text(node.child_by_field_name("type")) or None
         value = self._truncate_value(node.child_by_field_name("right"))
-        signature = name
+        signature = display
         if annotation:
             signature += f": {annotation}"
         if value is not None:
@@ -564,6 +585,32 @@ class _PythonExtractor:
             code=self.dedented_slice(node.start_byte, node.end_byte),
             stub=signature,
         )
+
+    def _instance_attribute_owner(self, node: Node, receiver: Node) -> list[str] | None:
+        """Qualifiers of the class owning ``self.x = ...``, or None if it is not one.
+
+        Two things have to hold: the receiver is spelled ``self``/``cls``, and
+        the assignment sits in a method body rather than straight in a class
+        body or in a free function that merely names a parameter ``self``.  The
+        symbol then hangs off the class -- ``mod.Class.x``, not
+        ``mod.Class.__init__.x`` -- because that is where a reader looks for it.
+        """
+        name = self.text(receiver)
+        if name not in _SELF_NAMES:
+            return None
+        nearest = self._nearest_def(node)
+        if nearest is None or nearest.type != "function_definition":
+            return None
+
+        owner = nearest
+        while owner is not None and owner.type != "class_definition":
+            owner = self._nearest_def(owner)
+        if owner is None:
+            return None
+
+        name_node = owner.child_by_field_name("name")
+        class_name = self.text(name_node) if name_node else "<anonymous>"
+        return [*self._enclosing_names(owner), class_name]
 
     def _truncate_value(self, value: Node | None) -> str | None:
         """One-line summary of an assignment's right-hand side.

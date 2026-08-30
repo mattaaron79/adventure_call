@@ -182,6 +182,25 @@ def test_variables_are_indexed_but_never_call_targets(index):
     assert kinds <= {"function", "method", "class"}
 
 
+def test_instance_attributes_are_indexed_but_never_call_targets(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": """
+            class C:
+                def __init__(self):
+                    self.handler = None
+
+                def run(self):
+                    return self.handler()
+            """
+        }
+    )
+    assert idx.symbols["m.C.handler"].kind == "attribute"
+    resolution = _edge(idx, "m.C.run", "self.handler")
+    assert resolution.callee_id is None
+    assert resolution.reason == "no member 'handler' on m.C"
+
+
 def test_calling_an_imported_constant_is_unresolved(analyse):
     _, _, idx = analyse(
         {
