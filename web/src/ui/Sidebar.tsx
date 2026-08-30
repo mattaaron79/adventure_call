@@ -21,9 +21,19 @@ interface Props {
   workspace: Workspace | null
   excludes: readonly string[]
   onExcludesChange: (next: string[]) => void
+  /** Whether the built-in noise patterns are being applied. */
+  noiseFilter: boolean
+  onNoiseFilterChange: (next: boolean) => void
 }
 
-export function Sidebar({ status, workspace, excludes, onExcludesChange }: Props) {
+export function Sidebar({
+  status,
+  workspace,
+  excludes,
+  onExcludesChange,
+  noiseFilter,
+  onNoiseFilterChange,
+}: Props) {
   return (
     <aside className="sidebar">
       <h1>Adventure Call</h1>
@@ -46,6 +56,15 @@ export function Sidebar({ status, workspace, excludes, onExcludesChange }: Props
       {status.phase === 'ready' && workspace && (
         <>
           <Stats graph={status.graph} workspace={workspace} />
+          <label className="noise-toggle">
+            <input
+              type="checkbox"
+              checked={noiseFilter}
+              onChange={(event) => onNoiseFilterChange(event.target.checked)}
+            />
+            Hide noise
+            <span className="noise-patterns">.pytest_tmp · scratch · __pycache__</span>
+          </label>
           <ExcludeEditor excludes={excludes} onChange={onExcludesChange} />
           <h2>Files</h2>
           <FileTree root={workspace.tree} />

@@ -14,8 +14,8 @@
  * re-renders this component and then bails out of its children instead of
  * rebuilding them.
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type Konva from 'konva'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import { relayout, selectOverrides, useWorkspace } from '../state/store'
@@ -37,6 +37,7 @@ const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-ser
 
 interface NodeHandlers {
   onPointerDown: (e: KonvaEventObject<PointerEvent>) => void
+  onPointerUp: (e: KonvaEventObject<PointerEvent>) => void
   onDragStart: (e: KonvaEventObject<DragEvent>) => void
   onDragMove: (e: KonvaEventObject<DragEvent>) => void
   onDragEnd: (e: KonvaEventObject<DragEvent>) => void
@@ -53,7 +54,7 @@ interface DragSession {
   start: Map<string, Point>
 }
 
-export function Workspace({ scene }: { scene: Scene }) {
+export function Workspace({ scene, onActivate }: { scene: Scene; onActivate?: (id: string) => void }) {
   const host = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
 
@@ -70,6 +71,10 @@ export function Workspace({ scene }: { scene: Scene }) {
 
   const konvaNodes = useRef(new Map<string, Konva.Group>())
   const drag = useRef<DragSession | null>(null)
+  /** Where the current press began, to tell a click from the start of a drag. */
+  const press = useRef<{ id: string; x: number; y: number } | null>(null)
+  const onActivateRef = useRef(onActivate)
+  onActivateRef.current = onActivate
 
   useEffect(() => {
     const el = host.current
@@ -131,6 +136,17 @@ export function Workspace({ scene }: { scene: Scene }) {
         // up; pressing inside an existing multi-selection keeps it intact.
         if (e.evt.shiftKey) store.toggleSelected(id)
         else if (!store.selection.has(id)) store.select([id])
+        press.current = { id, x: e.evt.clientX, y: e.evt.clientY }
+      },
+
+      onPointerUp(e) {
+        const down = press.current
+        press.current = null
+        if (!down || down.id !== e.currentTarget.id()) return
+        const dx = e.evt.clientX - down.x
+        const dy = e.evt.clientY - down.y
+        if (dx * dx + dy * dy > 25) return // dragged, not clicked
+        onActivateRef.current?.(down.id)
       },
 
       onDragStart(e) {
@@ -336,14 +352,37 @@ const NodeChip = memo(function NodeChip({
   const stroke = selected ? THEME.selected : hovered ? THEME.hovered : node.stroke
   const labelY = node.sublabel === undefined ? node.height / 2 - 7 : 8
 
+  // Position is owned imperatively, not through props: react-konva would
+  // teleport the node on re-render, while a Konva tween glides it there
+  // (~200ms) when a re-layout moves it -- expansion, collapse, relayout.
+  // Drags are untouched: Konva moves the node, and by the time the drag end
+  // writes the override the node is already at the new x/y, so no tween runs.
+  const groupRef = useRef<Konva.Group | null>(null)
+  const placed = useRef(false)
+  useLayoutEffect(() => {
+    const group = groupRef.current
+    if (!group) return
+    if (!placed.current) {
+      placed.current = true
+      group.position({ x, y })
+      return
+    }
+    if (group.isDragging() || (group.x() === x && group.y() === y)) return
+    const tween = new Konva.Tween({ node: group, x, y, duration: 0.2, easing: Konva.Easings.EaseOut })
+    tween.play()
+    return () => tween.destroy()
+  }, [x, y])
+
   return (
     <Group
       id={node.id}
-      x={x}
-      y={y}
       draggable={node.draggable !== false}
-      ref={(instance) => register(node.id, instance)}
+      ref={(instance) => {
+        groupRef.current = instance
+        register(node.id, instance)
+      }}
       onPointerDown={handlers.onPointerDown}
+      onPointerUp={handlers.onPointerUp}
       onDragStart={handlers.onDragStart}
       onDragMove={handlers.onDragMove}
       onDragEnd={handlers.onDragEnd}

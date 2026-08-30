@@ -91,9 +91,113 @@ html, body, #root {
   vertical-align: 1px;
 }
 
+.kind-module { background: var(--module); }
+.kind-class { background: var(--class); }
+.kind-function { background: var(--function); }
+.kind-method { background: var(--method); }
+.kind-variable { background: var(--variable); }
+.kind-attribute { background: var(--variable); }
+
 .stage-host {
   position: relative;
   overflow: hidden;
+}
+
+.noise-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.noise-toggle input { accent-color: var(--accent); }
+.noise-toggle .noise-patterns {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+}
+
+.inspector {
+  position: absolute;
+  right: 14px;
+  bottom: 52px;
+  width: 380px;
+  max-height: 46%;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.inspector-head strong { font-size: 13px; }
+.inspector-kind {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+.inspector-path {
+  margin: 2px 0 8px;
+  color: var(--text-faint);
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+.inspector-sig {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.inspector-doc {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+}
+.inspector h3 {
+  margin: 12px 0 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+.inspector-list {
+  margin: 0;
+  padding-left: 16px;
+}
+.inspector-list code {
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  color: var(--text);
+}
+.inspector-dim { color: var(--text-faint); }
+.inspector-source {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 .placeholder {
