@@ -120,7 +120,7 @@ export function Sidebar({
               title={
                 filterVisible
                   ? 'Canvas shows only matching files'
-                  : 'Canvas shows matching files too'
+                  : 'Canvas shows all files'
               }
               aria-pressed={filterVisible}
               aria-label="Filter the canvas by the file query"
