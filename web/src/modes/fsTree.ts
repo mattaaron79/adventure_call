@@ -10,24 +10,33 @@
  *
  * Forward compatibility is the point of the row design: every row is an
  * individually hit-testable element carrying its own symbol id, and its rect
- * is written into the returned `rects` map.  Import lines anchor to the file
- * while it is collapsed and to the specific contributing sub-item once it is
- * expanded, with no re-architecture.
+ * lands in the positioned output.  Import lines anchor to the file while it
+ * is collapsed and to the specific contributing sub-item once it is expanded,
+ * with no re-architecture.
  *
- * Everything here is a pure function of (workspace, expanded); React and
- * Konva stay outside.
+ * Since tic-83ec this mode is a `VizMode`: the four phases -- select, measure,
+ * layout, style -- are pure functions, and the app renders it only through
+ * `renderMode`.  Everything here is a pure function of its arguments; React
+ * and Konva stay outside.
  */
 import type { FsDir, FsFile, FsNode, Workspace } from '../data/derive'
-import type { GraphNode, SymbolKind } from '../data/types'
-import type { Scene, SceneEdge, SceneGroup, SceneNode } from '../canvas/scene'
+import type { SymbolKind } from '../data/types'
 import { KIND_COLOR, THEME } from '../canvas/theme'
-import {
-  elbowConnectors,
-  layoutTree,
-  subtreeGroups,
-  type Rect,
-  type Size,
-} from '../layout/tidyTree'
+import { elbowConnectors, layoutTree, subtreeGroups, type Size } from '../layout/tidyTree'
+import type {
+  GroupStyle,
+  EdgeStyle,
+  NodeStyle,
+  Positioned,
+  SceneSpec,
+  SizeMap,
+  SpecEdge,
+  SpecGroup,
+  SpecNode,
+  StyleMap,
+  UiState,
+  VizMode,
+} from './types'
 
 const DIR_CHIP = { width: 150, height: 36 }
 const FILE_CHIP = { width: 190, height: 40 }
@@ -47,10 +56,16 @@ const CHAR_W = 6.4
 const GROUP_FILL = 'rgba(30,30,46,0.55)'
 const TRANSPARENT = 'rgba(0,0,0,0)'
 
+/** Mode params; captured into presets and editable via the ModePicker. */
+export interface FsTreeParams {
+  /** Draw the file-to-file import lines. */
+  showImports: boolean
+}
+
 // -- rows ---------------------------------------------------------------------
 
 interface Row {
-  /** Unique element id; also the key into the layout's `rects` map. */
+  /** Unique element id; also the key into the layout's rect map. */
   id: string
   /** The symbol this row represents, or null for a section header. */
   symbolId: string | null
@@ -71,7 +86,7 @@ function sectionRow(path: string, title: string): Row {
   }
 }
 
-function memberRow(path: string, node: GraphNode, indent: boolean): Row {
+function memberRow(path: string, node: { id: string; kind: SymbolKind; name: string; signature: string }, indent: boolean): Row {
   return {
     id: rowId(path, node.id),
     symbolId: node.id,
@@ -174,207 +189,270 @@ export function layoutContainer(rows: Row[]): ContainerLayout {
   return { width, height: y - CONTAINER.rowGap + CONTAINER.pad, rows: placed }
 }
 
-// -- layout tree --------------------------------------------------------------
-
-interface Item {
-  id: string
-  children?: Item[]
-  type: 'dir' | 'file'
-  dir?: FsDir
-  file?: FsFile
-  size: Size
-  /** Present only on an expanded file. */
-  container?: ContainerLayout
-}
+// -- select -------------------------------------------------------------------
 
 const dirId = (path: string): string => `dir:${path}`
 
-function buildTree(workspace: Workspace, expanded: Readonly<Record<string, boolean>>): Item {
+/** Symbol ids each file imports, so an expanded importer can anchor its
+ *  import edges onto the matching rows instead of its chip. */
+function importedSymbolsByFile(workspace: Workspace): Map<string, Set<string>> {
+  const importedBy = new Map<string, Set<string>>()
+  for (const edge of workspace.fileImports) {
+    let set = importedBy.get(edge.source)
+    if (!set) importedBy.set(edge.source, (set = new Set()))
+    for (const symbolId of edge.symbolIds) set.add(symbolId)
+  }
+  return importedBy
+}
+
+function anchorId(
+  path: string,
+  symbolIds: readonly string[],
+  expanded: Readonly<Record<string, boolean>>,
+  importedBy: ReadonlyMap<string, Set<string>>,
+): string {
+  if (expanded[path] ?? false) {
+    const imported = importedBy.get(path)
+    if (imported) {
+      for (const symbolId of symbolIds) {
+        if (imported.has(symbolId)) return rowId(path, `imp:${symbolId}`)
+      }
+    }
+  }
+  return path
+}
+
+function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
+  const expanded = ui.expanded
+  const edges: SpecEdge[] = []
+  const groups: SpecGroup[] = []
+  const visibleFiles = new Set<string>()
+  const importedBy = importedSymbolsByFile(data)
+
   const dirOpen = (dir: FsDir): boolean => expanded[dirId(dir.path)] ?? true
   const fileOpen = (file: FsFile): boolean => expanded[file.path] ?? false
 
-  const visitFile = (file: FsFile): Item => {
-    if (!fileOpen(file)) return { id: file.path, type: 'file', file, size: { ...FILE_CHIP } }
-    const container = layoutContainer(fileRows(workspace, file))
-    return {
+  const visitFile = (file: FsFile): SpecNode => {
+    visibleFiles.add(file.path)
+    const symbols = data.index.byModule.get(file.module.id)?.length ?? 0
+    const node: SpecNode = {
       id: file.path,
-      type: 'file',
-      file,
-      size: { width: container.width, height: container.height },
-      container,
+      role: 'file',
+      label: file.name,
+      sublabel: `${symbols} symbol${symbols === 1 ? '' : 's'}`,
+      symbolId: null,
+      expandable: true,
+      children: [],
     }
+    if (fileOpen(file)) {
+      node.children = fileRows(data, file).map((row) => ({
+        id: row.id,
+        role: row.kind === 'section' ? 'section' : 'row',
+        label: row.label,
+        symbolId: row.symbolId,
+        expandable: false,
+        children: [],
+        data: row,
+      }))
+    }
+    return node
   }
 
-  const visit = (node: FsNode): Item =>
-    node.type === 'dir'
-      ? {
-          id: dirId(node.path),
-          type: 'dir',
-          dir: node,
-          size: { ...DIR_CHIP },
-          children: dirOpen(node) ? node.children.map(visit) : undefined,
-        }
-      : visitFile(node)
-
-  return visit(workspace.tree)
-}
-
-// -- scene assembly -----------------------------------------------------------
-
-export interface FsTreeLayout {
-  scene: Scene
-  /**
-   * World rect of every element the mode emitted: directory chips, file
-   * chips and containers, and -- when a file is expanded -- every row inside
-   * it.  The next phase's import/call lines anchor through this map.
-   */
-  rects: ReadonlyMap<string, Rect>
-  /** Row id -> the symbol id the row represents (rows only). */
-  symbolOfRow: ReadonlyMap<string, string>
-  /** Ids whose activation toggles expand/collapse: directories and files. */
-  expandable: ReadonlySet<string>
-}
-
-export function fsTreeScene(
-  workspace: Workspace,
-  expanded: Readonly<Record<string, boolean>> = {},
-): FsTreeLayout {
-  const tree = buildTree(workspace, expanded)
-  const rects = layoutTree(tree, (item) => item.size)
-
-  const nodes: SceneNode[] = []
-  const files = new Map<string, Item>()
-  const symbolOfRow = new Map<string, string>()
-  const expandable = new Set<string>()
-
-  const visit = (item: Item): void => {
-    const at = rects.get(item.id)!
-    expandable.add(item.id)
-
-    if (item.type === 'dir' && item.dir) {
-      nodes.push({
-        ...at,
-        id: item.id,
-        label: item.dir.path === '' ? '/' : item.dir.name,
-        sublabel: `${item.dir.fileCount} file${item.dir.fileCount === 1 ? '' : 's'}`,
-        fill: THEME.surface,
-        stroke: THEME.line,
-        accent: THEME.dir,
+  const visit = (node: FsNode): SpecNode => {
+    if (node.type === 'file') return visitFile(node)
+    const open = dirOpen(node)
+    const children = open ? node.children.map(visit) : []
+    if (open && children.length > 0) {
+      groups.push({ id: `${dirId(node.path)}:group`, label: node.path === '' ? '/' : node.path })
+    }
+    for (const child of children) {
+      edges.push({
+        id: `${dirId(node.path)}->${child.id}`,
+        from: dirId(node.path),
+        to: child.id,
+        kind: 'nesting',
       })
-    } else if (item.file) {
-      files.set(item.file.path, item)
-      if (item.container) {
-        const symbols = workspace.index.byModule.get(item.file.module.id)?.length ?? 0
-        nodes.push({
-          ...at,
-          id: item.id,
-          label: item.file.name,
-          sublabel: `${symbols} symbol${symbols === 1 ? '' : 's'}`,
-          fill: THEME.surface2,
-          stroke: THEME.line,
-          accent: KIND_COLOR.module,
-          // An expanded container drags its rows nowhere; collapse first.
-          draggable: false,
-        })
-        for (const placed of item.container.rows) {
-          const rect: Rect = {
-            x: at.x + placed.x,
-            y: at.y + placed.y,
-            width: placed.width,
-            height: placed.height,
-          }
-          rects.set(placed.row.id, rect)
-          if (placed.row.symbolId !== null) symbolOfRow.set(placed.row.id, placed.row.symbolId)
-          nodes.push(
-            placed.row.kind === 'section'
-              ? {
-                  ...rect,
-                  id: placed.row.id,
-                  label: placed.row.label.toUpperCase(),
-                  fill: TRANSPARENT,
-                  stroke: TRANSPARENT,
-                  draggable: false,
-                }
-              : {
-                  ...rect,
-                  id: placed.row.id,
-                  label: placed.row.label,
-                  fill: THEME.surface2,
-                  stroke: THEME.line,
-                  accent: KIND_COLOR[placed.row.kind],
-                  draggable: false,
-                },
-          )
-        }
-      } else if (item.file) {
-        const symbols = workspace.index.byModule.get(item.file.module.id)?.length ?? 0
-        nodes.push({
-          ...at,
-          id: item.id,
-          label: item.file.name,
-          sublabel: `${symbols} symbol${symbols === 1 ? '' : 's'}`,
-          fill: THEME.surface,
-          stroke: THEME.line,
-          accent: KIND_COLOR.module,
-        })
-      }
     }
-    for (const child of item.children ?? []) visit(child)
-  }
-  visit(tree)
-
-  // One translucent box behind each expanded directory's subtree.
-  const groups: SceneGroup[] = subtreeGroups(tree, rects).map((group) => {
-    const path = group.id.slice('dir:'.length, -':group'.length)
     return {
-      id: group.id,
-      ...group.rect,
-      label: path === '' ? '/' : path,
-      fill: GROUP_FILL,
-      stroke: THEME.line,
+      id: dirId(node.path),
+      role: 'dir',
+      label: node.path === '' ? '/' : node.name,
+      sublabel: `${node.fileCount} file${node.fileCount === 1 ? '' : 's'}`,
+      symbolId: null,
+      expandable: true,
+      children,
     }
+  }
+
+  const root = visit(data.tree)
+
+  if (params.showImports) {
+    for (const edge of data.fileImports) {
+      if (!visibleFiles.has(edge.source) || !visibleFiles.has(edge.target)) continue
+      edges.push({
+        id: `imp:${edge.source}->${edge.target}`,
+        from: anchorId(edge.source, edge.symbolIds, expanded, importedBy),
+        to: anchorId(edge.target, edge.symbolIds, expanded, importedBy),
+        kind: 'import',
+      })
+    }
+  }
+
+  return { root, groups, edges }
+}
+
+// -- measure ------------------------------------------------------------------
+
+const rowsOf = (node: SpecNode): Row[] => node.children.map((child) => child.data as Row)
+
+function measure(spec: SceneSpec, _ui: UiState): SizeMap {
+  const sizes = new Map<string, Size>()
+  const visit = (node: SpecNode): void => {
+    if (node.role === 'dir') {
+      sizes.set(node.id, { ...DIR_CHIP })
+    } else if (node.role === 'file') {
+      if (node.children.length > 0) {
+        const container = layoutContainer(rowsOf(node))
+        sizes.set(node.id, { width: container.width, height: container.height })
+      } else {
+        sizes.set(node.id, { ...FILE_CHIP })
+      }
+    } else {
+      // Rows are placed inside their container by `layout`, not by the tree.
+      sizes.set(node.id, { width: 0, height: CONTAINER.row })
+    }
+    for (const child of node.children) visit(child)
+  }
+  visit(spec.root)
+  return sizes
+}
+
+// -- layout -------------------------------------------------------------------
+
+/** Only directories and files participate in the tidy tree; rows hang off
+ *  their container's rect instead. */
+const isTreeNode = (node: SpecNode): boolean => node.role === 'dir' || node.role === 'file'
+
+const treeChildrenOf = (node: SpecNode): readonly SpecNode[] => node.children.filter(isTreeNode)
+
+function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positioned {
+  const rects = layoutTree(spec.root, (node) => sizes.get(node.id) ?? { width: 0, height: 0 }, {
+    childrenOf: treeChildrenOf,
   })
 
-  // Nesting lines: directory chip -> each child, elbow-routed.
-  const edges: SceneEdge[] = elbowConnectors(tree, rects, { orientation: 'lr' }).map((edge) => ({
-    id: edge.id,
-    points: edge.points,
-    stroke: THEME.edge,
-    strokeWidth: 1,
-    opacity: 0.6,
-  }))
-
-  // Import lines: file -> file while collapsed, row -> row once the
-  // contributing sub-items are visible.
-  const anchor = (path: string, symbolIds: readonly string[]): Rect | null => {
-    const item = files.get(path)
-    if (!item) return null
-    if (item.container) {
-      for (const symbolId of symbolIds) {
-        const row = rects.get(rowId(path, `imp:${symbolId}`))
-        if (row) return row
+  // Rows inside their containers, offset from the container's world rect.
+  const visit = (node: SpecNode): void => {
+    const at = rects.get(node.id)
+    if (node.role === 'file' && node.children.length > 0 && at) {
+      for (const placed of layoutContainer(rowsOf(node)).rows) {
+        rects.set(placed.row.id, {
+          x: at.x + placed.x,
+          y: at.y + placed.y,
+          width: placed.width,
+          height: placed.height,
+        })
       }
     }
-    return rects.get(item.id) ?? null
+    for (const child of node.children) visit(child)
   }
-  for (const edge of workspace.fileImports) {
-    const from = anchor(edge.source, edge.symbolIds)
-    const to = anchor(edge.target, edge.symbolIds)
-    if (!from || !to) continue
-    edges.push({
-      id: `imp:${edge.source}->${edge.target}`,
-      points: [
-        from.x + from.width / 2,
-        from.y + from.height / 2,
-        to.x + to.width / 2,
-        to.y + to.height / 2,
-      ],
-      stroke: THEME.edge,
-      strokeWidth: 1,
-      opacity: 0.45,
-    })
+  visit(spec.root)
+
+  // One translucent box behind each expanded directory's subtree; the ids
+  // match the groups `select` emitted (`${dirId}:group`).
+  for (const group of subtreeGroups(spec.root, rects, { childrenOf: treeChildrenOf })) {
+    rects.set(group.id, group.rect)
   }
 
-  return { scene: { groups, edges, nodes }, rects, symbolOfRow, expandable }
+  const edgePoints = new Map<string, readonly number[]>()
+
+  // Nesting lines: directory chip -> each child, elbow-routed.  The connector
+  // ids are `${parent}->${child}`, exactly the nesting edge ids from select.
+  for (const edge of elbowConnectors(spec.root, rects, { childrenOf: treeChildrenOf })) {
+    edgePoints.set(edge.id, edge.points)
+  }
+
+  // Import lines: centre of the anchor element on each side -- the file chip
+  // while collapsed, the contributing import row once expanded.
+  for (const edge of spec.edges) {
+    if (edge.kind !== 'import') continue
+    const from = rects.get(edge.from)
+    const to = rects.get(edge.to)
+    if (!from || !to) continue
+    const points: number[] = [
+      from.x + from.width / 2,
+      from.y + from.height / 2,
+      to.x + to.width / 2,
+      to.y + to.height / 2,
+    ]
+    edgePoints.set(edge.id, points)
+  }
+
+  return { rects, edgePoints }
 }
 
+// -- style --------------------------------------------------------------------
+
+function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
+  const nodes = new Map<string, NodeStyle>()
+  const visit = (node: SpecNode): void => {
+    if (node.role === 'dir') {
+      nodes.set(node.id, { fill: THEME.surface, stroke: THEME.line, accent: THEME.dir })
+    } else if (node.role === 'file') {
+      // An expanded container drags its rows nowhere; collapse first.
+      nodes.set(
+        node.id,
+        node.children.length > 0
+          ? { fill: THEME.surface2, stroke: THEME.line, accent: KIND_COLOR.module, draggable: false }
+          : { fill: THEME.surface, stroke: THEME.line, accent: KIND_COLOR.module },
+      )
+    } else if (node.role === 'section') {
+      nodes.set(node.id, { fill: TRANSPARENT, stroke: TRANSPARENT, draggable: false })
+    } else {
+      const row = node.data as Row
+      nodes.set(node.id, {
+        fill: THEME.surface2,
+        stroke: THEME.line,
+        // Sections are handled by their role above, so the kind is a symbol.
+        accent: KIND_COLOR[row.kind as SymbolKind],
+        draggable: false,
+      })
+    }
+    for (const child of node.children) visit(child)
+  }
+  visit(spec.root)
+
+  const groups = new Map<string, GroupStyle>()
+  for (const group of spec.groups) {
+    groups.set(group.id, { fill: GROUP_FILL, stroke: THEME.line })
+  }
+
+  const edges = new Map<string, EdgeStyle>()
+  for (const edge of spec.edges) {
+    edges.set(
+      edge.id,
+      edge.kind === 'import'
+        ? { stroke: THEME.edge, strokeWidth: 1, opacity: 0.45 }
+        : { stroke: THEME.edge, strokeWidth: 1, opacity: 0.6 },
+    )
+  }
+
+  return { nodes, groups, edges }
+}
+
+// -- the mode -----------------------------------------------------------------
+
+/**
+ * The registered fs-tree mode.  Everything the app can do with it goes
+ * through this object; the row and container helpers above are exported only
+ * for the mode's own tests.
+ */
+export const fsTreeMode: VizMode<FsTreeParams> = {
+  id: 'fs-tree',
+  label: 'Files & symbols',
+  defaultParams: { showImports: true },
+  paramToggles: [{ key: 'showImports', label: 'Import lines' }],
+  select,
+  measure,
+  layout,
+  style,
+}

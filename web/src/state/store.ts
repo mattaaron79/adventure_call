@@ -25,8 +25,9 @@ import {
   type ModeState,
 } from './persist'
 
-/** The only mode that exists today; tic-83ec turns this into a registry. */
-export const DEFAULT_MODE_ID = 'fs-tree'
+import { DEFAULT_MODE_ID } from '../modes/registry'
+
+export { DEFAULT_MODE_ID }
 
 export interface WorkspaceState {
   modeId: string
@@ -39,6 +40,10 @@ export interface WorkspaceState {
   hovered: string | null
 
   setMode: (modeId: string) => void
+  /** Replace the active mode's params (a preset load, a picker toggle). */
+  setParams: (params: Record<string, unknown>) => void
+  /** Replace the active mode's expand state (a preset load). */
+  setExpanded: (expanded: Record<string, boolean>) => void
   setViewport: (viewport: Viewport) => void
   zoomAtPointer: (pointer: Point, factor: number) => void
   panBy: (dx: number, dy: number) => void
@@ -89,6 +94,16 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         }
       }),
 
+    setParams: (params) =>
+      patchMode((mode) =>
+        sameParams(mode.params, params) ? null : { ...mode, params: { ...params } },
+      ),
+
+    setExpanded: (expanded) =>
+      patchMode((mode) =>
+        sameParams(mode.expanded, expanded) ? null : { ...mode, expanded: { ...expanded } },
+      ),
+
     setViewport: (viewport) =>
       patchMode((mode) => ({ ...mode, viewport: { ...viewport, scale: clampScale(viewport.scale) } })),
 
@@ -137,6 +152,17 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
   }
 })
+
+/** Shallow equality for the flat JSON records params and expand state are. */
+function sameParams(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  const ka = Object.keys(a)
+  const kb = Object.keys(b)
+  if (ka.length !== kb.length) return false
+  return ka.every((key) => a[key] === b[key])
+}
 
 function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   if (a.size !== b.size) return false

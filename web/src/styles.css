@@ -367,3 +367,105 @@ html, body, #root {
   letter-spacing: 0;
   cursor: pointer;
 }
+
+/* Mode picker and presets (tic-83ec). */
+.mode-select {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mode-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.preset-save {
+  display: flex;
+  gap: 6px;
+}
+.preset-save input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.preset-save input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.preset-save button,
+.preset-export {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.preset-save button:hover:not(:disabled),
+.preset-export:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.preset-save button:disabled,
+.preset-export:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.preset-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.preset-list li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.preset-list .preset-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.preset-list button {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.preset-list button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.preset-empty {
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.preset-export {
+  margin-top: 8px;
+  width: 100%;
+}

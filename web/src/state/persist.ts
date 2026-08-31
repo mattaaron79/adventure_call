@@ -18,6 +18,11 @@ export interface ModeState {
   overrides: Record<string, Point>
   /** Node id -> expanded, for modes with expandable containers. */
   expanded: Record<string, boolean>
+  /**
+   * The active mode's params (tic-83ec), as a JSON-safe record.  Opaque here:
+   * the mode's `defaultParams` fill any key this record leaves out.
+   */
+  params: Record<string, unknown>
 }
 
 export const STORAGE_PREFIX = 'adventure-call:workspace:'
@@ -25,7 +30,7 @@ export const STORAGE_PREFIX = 'adventure-call:workspace:'
 export const storageKey = (modeId: string) => `${STORAGE_PREFIX}${modeId}`
 
 export function emptyModeState(): ModeState {
-  return { viewport: { ...DEFAULT_VIEWPORT }, overrides: {}, expanded: {} }
+  return { viewport: { ...DEFAULT_VIEWPORT }, overrides: {}, expanded: {}, params: {} }
 }
 
 function storage(): Storage | null {
@@ -65,6 +70,18 @@ function parseFlags(raw: unknown): Record<string, boolean> {
   return out
 }
 
+/** Keep the JSON-safe scalar params; anything else never came from us. */
+function parseParams(raw: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+      out[key] = value
+    }
+  }
+  return out
+}
+
 /** The saved state for a mode, or null when there is nothing usable stored. */
 export function readModeState(modeId: string): ModeState | null {
   let raw: string | null | undefined
@@ -82,6 +99,7 @@ export function readModeState(modeId: string): ModeState | null {
       viewport: parseViewport(record.viewport),
       overrides: parsePoints(record.overrides),
       expanded: parseFlags(record.expanded),
+      params: parseParams(record.params),
     }
   } catch {
     return null

@@ -22,6 +22,7 @@ const STATE = {
   viewport: { x: -120.5, y: 40, scale: 1.75 },
   overrides: { 'src/a.py': { x: 10, y: 20 } },
   expanded: { 'src/a.py': true },
+  params: { showImports: false },
 }
 
 describe('mode state', () => {
@@ -61,7 +62,21 @@ describe('mode state', () => {
       viewport: emptyModeState().viewport,
       overrides: { good: { x: 1, y: 2 } },
       expanded: { yes: true },
+      params: {},
     })
+  })
+
+  it('keeps only JSON-safe scalar params', () => {
+    localStorage.setItem(
+      storageKey('fs-tree'),
+      JSON.stringify({
+        viewport: { x: 0, y: 0, scale: 1 },
+        overrides: {},
+        expanded: {},
+        params: { good: true, bad: { nested: 1 }, worse: [1, 2] },
+      }),
+    )
+    expect(readModeState('fs-tree')?.params).toEqual({ good: true })
   })
 
   it('clamps a stored scale into the usable range', () => {

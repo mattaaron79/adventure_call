@@ -2,6 +2,7 @@ import type { Workspace } from '../data/derive'
 import type { CodebaseGraph, SymbolKind } from '../data/types'
 import { ExcludeEditor } from './ExcludeEditor'
 import { FileTree } from './FileTree'
+import { ModePicker } from './ModePicker'
 
 const KIND_COLOR: Record<SymbolKind, string> = {
   module: 'var(--module)',
@@ -24,6 +25,10 @@ interface Props {
   /** Whether the built-in noise patterns are being applied. */
   noiseFilter: boolean
   onNoiseFilterChange: (next: boolean) => void
+  /** The effective exclude list, captured into a preset on save. */
+  effectiveFilters: readonly string[]
+  /** Applies a preset's filters; the exclude state lives in App. */
+  onApplyPresetFilters: (filters: string[]) => void
 }
 
 export function Sidebar({
@@ -33,6 +38,8 @@ export function Sidebar({
   onExcludesChange,
   noiseFilter,
   onNoiseFilterChange,
+  effectiveFilters,
+  onApplyPresetFilters,
 }: Props) {
   return (
     <aside className="sidebar">
@@ -52,6 +59,8 @@ export function Sidebar({
           Run <code>uv run adventure-call &lt;path&gt; -o out</code> to generate it.
         </p>
       )}
+
+      <ModePicker filters={effectiveFilters} onApplyFilters={onApplyPresetFilters} />
 
       {status.phase === 'ready' && workspace && (
         <>

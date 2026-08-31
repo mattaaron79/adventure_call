@@ -8,7 +8,7 @@ import { storageKey } from './persist'
  * of the imports below.
  */
 const SAVED = vi.hoisted(() => {
-  const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {} }
+  const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {}, params: {} }
   const map = new Map<string, string>([
     ['adventure-call:workspace:fs-tree', JSON.stringify(saved)],
   ])
@@ -27,8 +27,10 @@ const SAVED = vi.hoisted(() => {
 
 const {
   DEFAULT_MODE_ID,
+  activeMode,
   flushWorkspaceState,
   relayout,
+  selectExpanded,
   selectOverrides,
   selectViewport,
   useWorkspace,
@@ -134,6 +136,30 @@ describe('persistence', () => {
     const stored = JSON.parse(localStorage.getItem(storageKey(DEFAULT_MODE_ID))!)
     expect(stored.viewport).toEqual({ x: -260, y: 120, scale: 2 })
     expect(stored.overrides).toEqual(SAVED.overrides)
+  })
+})
+
+describe('mode params and expand state', () => {
+  it('replaces params and expand state wholesale, as a preset load does', () => {
+    useWorkspace.getState().setParams({ showImports: false })
+    expect(activeMode(useWorkspace.getState()).params).toEqual({ showImports: false })
+
+    useWorkspace.getState().setExpanded({ 'a.py': true, 'b.py': false })
+    expect(selectExpanded(useWorkspace.getState())).toEqual({ 'a.py': true, 'b.py': false })
+  })
+
+  it('keeps each mode its own params and expand state', () => {
+    useWorkspace.getState().setParams({ showImports: false })
+    useWorkspace.getState().setMode('call-graph')
+    expect(activeMode(useWorkspace.getState()).params).toEqual({})
+
+    useWorkspace.getState().setMode(DEFAULT_MODE_ID)
+    expect(activeMode(useWorkspace.getState()).params).toEqual({ showImports: false })
+
+    // The mode switches above queued a write for 'call-graph'; settle it and
+    // drop the entry so later tests still see that mode as never-saved.
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey('call-graph'))
   })
 })
 

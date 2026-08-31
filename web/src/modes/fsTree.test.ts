@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { deriveWorkspace, type FsDir } from '../data/derive'
 import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind } from '../data/types'
-import { fsTreeScene, fileRows, layoutContainer } from './fsTree'
+import { fileRows, fsTreeMode, layoutContainer } from './fsTree'
+import { renderMode } from './types'
+
+/**
+ * Render the mode the way the app does: only through the VizMode interface.
+ */
+const render = (
+  expanded: Record<string, boolean> = {},
+  params = { ...fsTreeMode.defaultParams },
+) => renderMode(fsTreeMode, WORKSPACE, params, { expanded })
 
 /**
  * A miniature corpus with everything the mode has to render: a nested
@@ -107,8 +116,8 @@ function dir(root: FsDir, path: string): FsDir {
   return root
 }
 
-describe('fsTreeScene, everything collapsed', () => {
-  const layout = fsTreeScene(WORKSPACE)
+describe('fsTreeMode, everything collapsed', () => {
+  const layout = render()
   const { scene, rects, expandable } = layout
 
   it('emits one chip per directory and per file, no rows', () => {
@@ -123,8 +132,10 @@ describe('fsTreeScene, everything collapsed', () => {
     expect(scene.nodes.every((n) => !n.id.startsWith('row:'))).toBe(true)
   })
 
-  it('writes a rect for every chip and marks dirs and files expandable', () => {
-    expect(rects.size).toBe(scene.nodes.length)
+  it('writes a rect for every chip and group box, and marks dirs and files expandable', () => {
+    // The positioned output covers nodes plus the group boxes behind them.
+    expect(rects.size).toBe(scene.nodes.length + scene.groups.length)
+    for (const node of scene.nodes) expect(rects.has(node.id)).toBe(true)
     expect(expandable.has('dir:src/app')).toBe(true)
     expect(expandable.has('src/app/loop.py')).toBe(true)
   })
@@ -152,13 +163,13 @@ describe('fsTreeScene, everything collapsed', () => {
   })
 
   it('is deterministic', () => {
-    expect(fsTreeScene(WORKSPACE)).toEqual(layout)
+    expect(render()).toEqual(layout)
   })
 })
 
-describe('fsTreeScene, with an expanded file', () => {
-  const layout = fsTreeScene(WORKSPACE, { 'src/app/loop.py': true })
-  const { scene, rects, symbolOfRow } = layout
+describe('fsTreeMode, with an expanded file', () => {
+  const layout = render({ 'src/app/loop.py': true })
+  const { scene, rects, symbolOf } = layout
 
   it('renders the container plus header, sections and rows', () => {
     const ids = scene.nodes.map((n) => n.id)
@@ -176,9 +187,9 @@ describe('fsTreeScene, with an expanded file', () => {
   })
 
   it('carries a symbol id on every row and a rect for every row', () => {
-    expect(symbolOfRow.get('row:src/app/loop.py:app.loop.Agent.step')).toBe('app.loop.Agent.step')
-    expect(symbolOfRow.has('row:src/app/loop.py:section:Classes')).toBe(false)
-    for (const [id] of symbolOfRow) expect(rects.has(id)).toBe(true)
+    expect(symbolOf.get('row:src/app/loop.py:app.loop.Agent.step')).toBe('app.loop.Agent.step')
+    expect(symbolOf.has('row:src/app/loop.py:section:Classes')).toBe(false)
+    for (const [id] of symbolOf) expect(rects.has(id)).toBe(true)
   })
 
   it('keeps every row inside its container', () => {
@@ -211,14 +222,23 @@ describe('fsTreeScene, with an expanded file', () => {
   })
 })
 
-describe('fsTreeScene, with a collapsed directory', () => {
+describe('fsTreeMode, with a collapsed directory', () => {
   it('hides the subtree and its import lines', () => {
-    const layout = fsTreeScene(WORKSPACE, { 'dir:src/app': false })
+    const layout = render({ 'dir:src/app': false })
     const ids = layout.scene.nodes.map((n) => n.id)
     expect(ids).toContain('dir:src/app')
     expect(ids).not.toContain('src/app/loop.py')
     expect(ids).not.toContain('dir:src/app/cli')
     expect(layout.scene.edges.filter((e) => e.id.startsWith('imp:'))).toEqual([])
+  })
+})
+
+describe('fsTreeMode params', () => {
+  it('drops the import lines when showImports is off', () => {
+    const layout = render({}, { showImports: false })
+    expect(layout.scene.edges.filter((e) => e.id.startsWith('imp:'))).toEqual([])
+    // Everything else is untouched.
+    expect(layout.scene.nodes.map((n) => n.id)).toContain('src/app/loop.py')
   })
 })
 

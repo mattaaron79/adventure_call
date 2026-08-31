@@ -5,8 +5,9 @@ import { loadGraph, onDataChanged } from './data/load'
 import type { CodebaseGraph, GraphNode } from './data/types'
 import { Workspace } from './canvas/Workspace'
 import { EMPTY_SCENE } from './canvas/scene'
-import { fsTreeScene } from './modes/fsTree'
-import { selectExpanded, useWorkspace } from './state/store'
+import { modeById } from './modes/registry'
+import { renderMode } from './modes/types'
+import { activeMode, selectExpanded, useWorkspace } from './state/store'
 import { Inspector } from './ui/Inspector'
 import { Sidebar } from './ui/Sidebar'
 
@@ -62,10 +63,19 @@ export function App() {
     [graph, effectiveExcludes],
   )
 
+  // The active mode renders entirely through the VizMode interface: the app
+  // never touches a mode's internals, only the ModeOutput that comes back.
+  const modeId = useWorkspace((s) => s.modeId)
+  const savedParams = useWorkspace((s) => activeMode(s).params)
   const expanded = useWorkspace(selectExpanded)
+  const mode = modeById(modeId)
+  const params = useMemo(
+    () => ({ ...mode.defaultParams, ...savedParams }),
+    [mode, savedParams],
+  )
   const layout = useMemo(
-    () => (workspace ? fsTreeScene(workspace, expanded) : null),
-    [workspace, expanded],
+    () => (workspace ? renderMode(mode, workspace, params, { expanded }) : null),
+    [mode, params, workspace, expanded],
   )
   const scene = layout?.scene ?? EMPTY_SCENE
 
@@ -78,11 +88,18 @@ export function App() {
     [layout],
   )
 
+  // A preset's filters were captured as the effective list, so restoring them
+  // means: use them verbatim, with the noise toggle folded in (on).
+  const applyPresetFilters = useCallback((filters: string[]) => {
+    setExcludes(filters)
+    setNoiseFilter(true)
+  }, [])
+
   const selection = useWorkspace((s) => s.selection)
   const selectedNode = useMemo<GraphNode | null>(() => {
     if (!workspace || !layout) return null
     for (const id of selection) {
-      const symbolId = layout.symbolOfRow.get(id)
+      const symbolId = layout.symbolOf.get(id)
       if (symbolId !== undefined) return workspace.index.byId.get(symbolId) ?? null
       const direct = workspace.index.byId.get(id)
       if (direct) return direct
@@ -101,6 +118,8 @@ export function App() {
         onExcludesChange={changeExcludes}
         noiseFilter={noiseFilter}
         onNoiseFilterChange={setNoiseFilter}
+        effectiveFilters={effectiveExcludes}
+        onApplyPresetFilters={applyPresetFilters}
       />
       <div className="stage-host">
         <Workspace scene={scene} onActivate={onActivate} />
