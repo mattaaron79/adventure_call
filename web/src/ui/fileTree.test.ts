@@ -27,14 +27,18 @@ const TREE: FsDir = {
   ],
 }
 
+/** The predicate the sidebar builds from a parsed query: path substring. */
+const pathIncludes = (needle: string) => (file: FsFile) =>
+  file.path.toLowerCase().includes(needle.toLowerCase())
+
 describe('matchTree', () => {
-  it('returns the tree unchanged for a blank query', () => {
-    expect(matchTree(TREE, '')).toBe(TREE)
-    expect(matchTree(TREE, '   ')).toBe(TREE)
+  it('keeps every file when the predicate accepts everything', () => {
+    // The root fixture's count is stale on purpose; matchTree recomputes it.
+    expect(matchTree(TREE, () => true)).toEqual({ ...TREE, fileCount: 4 })
   })
 
-  it('keeps only files whose path matches, in their directories', () => {
-    const filtered = matchTree(TREE, 'loop')!
+  it('keeps only files the predicate accepts, in their directories', () => {
+    const filtered = matchTree(TREE, pathIncludes('loop'))!
     expect(filtered.children).toHaveLength(1)
     const src = filtered.children[0] as FsDir
     expect(src.path).toBe('src')
@@ -43,15 +47,17 @@ describe('matchTree', () => {
     expect(app.children.map((c) => c.path)).toEqual(['src/app/loop.py'])
   })
 
-  it('matches directories by name too, keeping their whole subtree', () => {
-    const filtered = matchTree(TREE, 'app')!
-    const src = filtered.children[0] as FsDir
-    const app = src.children[0] as FsDir
-    expect(app.children).toHaveLength(2)
+  it('hands each file to the predicate with its full path', () => {
+    const seen: string[] = []
+    matchTree(TREE, (file) => {
+      seen.push(file.path)
+      return false
+    })
+    expect(seen).toEqual(['src/app/loop.py', 'src/app/cli.py', 'src/readme.py', 'setup.py'])
   })
 
   it('rolls file counts up to the surviving directories', () => {
-    const filtered = matchTree(TREE, 'loop')!
+    const filtered = matchTree(TREE, pathIncludes('loop'))!
     const src = filtered.children[0] as FsDir
     const app = src.children[0] as FsDir
     expect(app.fileCount).toBe(1)
@@ -60,6 +66,6 @@ describe('matchTree', () => {
   })
 
   it('is null when nothing matches', () => {
-    expect(matchTree(TREE, 'nope')).toBeNull()
+    expect(matchTree(TREE, () => false)).toBeNull()
   })
 })

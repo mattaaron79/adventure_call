@@ -8,7 +8,7 @@ import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
 import { renderMode } from './modes/types'
-import { activeMode, selectExpanded, useWorkspace } from './state/store'
+import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
 import { Inspector } from './ui/Inspector'
 import { Sidebar } from './ui/Sidebar'
 
@@ -21,6 +21,9 @@ export function App() {
   const [status, setStatus] = useState<Status>({ phase: 'loading' })
   const [excludes, setExcludes] = useState<string[]>(readExcludes)
   const [noiseFilter, setNoiseFilter] = useState(true)
+  // The Filter Files query (tic-9098) lives here so it can reach both the
+  // sidebar tree and, through deriveWorkspace, the canvas.
+  const [fileQuery, setFileQuery] = useState('')
   const [reloadedAt, setReloadedAt] = useState<number | null>(null)
   // Guards against an in-flight fetch from a superseded reload overwriting a
   // newer one; /out can be rewritten twice in quick succession.
@@ -56,12 +59,16 @@ export function App() {
     [excludes, noiseFilter],
   )
 
-  // deriveWorkspace is itself memoised on (graph, excludes), so this only
-  // guards against handing Sidebar a new object when neither has changed.
+  // deriveWorkspace is itself memoised on (graph, excludes, query), so this
+  // only guards against handing Sidebar a new object when none has changed.
   const graph = status.phase === 'ready' ? status.graph : null
+  // The eye toggle (tic-9098): when on, the workspace is re-derived from what
+  // the query leaves visible, so the mode's select phase -- and therefore the
+  // canvas -- tracks the filter.  When off, the query prunes the sidebar only.
+  const filterVisible = useWorkspace(selectFilterVisible)
   const workspace = useMemo(
-    () => (graph ? deriveWorkspace(graph, effectiveExcludes) : null),
-    [graph, effectiveExcludes],
+    () => (graph ? deriveWorkspace(graph, effectiveExcludes, filterVisible ? fileQuery : '') : null),
+    [graph, effectiveExcludes, filterVisible, fileQuery],
   )
 
   // The active mode renders entirely through the VizMode interface: the app
@@ -124,6 +131,10 @@ export function App() {
         onNoiseFilterChange={setNoiseFilter}
         effectiveFilters={effectiveExcludes}
         onApplyPresetFilters={applyPresetFilters}
+        fileQuery={fileQuery}
+        onFileQueryChange={setFileQuery}
+        filterVisible={filterVisible}
+        onFilterVisibleChange={(next) => useWorkspace.getState().setFilterVisible(next)}
       />
       <div className="stage-host">
         <Workspace scene={scene} onActivate={onActivate} expandable={layout?.expandable} />

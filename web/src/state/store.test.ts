@@ -8,7 +8,7 @@ import { storageKey } from './persist'
  * of the imports below.
  */
 const SAVED = vi.hoisted(() => {
-  const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {}, params: {} }
+  const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {}, params: {}, filterVisible: false }
   const map = new Map<string, string>([
     ['adventure-call:workspace:fs-tree', JSON.stringify(saved)],
   ])
@@ -136,6 +136,35 @@ describe('persistence', () => {
     const stored = JSON.parse(localStorage.getItem(storageKey(DEFAULT_MODE_ID))!)
     expect(stored.viewport).toEqual({ x: -260, y: 120, scale: 2 })
     expect(stored.overrides).toEqual(SAVED.overrides)
+  })
+})
+
+describe('filter visibility toggle', () => {
+  it('toggles per mode and persists with the mode state', () => {
+    expect(activeMode(useWorkspace.getState()).filterVisible).toBe(false)
+
+    useWorkspace.getState().setFilterVisible(true)
+    expect(activeMode(useWorkspace.getState()).filterVisible).toBe(true)
+
+    flushWorkspaceState()
+    const stored = JSON.parse(localStorage.getItem(storageKey(DEFAULT_MODE_ID))!)
+    expect(stored.filterVisible).toBe(true)
+
+    useWorkspace.getState().setFilterVisible(false)
+    expect(activeMode(useWorkspace.getState()).filterVisible).toBe(false)
+  })
+
+  it('keeps each mode its own toggle', () => {
+    useWorkspace.getState().setFilterVisible(true)
+    useWorkspace.getState().setMode('call-graph')
+    expect(activeMode(useWorkspace.getState()).filterVisible).toBe(false)
+
+    useWorkspace.getState().setMode(DEFAULT_MODE_ID)
+    expect(activeMode(useWorkspace.getState()).filterVisible).toBe(true)
+
+    // Settle the writes queued by the mode switches above.
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey('call-graph'))
   })
 })
 

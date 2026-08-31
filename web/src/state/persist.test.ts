@@ -23,6 +23,7 @@ const STATE = {
   overrides: { 'src/a.py': { x: 10, y: 20 } },
   expanded: { 'src/a.py': true },
   params: { showImports: false },
+  filterVisible: true,
 }
 
 describe('mode state', () => {
@@ -63,7 +64,22 @@ describe('mode state', () => {
       overrides: { good: { x: 1, y: 2 } },
       expanded: { yes: true },
       params: {},
+      filterVisible: false,
     })
+  })
+
+  it('defaults filterVisible to false when absent or junk', () => {
+    localStorage.setItem(
+      storageKey('fs-tree'),
+      JSON.stringify({ viewport: { x: 0, y: 0, scale: 1 }, overrides: {}, expanded: {} }),
+    )
+    expect(readModeState('fs-tree')?.filterVisible).toBe(false)
+
+    localStorage.setItem(
+      storageKey('fs-tree'),
+      JSON.stringify({ filterVisible: 'yes' }),
+    )
+    expect(readModeState('fs-tree')?.filterVisible).toBe(false)
   })
 
   it('keeps only JSON-safe scalar params', () => {

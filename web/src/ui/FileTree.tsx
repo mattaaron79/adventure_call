@@ -1,21 +1,19 @@
 import { useState } from 'react'
-import type { FsDir, FsNode } from '../data/derive'
+import type { FsDir, FsFile, FsNode } from '../data/derive'
 
 /**
- * Subtree filtered to nodes whose path contains the query (case-insensitive
- * substring).  A directory survives when anything in its subtree matches, so
- * the result is still a tree; `null` means nothing did.  An empty query
- * returns the tree unchanged.
+ * Subtree pruned to the files `matches` accepts (tic-9098: the predicate is
+ * built by the query parser, so the matching logic lives there, not here).  A
+ * directory survives when anything in its subtree matches, so the result is
+ * still a tree; `null` means nothing did.
  */
-export function matchTree(root: FsDir, query: string): FsDir | null {
-  const q = query.trim().toLowerCase()
-  if (!q) return root
+export function matchTree(root: FsDir, matches: (file: FsFile) => boolean): FsDir | null {
   const visit = (dir: FsDir): FsDir | null => {
     const children: FsNode[] = []
     let fileCount = 0
     for (const child of dir.children) {
       if (child.type === 'file') {
-        if (child.path.toLowerCase().includes(q)) {
+        if (matches(child)) {
           children.push(child)
           fileCount += 1
         }

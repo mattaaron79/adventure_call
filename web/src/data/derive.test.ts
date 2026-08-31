@@ -272,4 +272,54 @@ describe('deriveWorkspace', () => {
     expect(deriveWorkspace(GRAPH, ['scratch/**'])).toBe(ws)
     expect(deriveWorkspace(GRAPH, [])).not.toBe(ws)
   })
+
+  it('keeps only the files the query matches, with their symbols (tic-9098)', () => {
+    // 'loop' is in both paths; 'errors' only in one.
+    const ws = deriveWorkspace(GRAPH, [], 'errors')
+    expect(ws.modules.map((m) => m.id)).toEqual(['app.errors'])
+    expect(ws.excludedFiles).toBe(MODULES.length - 1)
+    expect(ws.index.byId.has('app.errors.PluginError')).toBe(true)
+    expect(ws.index.byId.has('app.loop.run')).toBe(false)
+    expect([...walkFiles(ws.tree)].map((f) => f.path)).toEqual(['src/app/errors.py'])
+  })
+
+  it('matches an all-properties query through a symbol deep inside a file', () => {
+    // 'step' is a method of Agent in src/app/loop.py; it appears in no path.
+    const ws = deriveWorkspace(GRAPH, [], '>step')
+    expect(ws.modules.map((m) => m.id)).toEqual(['app.loop'])
+    expect(ws.index.byId.has('app.loop.Agent.step')).toBe(true)
+  })
+
+  it('does not widen a path-only query into symbol properties', () => {
+    expect(deriveWorkspace(GRAPH, [], 'step').modules).toHaveLength(0)
+  })
+
+  it('supports the regex forms', () => {
+    expect(deriveWorkspace(GRAPH, [], 'r:^src/app/\\w+\\.py$').modules.map((m) => m.id)).toEqual([
+      'app.loop',
+      'app.errors',
+    ])
+    expect(deriveWorkspace(GRAPH, [], '>r:^run$').modules.map((m) => m.id)).toEqual([
+      'app.loop',
+    ])
+  })
+
+  it('matches nothing for an invalid regex rather than throwing', () => {
+    const ws = deriveWorkspace(GRAPH, [], 'r:(')
+    expect(ws.modules).toHaveLength(0)
+    expect(ws.excludedFiles).toBe(MODULES.length)
+  })
+
+  it('applies the query after the excludes', () => {
+    const ws = deriveWorkspace(GRAPH, ['scratch/**'], 'spike')
+    expect(ws.modules).toHaveLength(0)
+    expect(ws.excludedFiles).toBe(MODULES.length)
+  })
+
+  it('memoises per (graph, excludes, query) triple', () => {
+    const ws = deriveWorkspace(GRAPH, [], 'loop')
+    expect(deriveWorkspace(GRAPH, [], 'loop')).toBe(ws)
+    expect(deriveWorkspace(GRAPH, [], 'errors')).not.toBe(ws)
+    expect(deriveWorkspace(GRAPH, [], '')).not.toBe(ws)
+  })
 })

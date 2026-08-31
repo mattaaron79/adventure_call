@@ -52,6 +52,8 @@ export interface WorkspaceState {
   moveNodes: (positions: Readonly<Record<string, Point>>) => void
   clearOverrides: () => void
   toggleExpanded: (id: string) => void
+  /** Whether the Filter Files query also drives the canvas (tic-9098). */
+  setFilterVisible: (visible: boolean) => void
 
   select: (ids: readonly string[], additive?: boolean) => void
   toggleSelected: (id: string) => void
@@ -130,6 +132,9 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     toggleExpanded: (id) =>
       patchMode((mode) => ({ ...mode, expanded: { ...mode.expanded, [id]: !mode.expanded[id] } })),
 
+    setFilterVisible: (visible) =>
+      patchMode((mode) => (mode.filterVisible === visible ? null : { ...mode, filterVisible: visible })),
+
     select: (ids, additive = false) =>
       set((state) => {
         const next = new Set(additive ? state.selection : undefined)
@@ -178,6 +183,7 @@ export const activeMode = (state: WorkspaceState): ModeState =>
 export const selectViewport = (state: WorkspaceState) => activeMode(state).viewport
 export const selectOverrides = (state: WorkspaceState) => activeMode(state).overrides
 export const selectExpanded = (state: WorkspaceState) => activeMode(state).expanded
+export const selectFilterVisible = (state: WorkspaceState) => activeMode(state).filterVisible
 
 /** Forget the drags for the active mode; the debounced writer persists it. */
 export function relayout(): void {

@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
-import type { Workspace } from '../data/derive'
+import { useMemo } from 'react'
+import type { FsFile, Workspace } from '../data/derive'
 import type { CodebaseGraph, SymbolKind } from '../data/types'
+import { fileFacts, matchFile, parseQuery } from '../data/query'
 import { ExcludeEditor } from './ExcludeEditor'
 import { FileTree, matchTree } from './FileTree'
 import { ModePicker } from './ModePicker'
@@ -30,6 +31,12 @@ interface Props {
   effectiveFilters: readonly string[]
   /** Applies a preset's filters; the exclude state lives in App. */
   onApplyPresetFilters: (filters: string[]) => void
+  /** The Filter Files query (tic-9098); lives in App so it can drive the canvas. */
+  fileQuery: string
+  onFileQueryChange: (next: string) => void
+  /** Whether the query also decides what the canvas shows. */
+  filterVisible: boolean
+  onFilterVisibleChange: (next: boolean) => void
 }
 
 export function Sidebar({
@@ -41,13 +48,26 @@ export function Sidebar({
   onNoiseFilterChange,
   effectiveFilters,
   onApplyPresetFilters,
+  fileQuery,
+  onFileQueryChange,
+  filterVisible,
+  onFilterVisibleChange,
 }: Props) {
-  // File filter; '/' from the canvas focuses this input (tic-fa56).
-  const [fileQuery, setFileQuery] = useState('')
+  // File filter; '/' from the canvas focuses this input (tic-fa56).  The
+  // query language (tic-9098) is parsed here for the tree and reported to App
+  // raw, so the canvas re-derivation goes through deriveWorkspace, not the UI.
+  const query = useMemo(() => parseQuery(fileQuery), [fileQuery])
+  const matches = useMemo(() => {
+    if (!workspace) return () => false
+    const index = workspace.index
+    return (file: FsFile) =>
+      matchFile(query, fileFacts(file.module, index.byModule.get(file.module.id) ?? []))
+  }, [workspace, query])
   const filteredTree = useMemo(
-    () => (workspace ? matchTree(workspace.tree, fileQuery) : null),
-    [workspace, fileQuery],
+    () => (workspace ? matchTree(workspace.tree, matches) : null),
+    [workspace, matches],
   )
+  const queryError = query.kind === 'error' ? query.message : null
 
   return (
     <aside className="sidebar">
@@ -84,14 +104,32 @@ export function Sidebar({
           </label>
           <ExcludeEditor excludes={excludes} onChange={onExcludesChange} />
           <h2>Files</h2>
-          <input
-            id="file-search"
-            className="file-search"
-            type="text"
-            placeholder="Filter files  ( / )"
-            value={fileQuery}
-            onChange={(event) => setFileQuery(event.target.value)}
-          />
+          <div className="file-search-row">
+            <input
+              id="file-search"
+              className={`file-search${queryError ? ' invalid' : ''}`}
+              type="text"
+              placeholder="Filter files  ( / )"
+              value={fileQuery}
+              aria-invalid={queryError !== null}
+              onChange={(event) => onFileQueryChange(event.target.value)}
+            />
+            <button
+              type="button"
+              className={`eye-toggle${filterVisible ? ' active' : ''}`}
+              title={
+                filterVisible
+                  ? 'Canvas shows only matching files'
+                  : 'Canvas shows matching files too'
+              }
+              aria-pressed={filterVisible}
+              aria-label="Filter the canvas by the file query"
+              onClick={() => onFilterVisibleChange(!filterVisible)}
+            >
+              👁
+            </button>
+          </div>
+          {queryError && <p className="query-error">{queryError}</p>}
           {filteredTree ? (
             <FileTree root={filteredTree} />
           ) : (

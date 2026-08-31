@@ -23,6 +23,11 @@ export interface ModeState {
    * the mode's `defaultParams` fill any key this record leaves out.
    */
   params: Record<string, unknown>
+  /**
+   * Whether the Filter Files query also drives what the canvas shows
+   * (tic-9098).  Default false: the query prunes the sidebar tree only.
+   */
+  filterVisible: boolean
 }
 
 export const STORAGE_PREFIX = 'adventure-call:workspace:'
@@ -30,7 +35,13 @@ export const STORAGE_PREFIX = 'adventure-call:workspace:'
 export const storageKey = (modeId: string) => `${STORAGE_PREFIX}${modeId}`
 
 export function emptyModeState(): ModeState {
-  return { viewport: { ...DEFAULT_VIEWPORT }, overrides: {}, expanded: {}, params: {} }
+  return {
+    viewport: { ...DEFAULT_VIEWPORT },
+    overrides: {},
+    expanded: {},
+    params: {},
+    filterVisible: false,
+  }
 }
 
 function storage(): Storage | null {
@@ -100,6 +111,7 @@ export function readModeState(modeId: string): ModeState | null {
       overrides: parsePoints(record.overrides),
       expanded: parseFlags(record.expanded),
       params: parseParams(record.params),
+      filterVisible: record.filterVisible === true,
     }
   } catch {
     return null

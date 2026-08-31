@@ -471,9 +471,14 @@ html, body, #root {
 }
 
 /* File filter (tic-fa56); '/' from the canvas focuses it. */
-.file-search {
-  width: 100%;
+.file-search-row {
+  display: flex;
+  gap: 4px;
   margin-bottom: 6px;
+}
+.file-search {
+  flex: 1;
+  min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -486,6 +491,37 @@ html, body, #root {
   outline: none;
   border-color: var(--accent);
 }
+.file-search.invalid {
+  border-color: #f38ba8;
+}
 .file-search::placeholder {
   color: var(--text-faint);
+}
+
+/* Eye toggle (tic-9098): canvas tracks the file query while active. */
+.eye-toggle {
+  flex: none;
+  width: 26px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.eye-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.eye-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(137, 180, 250, 0.12);
+}
+.query-error {
+  margin: -2px 0 6px;
+  color: #f38ba8;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
