@@ -336,6 +336,31 @@ describe('fsTreeMode, with a collapsed directory', () => {
     expect(ids).not.toContain('dir:src/app/cli')
     expect(layout.scene.edges.filter((e) => e.id.startsWith('imp:'))).toEqual([])
   })
+
+  it('marks a collapsed non-empty folder with a short ... stub (tic-3430)', () => {
+    const layout = render({ 'dir:src/app': false })
+    // The collapsed folder still shows a stub node and a stub edge, so it does
+    // not read as empty.
+    const stub = layout.scene.nodes.find((n) => n.id === 'dir:src/app:stub')
+    expect(stub).toBeDefined()
+    expect(stub!.label).toBe('...')
+    expect(layout.scene.edges.some((e) => e.id === 'dir:src/app->stub')).toBe(true)
+    // The stub sits just to the right of the folder chip (its output side).
+    const dir = layout.rects.get('dir:src/app')!
+    const stubRect = layout.rects.get('dir:src/app:stub')!
+    expect(stubRect.x).toBeGreaterThan(dir.x + dir.width)
+    expect(Math.abs(stubRect.y - dir.y)).toBeLessThanOrEqual(dir.height)
+  })
+
+  it('draws stubs only on collapsed folders, never on open ones', () => {
+    // Open: every folder shows its children, so no stub is needed.
+    const open = render()
+    expect(open.scene.nodes.some((n) => n.id.endsWith(':stub'))).toBe(false)
+    // Collapsed src/app: its stub appears; the open root and cli do not.
+    const collapsed = render({ 'dir:src/app': false })
+    const stubs = collapsed.scene.nodes.filter((n) => n.id.endsWith(':stub'))
+    expect(stubs.map((n) => n.id)).toEqual(['dir:src/app:stub'])
+  })
 })
 
 describe('fsTreeMode params', () => {

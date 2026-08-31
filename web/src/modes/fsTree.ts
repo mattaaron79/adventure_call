@@ -22,7 +22,7 @@
 import type { FsDir, FsFile, FsNode, Workspace } from '../data/derive'
 import type { SymbolKind } from '../data/types'
 import { KIND_COLOR, THEME } from '../canvas/theme'
-import { elbowConnectors, layoutTree, subtreeGroups, type Size } from '../layout/tidyTree'
+import { elbow, elbowConnectors, layoutTree, subtreeGroups, type Size } from '../layout/tidyTree'
 import type {
   GroupStyle,
   EdgeStyle,
@@ -218,6 +218,24 @@ export function layoutContainer(rows: Row[]): ContainerLayout {
 
 const dirId = (path: string): string => `dir:${path}`
 
+/** The collapsed-folder stub (tic-3430): a small '...' chip that a short elbow
+ *  line joins to a collapsed non-empty folder's output side, so the folder does
+ *  not read as empty.  Positioned manually in `layout` (it is not a tree node),
+ *  and drawn faint so the '...' is the point, not a box. */
+const STUB_SIZE: Size = { width: 26, height: 18 }
+
+/** The spec node for a collapsed folder's stub, keyed off its dir chip id. */
+function stubNode(dir: string): SpecNode {
+  return {
+    id: `${dir}:stub`,
+    role: 'stub',
+    label: '...',
+    symbolId: null,
+    expandable: false,
+    children: [],
+  }
+}
+
 /**
  * The directory the scene is scoped to (tic-e7d2): the `focusPath`'s FsDir
  * when set, else the workspace root.  When focused, that directory becomes
@@ -384,6 +402,13 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
     if (node.type === 'file') return visitFile(node)
     const open = dirOpen(node)
     const children = open ? node.children.map(visit) : []
+    // A collapsed folder that is not empty draws a short stub line with '...'
+    // coming out of its output side (tic-3430), so it does not read as empty.
+    // The stub is a child of the chip (so it rides along with it) but is not a
+    // tree node -- `treeChildrenOf` filters dir/file, so it is excluded from
+    // the tidy-tree layout and positioned manually in `layout`.
+    const stub = !open && node.children.length > 0 ? stubNode(dirId(node.path)) : null
+    const specChildren = stub ? [...children, stub] : children
     if (open && children.length > 0) {
       groups.push({
         id: `${dirId(node.path)}:group`,
@@ -400,6 +425,15 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
         route: 'elbow',
       })
     }
+    if (stub) {
+      edges.push({
+        id: `${dirId(node.path)}->stub`,
+        from: dirId(node.path),
+        to: stub.id,
+        kind: 'stub',
+        route: 'elbow',
+      })
+    }
     return {
       id: dirId(node.path),
       role: 'dir',
@@ -411,7 +445,7 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
       // scene into this path, so the canvas needs no knowledge of the id
       // scheme -- the target rides on the element.
       focusTo: node.path,
-      children,
+      children: specChildren,
     }
   }
 
@@ -452,6 +486,8 @@ function measure(spec: SceneSpec, _ui: UiState): SizeMap {
       } else {
         sizes.set(node.id, { ...FILE_CHIP })
       }
+    } else if (node.role === 'stub') {
+      sizes.set(node.id, { ...STUB_SIZE })
     } else {
       // Rows are placed inside their container by `layout`, not by the tree.
       sizes.set(node.id, { width: 0, height: CONTAINER.row })
@@ -475,7 +511,9 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
     childrenOf: treeChildrenOf,
   })
 
-  // Rows inside their containers, offset from the container's world rect.
+  // Rows inside their containers, offset from the container's world rect; a
+  // collapsed folder's stub sits just to the right of its chip (tic-3430),
+  // vertically centred, with a short elbow joining the two.
   const visit = (node: SpecNode): void => {
     const at = rects.get(node.id)
     if (node.role === 'file' && node.children.length > 0 && at) {
@@ -486,6 +524,20 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
           width: placed.width,
           height: placed.height,
         })
+      }
+    }
+    if (node.role === 'dir' && at) {
+      const stub = node.children.find((c) => c.role === 'stub')
+      if (stub) {
+        const size = sizes.get(stub.id)
+        if (size) {
+          rects.set(stub.id, {
+            x: at.x + at.width + 6,
+            y: at.y + (at.height - size.height) / 2,
+            width: size.width,
+            height: size.height,
+          })
+        }
       }
     }
     for (const child of node.children) visit(child)
@@ -504,6 +556,16 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
   // ids are `${parent}->${child}`, exactly the nesting edge ids from select.
   for (const edge of elbowConnectors(spec.root, rects, { childrenOf: treeChildrenOf })) {
     edgePoints.set(edge.id, edge.points)
+  }
+
+  // Stub lines (tic-3430): the stub is not a tree child, so elbowConnectors
+  // never routes it -- route it here from the collapsed chip to its '...'.
+  for (const edge of spec.edges) {
+    if (edge.kind !== 'stub') continue
+    const from = rects.get(edge.from)
+    const to = rects.get(edge.to)
+    if (!from || !to) continue
+    edgePoints.set(edge.id, elbow(from, to, 'lr'))
   }
 
   // Import lines: centre of the anchor element on each side -- the file chip
@@ -543,6 +605,10 @@ function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
       )
     } else if (node.role === 'section') {
       nodes.set(node.id, { fill: TRANSPARENT, stroke: TRANSPARENT, draggable: false })
+    } else if (node.role === 'stub') {
+      // The '...' reads as an extension of the collapsed folder (tic-3430):
+      // borderless and pinned, so it never drags as its own object.
+      nodes.set(node.id, { fill: TRANSPARENT, stroke: TRANSPARENT, draggable: false })
     } else {
       const row = node.data as Row
       // External imports read as muted against the resolved rows: a grey
@@ -576,7 +642,9 @@ function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
       edge.id,
       edge.kind === 'import'
         ? { stroke: THEME.edge, strokeWidth: 1, opacity: 0.45 }
-        : { stroke: THEME.edge, strokeWidth: 1, opacity: 0.6 },
+        : edge.kind === 'stub'
+          ? { stroke: THEME.textFaint, strokeWidth: 1, opacity: 0.6 }
+          : { stroke: THEME.edge, strokeWidth: 1, opacity: 0.6 },
     )
   }
 

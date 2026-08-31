@@ -55,6 +55,10 @@ import { centerOn, type Point, type Rect as WorldRect } from './viewport'
 
 const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif'
 
+/** Two clicks on the same node inside this window count as a double-click,
+ *  which is what expands/contracts a workspace object (tic-3430). */
+const DBLCLICK_MS = 350
+
 /** Nothing selected and nothing hovered: the highlight set stays this stable
  *  reference so the idle scene (and every pan/zoom frame) re-renders for free
  *  (tic-5393). */
@@ -165,6 +169,9 @@ export function Workspace({
   const groupShapes = useRef(new Map<string, GroupShapes>())
   /** Where the current press began, to tell a click from the start of a drag. */
   const press = useRef<{ id: string; x: number; y: number } | null>(null)
+  /** The previous single click, to recognise the double-click that expands or
+   *  contracts a workspace object (tic-3430). */
+  const lastClick = useRef<{ id: string; time: number } | null>(null)
   const onActivateRef = useRef(onActivate)
   onActivateRef.current = onActivate
   // Goto handlers run outside React's render, so they read the latest mode
@@ -382,7 +389,15 @@ export function Workspace({
         const dx = e.evt.clientX - down.x
         const dy = e.evt.clientY - down.y
         if (dx * dx + dy * dy > NODE_DRAG_THRESHOLD ** 2) return // dragged, not clicked
-        onActivateRef.current?.(down.id)
+        // Expanding/contracting a workspace object is a double-click (tic-3430);
+        // a single click only selects, which the pointer-down already did.
+        const now = performance.now()
+        const prev = lastClick.current
+        lastClick.current = { id: down.id, time: now }
+        if (prev && prev.id === down.id && now - prev.time <= DBLCLICK_MS) {
+          lastClick.current = null
+          onActivateRef.current?.(down.id)
+        }
       },
 
       onDragStart(e) {
