@@ -469,3 +469,23 @@ html, body, #root {
   margin-top: 8px;
   width: 100%;
 }
+
+/* File filter (tic-fa56); '/' from the canvas focuses it. */
+.file-search {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.file-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.file-search::placeholder {
+  color: var(--text-faint);
+}

@@ -8,7 +8,15 @@
  * them.  Ids are the currency of selection, hover, expansion and position
  * overrides, so they must be stable across a re-layout.
  */
-import { rectsIntersect, unionRects, type Point, type Rect } from './viewport'
+import {
+  rectsIntersect,
+  screenToWorld,
+  unionRects,
+  type Point,
+  type Rect,
+  type Size,
+  type Viewport,
+} from './viewport'
 
 export interface SceneNode extends Rect {
   id: string
@@ -84,4 +92,52 @@ export function nodesInRect(
     if (rectsIntersect(placedRect(node, overrides[node.id]), rect)) hits.push(node.id)
   }
   return hits
+}
+
+// -- viewport culling (tic-fa56) ----------------------------------------------
+
+/** World-space margin around the viewport, so items slide in already drawn
+ *  instead of popping into existence at the screen edge. */
+export const CULL_MARGIN = 200
+
+/** The world rect the screen shows, padded by `margin` on every side. */
+export function visibleWorldRect(viewport: Viewport, size: Size, margin = CULL_MARGIN): Rect {
+  const a = screenToWorld(viewport, { x: 0, y: 0 })
+  const b = screenToWorld(viewport, { x: size.width, y: size.height })
+  return {
+    x: Math.min(a.x, b.x) - margin,
+    y: Math.min(a.y, b.y) - margin,
+    width: Math.abs(b.x - a.x) + 2 * margin,
+    height: Math.abs(b.y - a.y) + 2 * margin,
+  }
+}
+
+function edgeBounds(points: readonly number[]): Rect {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    if (points[i] < minX) minX = points[i]
+    if (points[i] > maxX) maxX = points[i]
+    if (points[i + 1] < minY) minY = points[i + 1]
+    if (points[i + 1] > maxY) maxY = points[i + 1]
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+}
+
+/**
+ * The part of the scene that intersects the visible world rect.  Culling is a
+ * render-time filter over the already-computed scene, not a scene-level phase:
+ * it runs per pan frame, where filtering a few thousand rects is free but a
+ * re-layout would not be.  Selection, marquee and fit keep using the full
+ * scene, so off-screen items are still hit-testable in the model.
+ */
+export function cullScene(scene: Scene, visible: Rect): Scene {
+  const inView = (r: Rect) => rectsIntersect(r, visible)
+  return {
+    groups: scene.groups.filter(inView),
+    edges: scene.edges.filter((edge) => inView(edgeBounds(edge.points))),
+    nodes: scene.nodes.filter(inView),
+  }
 }

@@ -21,6 +21,12 @@ export type Derived = Workspace
 /** Durable per-mode UI state the phases may read; `expandState` in a preset. */
 export interface UiState {
   expanded: Readonly<Record<string, boolean>>
+  /**
+   * Zoom level of detail (tic-fa56), from {@link ../canvas/lod.lodOf | lodOf}.
+   * At the extreme the mode may collapse expanded containers to summary
+   * chips; it changes only when a threshold is crossed, never per frame.
+   */
+  lod?: number
 }
 
 /** An element the mode wants drawn; geometry and styling come later. */

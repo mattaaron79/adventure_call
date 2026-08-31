@@ -1,7 +1,8 @@
+import { useMemo, useState } from 'react'
 import type { Workspace } from '../data/derive'
 import type { CodebaseGraph, SymbolKind } from '../data/types'
 import { ExcludeEditor } from './ExcludeEditor'
-import { FileTree } from './FileTree'
+import { FileTree, matchTree } from './FileTree'
 import { ModePicker } from './ModePicker'
 
 const KIND_COLOR: Record<SymbolKind, string> = {
@@ -41,6 +42,13 @@ export function Sidebar({
   effectiveFilters,
   onApplyPresetFilters,
 }: Props) {
+  // File filter; '/' from the canvas focuses this input (tic-fa56).
+  const [fileQuery, setFileQuery] = useState('')
+  const filteredTree = useMemo(
+    () => (workspace ? matchTree(workspace.tree, fileQuery) : null),
+    [workspace, fileQuery],
+  )
+
   return (
     <aside className="sidebar">
       <h1>Adventure Call</h1>
@@ -76,7 +84,19 @@ export function Sidebar({
           </label>
           <ExcludeEditor excludes={excludes} onChange={onExcludesChange} />
           <h2>Files</h2>
-          <FileTree root={workspace.tree} />
+          <input
+            id="file-search"
+            className="file-search"
+            type="text"
+            placeholder="Filter files  ( / )"
+            value={fileQuery}
+            onChange={(event) => setFileQuery(event.target.value)}
+          />
+          {filteredTree ? (
+            <FileTree root={filteredTree} />
+          ) : (
+            <p className="preset-empty">No files match.</p>
+          )}
         </>
       )}
     </aside>

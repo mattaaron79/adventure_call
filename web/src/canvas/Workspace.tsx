@@ -20,10 +20,13 @@ import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import { relayout, selectOverrides, useWorkspace } from '../state/store'
 import { Grid } from './Grid'
+import { lodOf } from './lod'
 import {
+  cullScene,
   nodesInRect,
   placedRect,
   sceneBounds,
+  visibleWorldRect,
   type Scene,
   type SceneEdge,
   type SceneGroup,
@@ -54,7 +57,16 @@ interface DragSession {
   start: Map<string, Point>
 }
 
-export function Workspace({ scene, onActivate }: { scene: Scene; onActivate?: (id: string) => void }) {
+export function Workspace({
+  scene,
+  onActivate,
+  expandable,
+}: {
+  scene: Scene
+  onActivate?: (id: string) => void
+  /** Ids whose activation toggles expand/collapse; the `e` shortcut uses it. */
+  expandable?: ReadonlySet<string>
+}) {
   const host = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
 
@@ -203,6 +215,53 @@ export function Workspace({ scene, onActivate }: { scene: Scene; onActivate?: (i
   const world = { x: viewport.x, y: viewport.y, scaleX: viewport.scale, scaleY: viewport.scale }
   const cursor = panning ? 'grabbing' : hovered !== null ? 'pointer' : 'grab'
 
+  // Render-time culling (tic-fa56): filter the computed scene to what the
+  // camera can see, plus a margin.  Selection, marquee and fit keep using the
+  // full scene through the refs above.
+  const visible = useMemo(
+    () => cullScene(scene, visibleWorldRect(viewport, size)),
+    [scene, viewport, size],
+  )
+  // Text thinning on the same thresholds the modes read; both only change on
+  // a threshold crossing, never per pan/zoom frame.
+  const lod = lodOf(viewport.scale)
+
+  // Keyboard: f = fit to content, e = expand/collapse selection,
+  // Esc = deselect, / = focus the file filter.  Ignored while typing.
+  const expandableRef = useRef(expandable)
+  expandableRef.current = expandable
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'f') {
+        e.preventDefault()
+        fit()
+      } else if (e.key === 'Escape') {
+        useWorkspace.getState().clearSelection()
+      } else if (e.key === 'e') {
+        const store = useWorkspace.getState()
+        for (const id of store.selection) {
+          if (expandableRef.current?.has(id)) store.toggleExpanded(id)
+        }
+      } else if (e.key === '/') {
+        e.preventDefault()
+        document.getElementById('file-search')?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fit])
+
   return (
     <div ref={host} className="workspace" style={{ cursor }}>
       {size.width > 0 && size.height > 0 && (
@@ -218,19 +277,19 @@ export function Workspace({ scene, onActivate }: { scene: Scene; onActivate?: (i
           </Layer>
 
           <Layer {...world} listening={false}>
-            {scene.groups.map((group) => (
+            {visible.groups.map((group) => (
               <GroupBox key={group.id} group={group} />
             ))}
           </Layer>
 
           <Layer {...world} listening={false}>
-            {scene.edges.map((edge) => (
+            {visible.edges.map((edge) => (
               <EdgeLine key={edge.id} edge={edge} />
             ))}
           </Layer>
 
           <Layer {...world}>
-            {scene.nodes.map((node) => {
+            {visible.nodes.map((node) => {
               const at = overrides[node.id]
               return (
                 <NodeChip
@@ -240,6 +299,8 @@ export function Workspace({ scene, onActivate }: { scene: Scene; onActivate?: (i
                   y={at ? at.y : node.y}
                   selected={selection.has(node.id)}
                   hovered={hovered === node.id}
+                  showLabel={lod < 2}
+                  showSublabel={lod === 0}
                   handlers={handlers}
                   register={register}
                 />
@@ -308,6 +369,8 @@ const GroupBox = memo(function GroupBox({ group }: { group: SceneGroup }) {
         fontFamily={FONT}
         fontSize={11.5}
         fill={THEME.dir}
+        listening={false}
+        perfectDrawEnabled={false}
         ellipsis
         wrap="none"
       />
@@ -336,6 +399,9 @@ interface ChipProps {
   y: number
   selected: boolean
   hovered: boolean
+  /** Zoom LOD (tic-fa56): text thins out as the camera pulls back. */
+  showLabel: boolean
+  showSublabel: boolean
   handlers: NodeHandlers
   register: (id: string, node: Konva.Group | null) => void
 }
@@ -346,6 +412,8 @@ const NodeChip = memo(function NodeChip({
   y,
   selected,
   hovered,
+  showLabel,
+  showSublabel,
   handlers,
   register,
 }: ChipProps) {
@@ -409,19 +477,22 @@ const NodeChip = memo(function NodeChip({
           perfectDrawEnabled={false}
         />
       )}
-      <Text
-        x={12}
-        y={labelY}
-        width={Math.max(0, node.width - 20)}
-        text={node.label}
-        fontFamily={FONT}
-        fontSize={12}
-        fill={THEME.text}
-        listening={false}
-        ellipsis
-        wrap="none"
-      />
-      {node.sublabel !== undefined && (
+      {showLabel && (
+        <Text
+          x={12}
+          y={labelY}
+          width={Math.max(0, node.width - 20)}
+          text={node.label}
+          fontFamily={FONT}
+          fontSize={12}
+          fill={THEME.text}
+          listening={false}
+          perfectDrawEnabled={false}
+          ellipsis
+          wrap="none"
+        />
+      )}
+      {showSublabel && node.sublabel !== undefined && (
         <Text
           x={12}
           y={23}
@@ -431,6 +502,7 @@ const NodeChip = memo(function NodeChip({
           fontSize={10.5}
           fill={THEME.textFaint}
           listening={false}
+          perfectDrawEnabled={false}
           ellipsis
           wrap="none"
         />

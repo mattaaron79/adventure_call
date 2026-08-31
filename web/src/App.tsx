@@ -4,6 +4,7 @@ import { DEFAULT_EXCLUDES, readExcludes, writeExcludes } from './data/filters'
 import { loadGraph, onDataChanged } from './data/load'
 import type { CodebaseGraph, GraphNode } from './data/types'
 import { Workspace } from './canvas/Workspace'
+import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
 import { renderMode } from './modes/types'
@@ -73,9 +74,12 @@ export function App() {
     () => ({ ...mode.defaultParams, ...savedParams }),
     [mode, savedParams],
   )
+  // Zoom LOD as a selector: a number, so this re-renders only when a
+  // threshold is crossed, never per pan/zoom frame (tic-fa56).
+  const lod = useWorkspace((s) => lodOf(activeMode(s).viewport.scale))
   const layout = useMemo(
-    () => (workspace ? renderMode(mode, workspace, params, { expanded }) : null),
-    [mode, params, workspace, expanded],
+    () => (workspace ? renderMode(mode, workspace, params, { expanded, lod }) : null),
+    [mode, params, workspace, expanded, lod],
   )
   const scene = layout?.scene ?? EMPTY_SCENE
 
@@ -122,7 +126,7 @@ export function App() {
         onApplyPresetFilters={applyPresetFilters}
       />
       <div className="stage-host">
-        <Workspace scene={scene} onActivate={onActivate} />
+        <Workspace scene={scene} onActivate={onActivate} expandable={layout?.expandable} />
         {workspace === null && status.phase !== 'error' && (
           <div className="placeholder">
             <strong>Reading /out…</strong>

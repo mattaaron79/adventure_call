@@ -224,13 +224,17 @@ function anchorId(
 
 function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
   const expanded = ui.expanded
+  const lod = ui.lod ?? 0
   const edges: SpecEdge[] = []
   const groups: SpecGroup[] = []
   const visibleFiles = new Set<string>()
   const importedBy = importedSymbolsByFile(data)
 
   const dirOpen = (dir: FsDir): boolean => expanded[dirId(dir.path)] ?? true
-  const fileOpen = (file: FsFile): boolean => expanded[file.path] ?? false
+  // Extreme zoom-out: an expanded file collapses to its summary chip (name +
+  // symbol count), which is all a few-pixel container could show anyway.
+  const fileOpen = (file: FsFile): boolean =>
+    lod < 3 && (expanded[file.path] ?? false)
 
   const visitFile = (file: FsFile): SpecNode => {
     visibleFiles.add(file.path)
@@ -286,7 +290,9 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
 
   const root = visit(data.tree)
 
-  if (params.showImports) {
+  // Import lines are visual noise once labels are gone (lod >= 2): hundreds
+  // of hairlines between chips nobody can read.
+  if (params.showImports && lod < 2) {
     for (const edge of data.fileImports) {
       if (!visibleFiles.has(edge.source) || !visibleFiles.has(edge.target)) continue
       edges.push({

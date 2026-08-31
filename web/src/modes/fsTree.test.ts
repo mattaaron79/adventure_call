@@ -10,7 +10,8 @@ import { renderMode } from './types'
 const render = (
   expanded: Record<string, boolean> = {},
   params = { ...fsTreeMode.defaultParams },
-) => renderMode(fsTreeMode, WORKSPACE, params, { expanded })
+  lod = 0,
+) => renderMode(fsTreeMode, WORKSPACE, params, { expanded, lod })
 
 /**
  * A miniature corpus with everything the mode has to render: a nested
@@ -239,6 +240,25 @@ describe('fsTreeMode params', () => {
     expect(layout.scene.edges.filter((e) => e.id.startsWith('imp:'))).toEqual([])
     // Everything else is untouched.
     expect(layout.scene.nodes.map((n) => n.id)).toContain('src/app/loop.py')
+  })
+})
+
+describe('fsTreeMode LOD (tic-fa56)', () => {
+  it('collapses expanded containers to summary chips at extreme zoom-out', () => {
+    const layout = render({ 'src/app/loop.py': true }, undefined, 3)
+    const container = layout.scene.nodes.find((n) => n.id === 'src/app/loop.py')!
+    expect(container.sublabel).toMatch(/symbol/)
+    expect(layout.scene.nodes.every((n) => !n.id.startsWith('row:'))).toBe(true)
+  })
+
+  it('keeps containers open just above the extreme threshold', () => {
+    const layout = render({ 'src/app/loop.py': true }, undefined, 2)
+    expect(layout.scene.nodes.some((n) => n.id.startsWith('row:'))).toBe(true)
+  })
+
+  it('drops import lines once labels are gone (lod >= 2)', () => {
+    expect(render({}, undefined, 2).scene.edges.some((e) => e.id.startsWith('imp:'))).toBe(false)
+    expect(render({}, undefined, 1).scene.edges.some((e) => e.id.startsWith('imp:'))).toBe(true)
   })
 })
 
