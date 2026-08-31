@@ -124,7 +124,11 @@ html, body, #root {
   position: absolute;
   right: 14px;
   bottom: 52px;
-  width: 380px;
+  /* ~50% wider than the original 380px (tic-4b0a); capped so it never
+     overflows a narrow viewport.  The panel scrolls; content never pushes
+     it wider. */
+  width: 570px;
+  max-width: calc(100% - 28px);
   max-height: 46%;
   overflow-y: auto;
   background: var(--surface);
@@ -154,6 +158,40 @@ html, body, #root {
   font-family: ui-monospace, 'Cascadia Code', monospace;
   font-size: 11px;
   word-break: break-all;
+}
+/* The vscode:// deep link (tic-4b0a) reads as an accent link, still
+   breaking cleanly over a deeply nested path. */
+.inspector-path-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.inspector-path-link:hover {
+  text-decoration: underline;
+}
+/* A compact facts grid (tic-4b0a): kind, module, line range, async. */
+.inspector-facts {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 3px 14px;
+  font-size: 11.5px;
+}
+.inspector-facts li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.inspector-facts .inspector-fact {
+  color: var(--text-faint);
+}
+.inspector-facts code {
+  color: var(--text);
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .inspector-sig {
   margin: 0 0 8px;
@@ -192,6 +230,26 @@ html, body, #root {
   font-style: italic;
 }
 .inspector-dim { color: var(--text-faint); }
+/* Imports rows (tic-4b0a): label flexes and wraps, the count and the goto
+   icon sit at the row's end; internal rows carry a goto, external do not. */
+.inspector-imports {
+  list-style: none;
+  padding-left: 0;
+}
+.inspector-imports li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.inspector-imports li code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.inspector-imports .goto-icon {
+  margin-left: auto;
+  flex: none;
+}
 .inspector-source {
   margin: 0;
   padding: 8px 10px;

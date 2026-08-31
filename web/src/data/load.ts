@@ -15,6 +15,7 @@ import type { CodebaseGraph, SymbolRegistry } from './types'
 
 const GRAPH_URL = '/data/codebase_graph.json'
 const REGISTRY_URL = '/data/symbol_registry.json'
+const META_URL = '/data/meta.json'
 
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: 'no-store' })
@@ -44,6 +45,20 @@ export function loadRegistry(): Promise<SymbolRegistry> {
  *  whether source is available without triggering the download itself. */
 export function registryRequested(): boolean {
   return registryPromise !== null
+}
+
+/** The dev-server meta document (tic-4b0a): the absolute analysed root, so the
+ *  inspector can build `vscode://file/...` links the browser could not resolve
+ *  on its own.  Null when unavailable -- a static build without the `outData`
+ *  middleware, or an export that never wrote a root -- and the caller then
+ *  degrades to plain text. */
+export async function loadAbsoluteRoot(): Promise<string | null> {
+  try {
+    const meta = await getJSON<{ root: string | null }>(META_URL)
+    return meta.root || null
+  } catch {
+    return null
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { deriveWorkspace } from './data/derive'
 import { DEFAULT_EXCLUDES, readExcludes, writeExcludes } from './data/filters'
-import { loadGraph, loadRegistry, onDataChanged } from './data/load'
+import { loadAbsoluteRoot, loadGraph, loadRegistry, onDataChanged } from './data/load'
 import type { CodebaseGraph, GraphNode, SymbolRegistry } from './data/types'
 import { Workspace } from './canvas/Workspace'
 import { lodOf } from './canvas/lod'
@@ -29,6 +29,10 @@ export function App() {
   // fetched lazily and only populates the external-import layer (tic-314c).
   // Null at startup: the app boots on codebase_graph.json alone.
   const [registry, setRegistry] = useState<SymbolRegistry | null>(null)
+  // The absolute analysed root from the dev server (tic-4b0a), for the
+  // inspector's vscode:// deep links; null in a static build without the
+  // outData middleware, where the path stays plain text.
+  const [absoluteRoot, setAbsoluteRoot] = useState<string | null>(null)
   // Guards against an in-flight fetch from a superseded reload overwriting a
   // newer one; /out can be rewritten twice in quick succession.
   const generation = useRef(0)
@@ -46,10 +50,18 @@ export function App() {
     }
   }, [])
 
+  const loadRoot = useCallback(async () => {
+    setAbsoluteRoot(await loadAbsoluteRoot())
+  }, [])
+
   useEffect(() => {
     void refresh(false)
-    return onDataChanged(() => void refresh(true))
-  }, [refresh])
+    void loadRoot()
+    return onDataChanged(() => {
+      void refresh(true)
+      void loadRoot()
+    })
+  }, [refresh, loadRoot])
 
   const changeExcludes = useCallback((next: string[]) => {
     setExcludes(next)
@@ -179,7 +191,7 @@ export function App() {
             reloaded from /out
           </div>
         )}
-        <Inspector node={selectedNode} externalImports={workspace?.externalImports} />
+        <Inspector node={selectedNode} workspace={workspace} absoluteRoot={absoluteRoot} />
       </div>
     </div>
   )
