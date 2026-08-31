@@ -1,12 +1,13 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { FsDir, SymbolIndex, Workspace } from '../data/derive'
 import type { GraphNode, SymbolKind } from '../data/types'
 import {
   Inspector,
   buildImportRows,
   countSymbolsByKind,
+  launchVscodeLink,
   lineRange,
   vscodeFileLink,
 } from './Inspector'
@@ -221,5 +222,57 @@ describe('Inspector collapse (tic-88ac)', () => {
     expect(html).toContain('DoStuff')
     expect(html).toContain('class')
     expect(html).not.toContain('inspector-facts')
+  })
+})
+
+describe('launchVscodeLink (tic-e523)', () => {
+  // launchVscodeLink talks to the DOM, so fake a minimal one for the test.
+  const iframes: Array<{ remove: ReturnType<typeof vi.fn> }> = []
+  let appended: unknown[] = []
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    iframes.length = 0
+    appended = []
+  })
+
+  const stubDom = () => {
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => {
+        if (tag !== 'iframe') throw new Error(`unexpected element ${tag}`)
+        const iframe = { remove: vi.fn(), setAttribute: vi.fn(), tabIndex: -1, style: {}, src: '' }
+        iframes.push(iframe)
+        return iframe
+      },
+      body: {
+        appendChild: (node: unknown) => {
+          appended.push(node)
+          return node
+        },
+      },
+    })
+    // Fire the removal timer immediately so the test observes the iframe being
+    // cleaned up, rather than waiting a real second.
+    vi.stubGlobal('window', {
+      setTimeout: (fn: () => void) => {
+        fn()
+        return 0
+      },
+    })
+  }
+
+  it('routes the URL through a hidden iframe instead of a blank tab', () => {
+    stubDom()
+    launchVscodeLink('vscode://file//repo/src/app/loop.py:12:1')
+    expect(appended).toHaveLength(1)
+    expect(iframes).toHaveLength(1)
+    // The iframe was handed the deep link, then removed once the OS has had a
+    // chance to take over -- no blank browser tab is left behind.
+    expect(iframes[0].remove).toHaveBeenCalledTimes(1)
+    expect((appended[0] as { src: string }).src).toBe('vscode://file//repo/src/app/loop.py:12:1')
+  })
+
+  it('is a no-op without a DOM (node-side render)', () => {
+    expect(() => launchVscodeLink('vscode://file/x')).not.toThrow()
   })
 })

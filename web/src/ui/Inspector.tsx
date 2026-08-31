@@ -36,6 +36,26 @@ export function vscodeFileLink(
   return `vscode://file/${root}/${file}:${line}:1`
 }
 
+/**
+ * Launch a `vscode://file/...` deep link without the browser keeping a blank
+ * tab behind (tic-e523).  A plain anchor with `target="_blank"` opens a new
+ * tab the OS protocol handler never fills, leaving a dead tab that does
+ * nothing.  Instead the URL is handed to the handler through a hidden iframe:
+ * the browser routes the custom scheme to the OS, the iframe is invisible, and
+ * no tab is ever created.  The iframe is dropped once the OS has had a moment
+ * to take over.
+ */
+export function launchVscodeLink(url: string): void {
+  if (typeof document === 'undefined') return
+  const iframe = document.createElement('iframe')
+  iframe.style.display = 'none'
+  iframe.setAttribute('aria-hidden', 'true')
+  iframe.tabIndex = -1
+  iframe.src = url
+  document.body.appendChild(iframe)
+  window.setTimeout(() => iframe.remove(), 1000)
+}
+
 /** A human-readable line range: `L12` for a single line, `L12–L34` for a span. */
 export function lineRange(node: GraphNode): string {
   return node.start_line === node.end_line
@@ -205,9 +225,15 @@ export function Inspector({
               <a
                 className="inspector-path-link"
                 href={pathLink}
-                target="_blank"
                 rel="noreferrer"
                 title={`Open ${node.file_path} in VS Code`}
+                onClick={(e) => {
+                  // Launch via a hidden iframe so no blank tab is left behind
+                  // (tic-e523).  The href stays for copy/right-click; plain
+                  // left-click is intercepted here.
+                  e.preventDefault()
+                  launchVscodeLink(pathLink)
+                }}
               >
                 {node.file_path}:{node.start_line}
               </a>
