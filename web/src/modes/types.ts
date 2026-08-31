@@ -226,7 +226,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
   const expandable = new Set<string>()
   const specById = new Map<string, SpecNode>()
 
-  const visit = (node: SpecNode): void => {
+  const visit = (node: SpecNode, parentId?: string): void => {
     specById.set(node.id, node)
     const rect = positioned.rects.get(node.id)
     if (rect) {
@@ -241,13 +241,16 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         accent: s?.accent,
         draggable: s?.draggable,
         focusTo: node.focusTo,
+        // Containment (tic-2697): the spec node this one lives inside, so
+        // reproject can translate it by its ancestors' drag offsets.
+        parent: parentId,
       })
     }
     if (node.symbolId !== null) symbolOf.set(node.id, node.symbolId)
     if (node.expandable) expandable.add(node.id)
-    for (const child of node.children) visit(child)
+    for (const child of node.children) visit(child, node.id)
   }
-  visit(spec.root)
+  visit(spec.root, undefined)
 
   /** The wrapped node and every descendant, so a group box can be recomputed
    *  from member rects after a drag (tic-1d7c). */

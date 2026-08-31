@@ -34,7 +34,7 @@ import {
   highlightedEdgesLast,
   importEdgesIncidentTo,
   nodesInRect,
-  placedRect,
+  placedRects,
   reproject,
   sceneBounds,
   visibleWorldRect,
@@ -311,10 +311,13 @@ export function Workspace({
         const ids = selected.has(anchor) ? [...selected] : [anchor]
         const start = new Map<string, Point>()
         const byId = new Map(sceneRef.current.nodes.map((node) => [node.id, node]))
+        // Ancestor-aware (tic-2697): a row inside a moved container is already
+        // sitting on the container's delta, so that is where the drag starts.
+        const placed = placedRects(sceneRef.current, overridesRef.current)
         for (const id of ids) {
           const node = byId.get(id)
           if (!node) continue
-          const rect = placedRect(node, overridesRef.current[id])
+          const rect = placed.get(id) ?? node
           start.set(id, { x: rect.x, y: rect.y })
         }
         drag.current = { anchor, ids, start }
@@ -349,6 +352,21 @@ export function Workspace({
         for (const group of projected.groups) {
           const shapes = groupShapes.current.get(group.id)
           if (shapes) applyGroupGeometry(shapes, group)
+        }
+        // A moved container's contents travel with it live (tic-2697): rows
+        // and nested chips inherit their ancestor's delta, so an expanded
+        // container drags as a unit instead of leaving its rows behind until
+        // the drag commits.  The anchor moves under Konva and the rest of the
+        // selection was moved above, so only unaffected chips are touched.
+        const moving = new Set(session.ids)
+        const livePlaced = placedRects(sceneRef.current, live)
+        for (const node of sceneRef.current.nodes) {
+          if (moving.has(node.id)) continue
+          const chip = konvaNodes.current.get(node.id)
+          if (!chip || chip.isDragging()) continue
+          const at = livePlaced.get(node.id)
+          if (!at || (chip.x() === at.x && chip.y() === at.y)) continue
+          chip.position({ x: at.x, y: at.y })
         }
         groupLayer.current?.batchDraw()
         edgeLayer.current?.batchDraw()
@@ -385,6 +403,14 @@ export function Workspace({
   // correct, and pan/zoom then pays nothing beyond the cull itself.
   const projected = useMemo(
     () => (Object.keys(overrides).length > 0 ? reproject(scene, overrides) : scene),
+    [scene, overrides],
+  )
+  // Where each node actually renders, ancestor offsets included (tic-2697): a
+  // row inside a moved container sits on the container's delta even though the
+  // row itself has no override.  Skipped while there are no overrides, so the
+  // laid-out scene renders at its own coordinates.
+  const placed = useMemo(
+    () => (Object.keys(overrides).length > 0 ? placedRects(scene, overrides) : null),
     [scene, overrides],
   )
   // Highlighted edges draw above the grey neighbours (tic-5393): reorder so
@@ -475,7 +501,7 @@ export function Workspace({
 
           <Layer {...world}>
             {visible.nodes.map((node) => {
-              const at = overrides[node.id]
+              const at = placed?.get(node.id)
               return (
                 <NodeChip
                   key={node.id}

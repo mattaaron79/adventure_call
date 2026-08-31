@@ -309,12 +309,21 @@ describe('fsTreeMode, with an expanded file', () => {
     expect(imp.points[2]).toBe(chip.x + chip.width / 2)
   })
 
-  it('pins container rows in place (not draggable, not marquee fodder)', () => {
+  it('pins container rows in place, but the container itself drags as a unit (tic-2697)', () => {
     const container = scene.nodes.find((n) => n.id === 'src/app/loop.py')!
-    expect(container.draggable).toBe(false)
+    // An expanded container is draggable now: reproject carries its contents.
+    expect(container.draggable).not.toBe(false)
     for (const n of scene.nodes) {
       if (n.id.startsWith('row:')) expect(n.draggable).toBe(false)
     }
+  })
+
+  it('links every row to its container and the container to its directory (tic-2697)', () => {
+    for (const n of scene.nodes) {
+      if (n.id.startsWith('row:src/app/loop.py:')) expect(n.parent).toBe('src/app/loop.py')
+    }
+    const container = scene.nodes.find((n) => n.id === 'src/app/loop.py')!
+    expect(container.parent).toBe('dir:src/app')
   })
 })
 

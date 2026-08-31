@@ -36,6 +36,14 @@ export interface SceneNode extends Rect {
    * means no affordance.  Set by the mode, rendered generically.
    */
   focusTo?: string
+  /**
+   * The id of the node this one is visually contained by -- a row's container,
+   * a container's directory chip (tic-2697).  Set during assembly from the
+   * spec's children tree, so `reproject` can translate a node by the
+   * accumulated offsets of its ancestors and a moved container carries its
+   * rows, group box and edges with it.  Absent on roots.
+   */
+  parent?: string
 }
 
 /** How an edge's polyline is derived from its endpoint rects. */
@@ -103,12 +111,13 @@ export const EMPTY_SCENE: Scene = { groups: [], edges: [], nodes: [] }
  * have put it.
  *
  * Pure: `scene` is never mutated, and nodes pass through untouched (their
- * positions are applied at render time via `placedRect`).  Edges without
+ * positions are applied at render time via `placedRects`).  Edges without
  * endpoint ids and groups without members are returned as-is.
  */
 export function reproject(scene: Scene, overrides: Readonly<Record<string, Point>>): Scene {
-  const placed = new Map<string, Rect>()
-  for (const node of scene.nodes) placed.set(node.id, placedRect(node, overrides[node.id]))
+  // Ancestor-aware (tic-2697): a row inside a moved container inherits the
+  // container's delta, so its edges and group box travel with it.
+  const placed = placedRects(scene, overrides)
 
   const edges = scene.edges.map((edge) => {
     if (edge.from === undefined || edge.to === undefined) return edge
@@ -150,13 +159,68 @@ export function placedRect(node: SceneNode, override: Point | undefined): Rect {
   return { x: override.x, y: override.y, width: node.width, height: node.height }
 }
 
+/**
+ * The ancestor-aware placed rect of every node (tic-2697).
+ *
+ * A node's own override -- where the user dropped it -- is absolute and wins:
+ * the node is drawn exactly there.  A node without one inherits the net
+ * movement of its nearest overridden ancestor, so dragging an expanded
+ * container carries its rows, group box and incident edges with it, and
+ * dragging a collapsed chip then expanding it lands the fresh rows on top of
+ * the moved container.  Because a node's own override replaces its laid-out
+ * rect rather than adding to it, a parent and child that both carry overrides
+ * compose without double-counting: the child sits where it was dropped and
+ * the grandchildren follow the child's own delta.
+ */
+export function placedRects(
+  scene: Scene,
+  overrides: Readonly<Record<string, Point>>,
+): Map<string, Rect> {
+  const byId = new Map(scene.nodes.map((node) => [node.id, node]))
+  const placed = new Map<string, Rect>()
+  for (const node of scene.nodes) {
+    const own = overrides[node.id]
+    if (own) {
+      placed.set(node.id, { x: own.x, y: own.y, width: node.width, height: node.height })
+      continue
+    }
+    const offset = inheritedOffset(node, byId, overrides)
+    placed.set(node.id, {
+      x: node.x + offset.x,
+      y: node.y + offset.y,
+      width: node.width,
+      height: node.height,
+    })
+  }
+  return placed
+}
+
+/** The net movement of a node's nearest overridden ancestor, or zero. */
+function inheritedOffset(
+  node: SceneNode,
+  byId: Map<string, SceneNode>,
+  overrides: Readonly<Record<string, Point>>,
+): Point {
+  let parent = node.parent === undefined ? undefined : byId.get(node.parent)
+  while (parent) {
+    const own = overrides[parent.id]
+    if (own) return { x: own.x - parent.x, y: own.y - parent.y }
+    parent = parent.parent === undefined ? undefined : byId.get(parent.parent)
+  }
+  return { x: 0, y: 0 }
+}
+
 /** The bounding box of everything drawn, for fit-to-content. */
 export function sceneBounds(
   scene: Scene,
   overrides: Readonly<Record<string, Point>> = {},
 ): Rect | null {
+  const placed = placedRects(scene, overrides)
   const rects: Rect[] = scene.groups.slice()
-  for (const node of scene.nodes) rects.push(placedRect(node, overrides[node.id]))
+  for (const node of scene.nodes) {
+    const rect = placed.get(node.id)
+    if (rect) rects.push(rect)
+  }
   for (const edge of scene.edges) {
     for (let i = 0; i + 1 < edge.points.length; i += 2) {
       rects.push({ x: edge.points[i], y: edge.points[i + 1], width: 0, height: 0 })
@@ -173,9 +237,11 @@ export function nodesInRect(
   overrides: Readonly<Record<string, Point>> = {},
 ): string[] {
   const hits: string[] = []
+  const placed = placedRects(scene, overrides)
   for (const node of scene.nodes) {
     if (node.draggable === false) continue
-    if (rectsIntersect(placedRect(node, overrides[node.id]), rect)) hits.push(node.id)
+    const at = placed.get(node.id)
+    if (at && rectsIntersect(at, rect)) hits.push(node.id)
   }
   return hits
 }

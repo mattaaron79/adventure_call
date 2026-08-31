@@ -488,11 +488,12 @@ function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
     if (node.role === 'dir') {
       nodes.set(node.id, { fill: THEME.surface, stroke: THEME.line, accent: THEME.dir })
     } else if (node.role === 'file') {
-      // An expanded container drags its rows nowhere; collapse first.
+      // An expanded container is draggable as a unit: reproject (tic-2697)
+      // carries its rows, the group box and its edges along with it.
       nodes.set(
         node.id,
         node.children.length > 0
-          ? { fill: THEME.surface2, stroke: THEME.line, accent: KIND_COLOR.module, draggable: false }
+          ? { fill: THEME.surface2, stroke: THEME.line, accent: KIND_COLOR.module }
           : { fill: THEME.surface, stroke: THEME.line, accent: KIND_COLOR.module },
       )
     } else if (node.role === 'section') {

@@ -5,6 +5,7 @@ import {
   importEdgesIncidentTo,
   nodesInRect,
   placedRect,
+  placedRects,
   reproject,
   sceneBounds,
   type Scene,
@@ -133,6 +134,96 @@ describe('reproject', () => {
     expect(out.groups.map((g) => [g.x, g.y, g.width, g.height])).toEqual(
       ROUTED.groups.map((g) => [g.x, g.y, g.width, g.height]),
     )
+  })
+})
+
+// -- ancestor translation (tic-2697) ------------------------------------------
+
+/** An expanded container with two rows, a wrapping group and one incident
+ *  edge; the rows carry the container as their `parent`. */
+const CONTAINER: Scene = {
+  groups: [
+    {
+      id: 'g',
+      x: -12,
+      y: -12,
+      width: 324,
+      height: 124,
+      label: 'g',
+      fill: '',
+      stroke: '',
+      members: ['c', 'r1', 'r2'],
+    },
+  ],
+  edges: [
+    { id: 'e', points: [262, 190, 450, 20], stroke: '#222', from: 'r2', to: 'x', route: 'center' },
+  ],
+  nodes: [
+    node('c', 0, 0),
+    { ...node('r1', 12, 40), parent: 'c' },
+    { ...node('r2', 12, 70), parent: 'c' },
+    node('x', 400, 0),
+  ],
+}
+
+describe('ancestor translation (tic-2697)', () => {
+  it('a moved container carries its rows, which keep their in-container offsets', () => {
+    const placed = placedRects(CONTAINER, { c: { x: 200, y: 100 } })
+    expect(placed.get('c')).toMatchObject({ x: 200, y: 100, width: 100, height: 40 })
+    expect(placed.get('r1')).toMatchObject({ x: 212, y: 140 })
+    expect(placed.get('r2')).toMatchObject({ x: 212, y: 170 })
+    // Unrelated nodes stay put.
+    expect(placed.get('x')).toMatchObject({ x: 400, y: 0 })
+  })
+
+  it('re-routes the incident edges and regrows the group box around the moved container', () => {
+    const { edges, groups } = reproject(CONTAINER, { c: { x: 200, y: 100 } })
+    // r2 moved from (12,70) to (212,170), so its edge leaves the new centre.
+    expect(edges[0].points).toEqual([262, 190, 450, 20])
+    // union(c@200,100, r1@212,140, r2@212,170) padded by the layout's padding.
+    expect(groups[0]).toMatchObject({ x: 188, y: 88, width: 136, height: 134 })
+  })
+
+  it('a node with its own override keeps it absolute, without double-counting', () => {
+    const placed = placedRects(CONTAINER, { c: { x: 200, y: 100 }, r2: { x: 300, y: 300 } })
+    // r2 was dragged by hand: it sits exactly there, not on top of c's delta.
+    expect(placed.get('r2')).toMatchObject({ x: 300, y: 300 })
+    // r1 still follows the container.
+    expect(placed.get('r1')).toMatchObject({ x: 212, y: 140 })
+  })
+
+  it('drag-collapsed-then-expand and drag-expanded land the rows in the same place', () => {
+    // Drag a collapsed chip by (150,60), then expand: the fresh layout puts
+    // the container at (100,200) and the rows at (112,240)/(112,270).
+    const collapsedThenExpanded: Scene = {
+      groups: [],
+      edges: [],
+      nodes: [
+        node('c', 100, 200),
+        { ...node('r1', 112, 240), parent: 'c' },
+        { ...node('r2', 112, 270), parent: 'c' },
+      ],
+    }
+    // Drag an already-expanded container by (100,50): it was laid out at
+    // (150,210) with rows at (162,250)/(162,280).
+    const expandedThenDragged: Scene = {
+      groups: [],
+      edges: [],
+      nodes: [
+        node('c', 150, 210),
+        { ...node('r1', 162, 250), parent: 'c' },
+        { ...node('r2', 162, 280), parent: 'c' },
+      ],
+    }
+    const override = { c: { x: 250, y: 260 } }
+    const a = placedRects(collapsedThenExpanded, override)
+    const b = placedRects(expandedThenDragged, override)
+    expect(a.get('c')).toEqual(b.get('c'))
+    expect(a.get('r1')).toEqual(b.get('r1'))
+    expect(a.get('r2')).toEqual(b.get('r2'))
+    // Both place every row at the container + its in-container offset.
+    expect(a.get('r1')).toMatchObject({ x: 262, y: 300 })
+    expect(a.get('r2')).toMatchObject({ x: 262, y: 330 })
   })
 })
 
