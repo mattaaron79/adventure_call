@@ -21,6 +21,10 @@ export const THEME = {
   selected: '#89b4fa',
   hovered: '#7f849c',
   edge: '#45475a',
+  /** Import lines, and the highlight for an import edge incident to the
+   *  selection/hover (tic-5393).  Same blue as the module kind: imports
+   *  connect modules, so a lit line reads as "this is what I import". */
+  import: '#89b4fa',
 } as const
 
 export const KIND_COLOR: Record<SymbolKind, string> = {

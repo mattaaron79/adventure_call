@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { deriveWorkspace } from './data/derive'
 import { DEFAULT_EXCLUDES, readExcludes, writeExcludes } from './data/filters'
-import { loadGraph, onDataChanged } from './data/load'
-import type { CodebaseGraph, GraphNode } from './data/types'
+import { loadGraph, loadRegistry, onDataChanged } from './data/load'
+import type { CodebaseGraph, GraphNode, SymbolRegistry } from './data/types'
 import { Workspace } from './canvas/Workspace'
 import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
@@ -25,6 +25,10 @@ export function App() {
   // sidebar tree and, through deriveWorkspace, the canvas.
   const [fileQuery, setFileQuery] = useState('')
   const [reloadedAt, setReloadedAt] = useState<number | null>(null)
+  // The registry is ~2x codebase_graph.json (it embeds source), so it is
+  // fetched lazily and only populates the external-import layer (tic-314c).
+  // Null at startup: the app boots on codebase_graph.json alone.
+  const [registry, setRegistry] = useState<SymbolRegistry | null>(null)
   // Guards against an in-flight fetch from a superseded reload overwriting a
   // newer one; /out can be rewritten twice in quick succession.
   const generation = useRef(0)
@@ -67,8 +71,11 @@ export function App() {
   // canvas -- tracks the filter.  When off, the query prunes the sidebar only.
   const filterVisible = useWorkspace(selectFilterVisible)
   const workspace = useMemo(
-    () => (graph ? deriveWorkspace(graph, effectiveExcludes, filterVisible ? fileQuery : '') : null),
-    [graph, effectiveExcludes, filterVisible, fileQuery],
+    () =>
+      graph
+        ? deriveWorkspace(graph, effectiveExcludes, filterVisible ? fileQuery : '', registry)
+        : null,
+    [graph, effectiveExcludes, filterVisible, fileQuery, registry],
   )
 
   // The active mode renders entirely through the VizMode interface: the app
@@ -120,6 +127,29 @@ export function App() {
     return null
   }, [selection, workspace, layout])
 
+  // The first thing that actually wants import detail triggers the registry:
+  // an expanded fs-tree file container, or a selection feeding the inspector.
+  // loadRegistry is memoised, so many triggers still mean one request.
+  const wantsRegistry = useMemo(
+    () => selection.size > 0 || (modeId === 'fs-tree' && Object.values(expanded).some(Boolean)),
+    [selection, modeId, expanded],
+  )
+  useEffect(() => {
+    if (!wantsRegistry) return
+    let cancelled = false
+    loadRegistry()
+      .then((reg) => {
+        if (!cancelled) setRegistry(reg)
+      })
+      .catch(() => {
+        // Best-effort detail: without the registry the canvas simply stays on
+        // codebase_graph.json, exactly how it always started.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [wantsRegistry])
+
   return (
     <div className="app">
       <Sidebar
@@ -137,7 +167,7 @@ export function App() {
         onFilterVisibleChange={(next) => useWorkspace.getState().setFilterVisible(next)}
       />
       <div className="stage-host">
-        <Workspace scene={scene} onActivate={onActivate} expandable={layout?.expandable} />
+        <Workspace scene={scene} output={layout} onActivate={onActivate} expandable={layout?.expandable} />
         {workspace === null && status.phase !== 'error' && (
           <div className="placeholder">
             <strong>Reading /out…</strong>
@@ -148,7 +178,7 @@ export function App() {
             reloaded from /out
           </div>
         )}
-        <Inspector node={selectedNode} />
+        <Inspector node={selectedNode} externalImports={workspace?.externalImports} />
       </div>
     </div>
   )

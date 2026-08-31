@@ -18,11 +18,15 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
-import { relayout, selectOverrides, useWorkspace } from '../state/store'
+import { onGoto } from '../data/goto'
+import { resolveGoto, type ModeOutput } from '../modes/types'
+import { relayout, selectOverrides, selectViewport, useWorkspace } from '../state/store'
 import { Grid } from './Grid'
 import { lodOf } from './lod'
 import {
   cullScene,
+  highlightedEdgesLast,
+  importEdgesIncidentTo,
   nodesInRect,
   placedRect,
   reproject,
@@ -35,9 +39,14 @@ import {
 } from './scene'
 import { THEME } from './theme'
 import { useViewport } from './useViewport'
-import type { Point, Rect as WorldRect } from './viewport'
+import { centerOn, type Point, type Rect as WorldRect } from './viewport'
 
 const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif'
+
+/** Nothing selected and nothing hovered: the highlight set stays this stable
+ *  reference so the idle scene (and every pan/zoom frame) re-renders for free
+ *  (tic-5393). */
+const NO_HIGHLIGHT: ReadonlySet<string> = new Set()
 
 interface NodeHandlers {
   onPointerDown: (e: KonvaEventObject<PointerEvent>) => void
@@ -75,10 +84,16 @@ function applyGroupGeometry(shapes: GroupShapes, group: SceneGroup): void {
 
 export function Workspace({
   scene,
+  output,
   onActivate,
   expandable,
 }: {
   scene: Scene
+  /**
+   * The rendered mode, for resolving a goto target to a world rect.  Null
+   * while there is no mode (loading, error) -- goto then silently no-ops.
+   */
+  output: ModeOutput | null
   onActivate?: (id: string) => void
   /** Ids whose activation toggles expand/collapse; the `e` shortcut uses it. */
   expandable?: ReadonlySet<string>
@@ -89,6 +104,19 @@ export function Workspace({
   const overrides = useWorkspace(selectOverrides)
   const selection = useWorkspace((s) => s.selection)
   const hovered = useWorkspace((s) => s.hovered)
+
+  // Edges incident to the selection or hover light up in the import colour
+  // (tic-5393).  Incidence runs off the scene's edge anchors, which the mode
+  // has already shaped to the expand state: a collapsed file's imports anchor
+  // to its chip, an expanded file's to the contributing rows.  Hover and
+  // multi-selection union into one set, so every touching edge is lit.
+  const highlightIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (hovered !== null) ids.add(hovered)
+    for (const id of selection) ids.add(id)
+    if (ids.size === 0) return NO_HIGHLIGHT
+    return importEdgesIncidentTo(scene, ids)
+  }, [scene, selection, hovered])
 
   // Pointer handlers run outside React's render, so they reach the live scene
   // and overrides through refs rather than through a stale closure.
@@ -110,6 +138,12 @@ export function Workspace({
   const press = useRef<{ id: string; x: number; y: number } | null>(null)
   const onActivateRef = useRef(onActivate)
   onActivateRef.current = onActivate
+  // Goto handlers run outside React's render, so they read the latest mode
+  // output and stage size through refs rather than through a stale closure.
+  const outputRef = useRef(output)
+  outputRef.current = output
+  const sizeRef = useRef(size)
+  sizeRef.current = size
 
   useEffect(() => {
     const el = host.current
@@ -138,6 +172,52 @@ export function Workspace({
     onMarquee,
     onEmptyClick,
   })
+
+  // Camera goto (tic-bee0): any surface can emitGoto(target); the canvas owns
+  // the resolution and the flight.  A ~250ms ease-out pan (and zoom to a
+  // comfortable minimum) keeps the user's bearings on a graph this size, and
+  // the flight writes through the store so pan/zoom afterwards stay coherent.
+  // Drag overrides are honoured so a goto lands on where a node actually
+  // sits, not a stale laid-out spot.
+  const flyRef = useRef<number | null>(null)
+  useEffect(() => {
+    const stopFlight = () => {
+      if (flyRef.current !== null) cancelAnimationFrame(flyRef.current)
+      flyRef.current = null
+    }
+    const unsubscribe = onGoto((target) => {
+      stopFlight()
+      const modeOutput = outputRef.current
+      const { width, height } = sizeRef.current
+      if (!modeOutput || width === 0 || height === 0) return
+      const resolved = resolveGoto(modeOutput, target)
+      if (!resolved) return // nothing reachable in this scene -- silent no-op
+      // Select the target so the inspector follows it.
+      useWorkspace.getState().select([resolved.elementId])
+      const overridden = selectOverrides(useWorkspace.getState())[resolved.elementId]
+      const rect: WorldRect = overridden
+        ? { x: overridden.x, y: overridden.y, width: resolved.rect.width, height: resolved.rect.height }
+        : resolved.rect
+      const from = selectViewport(useWorkspace.getState())
+      const to = centerOn(from, rect, sizeRef.current, { zoom: true })
+      const start = performance.now()
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / 250)
+        const eased = 1 - Math.pow(1 - t, 3) // ease-out cubic
+        useWorkspace.getState().setViewport({
+          x: from.x + (to.x - from.x) * eased,
+          y: from.y + (to.y - from.y) * eased,
+          scale: from.scale + (to.scale - from.scale) * eased,
+        })
+        flyRef.current = t < 1 ? requestAnimationFrame(step) : null
+      }
+      flyRef.current = requestAnimationFrame(step)
+    })
+    return () => {
+      unsubscribe()
+      stopFlight()
+    }
+  }, [])
 
   // Frame the scene the first time it arrives, unless a saved camera was
   // restored -- overriding that would defeat the point of persisting it.
@@ -276,12 +356,20 @@ export function Workspace({
     () => (Object.keys(overrides).length > 0 ? reproject(scene, overrides) : scene),
     [scene, overrides],
   )
+  // Highlighted edges draw above the grey neighbours (tic-5393): reorder so
+  // the lit lines come last.  Memoised on `projected` + `highlightIds`, both
+  // stable across a pan, so pan/zoom pays only the cull below -- never a
+  // per-frame re-sort, and never a scene rebuild.
+  const orderedEdges = useMemo(
+    () => highlightedEdgesLast(projected.edges, highlightIds),
+    [projected, highlightIds],
+  )
   // Render-time culling (tic-fa56): filter the computed scene to what the
   // camera can see, plus a margin.  Selection, marquee and fit keep using the
   // full scene through the refs above.
   const visible = useMemo(
-    () => cullScene(projected, visibleWorldRect(viewport, size)),
-    [projected, viewport, size],
+    () => cullScene({ ...projected, edges: orderedEdges }, visibleWorldRect(viewport, size)),
+    [projected, orderedEdges, viewport, size],
   )
   // Text thinning on the same thresholds the modes read; both only change on
   // a threshold crossing, never per pan/zoom frame.
@@ -345,7 +433,12 @@ export function Workspace({
 
           <Layer ref={edgeLayer} {...world} listening={false}>
             {visible.edges.map((edge) => (
-              <EdgeLine key={edge.id} edge={edge} register={registerEdge} />
+              <EdgeLine
+                key={edge.id}
+                edge={edge}
+                highlighted={highlightIds.has(edge.id)}
+                register={registerEdge}
+              />
             ))}
           </Layer>
 
@@ -467,19 +560,23 @@ const GroupBox = memo(function GroupBox({
 
 const EdgeLine = memo(function EdgeLine({
   edge,
+  highlighted,
   register,
 }: {
   edge: SceneEdge
+  /** Whether the edge is incident to the selection/hover (tic-5393). */
+  highlighted: boolean
   register: (id: string, line: Konva.Line | null) => void
 }) {
+  const width = edge.strokeWidth ?? 1
   return (
     <Line
       ref={(instance) => register(edge.id, instance)}
       points={edge.points}
-      stroke={edge.stroke}
-      strokeWidth={edge.strokeWidth ?? 1}
+      stroke={highlighted ? THEME.import : edge.stroke}
+      strokeWidth={highlighted ? width * 2 : width}
       dash={edge.dash}
-      opacity={edge.opacity ?? 1}
+      opacity={highlighted ? 1 : edge.opacity ?? 1}
       listening={false}
       perfectDrawEnabled={false}
       shadowForStrokeEnabled={false}

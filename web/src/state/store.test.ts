@@ -75,6 +75,21 @@ describe('camera', () => {
     useWorkspace.getState().fitTo({ x: 0, y: 0, width: 100, height: 100 }, { width: 400, height: 400 }, 0)
     expect(selectViewport(useWorkspace.getState())).toEqual({ x: 0, y: 0, scale: 4 })
   })
+
+  it('centres on a rect, pan-only keeping the current zoom', () => {
+    useWorkspace
+      .getState()
+      .centerOn({ x: 100, y: 50, width: 40, height: 20 }, { width: 400, height: 400 })
+    // Saved camera is scale 2, so the pan keeps it and centres the rect.
+    expect(selectViewport(useWorkspace.getState())).toEqual({ x: -40, y: 80, scale: 2 })
+  })
+
+  it('zooms to a comfortable minimum when asked', () => {
+    useWorkspace
+      .getState()
+      .centerOn({ x: 0, y: 0, width: 100, height: 100 }, { width: 400, height: 400 }, { padding: 0, zoom: true })
+    expect(selectViewport(useWorkspace.getState())).toEqual({ x: 0, y: 0, scale: 4 })
+  })
 })
 
 describe('selection', () => {

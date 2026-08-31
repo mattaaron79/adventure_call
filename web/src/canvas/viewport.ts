@@ -88,6 +88,34 @@ export function fitToRect(rect: Rect, size: Size, padding = 48): Viewport {
   }
 }
 
+/** Options for {@link centerOn}. */
+export interface CenterOnOptions {
+  /** Screen padding around the target rect, in CSS px. */
+  padding?: number
+  /**
+   * Zoom to the fit-to-rect scale when the current scale would show the target
+   * smaller than that (a "comfortable minimum"). Pan-only when false.
+   */
+  zoom?: boolean
+}
+
+/**
+ * The viewport that centres `rect` in `size` while keeping the current zoom
+ * (tic-bee0).  Reuses the fitToRect maths rather than writing new projection
+ * code, so a goto agrees with fit-to-content.  By default it pans without
+ * touching the scale, so the user keeps their bearings; with `zoom` the scale
+ * rises to fit `rect` with `padding` whenever the current scale shows it
+ * smaller -- a floor, never a zoom-out.
+ */
+export function centerOn(vp: Viewport, rect: Rect, size: Size, opts: CenterOnOptions = {}): Viewport {
+  const { padding = 48, zoom = false } = opts
+  let scale = vp.scale
+  if (zoom) scale = clampScale(Math.max(scale, fitToRect(rect, size, padding).scale))
+  const cx = rect.x + rect.width / 2
+  const cy = rect.y + rect.height / 2
+  return { scale, x: size.width / 2 - cx * scale, y: size.height / 2 - cy * scale }
+}
+
 /** The world-space rectangle currently on screen, grown by `margin` world px. */
 export function visibleWorldRect(vp: Viewport, size: Size, margin = 0): Rect {
   const topLeft = screenToWorld(vp, { x: 0, y: 0 })

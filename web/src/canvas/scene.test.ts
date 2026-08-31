@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { elbow } from '../layout/tidyTree'
-import { nodesInRect, placedRect, reproject, sceneBounds, type Scene } from './scene'
+import {
+  highlightedEdgesLast,
+  importEdgesIncidentTo,
+  nodesInRect,
+  placedRect,
+  reproject,
+  sceneBounds,
+  type Scene,
+} from './scene'
 
 function node(id: string, x: number, y: number, draggable = true) {
   return { id, x, y, width: 100, height: 40, label: id, fill: '#000', stroke: '#111', draggable }
@@ -125,5 +133,65 @@ describe('reproject', () => {
     expect(out.groups.map((g) => [g.x, g.y, g.width, g.height])).toEqual(
       ROUTED.groups.map((g) => [g.x, g.y, g.width, g.height]),
     )
+  })
+})
+
+// -- selection highlighting (tic-5393) ----------------------------------------
+
+/** Import and nesting edges sharing endpoints, plus one edge with no kind. */
+const HIGHLIGHT: Scene = {
+  groups: [],
+  nodes: [node('a', 0, 0), node('b', 200, 100), node('row', 0, 200)],
+  edges: [
+    { id: 'imp:a->b', points: [50, 20, 250, 120], stroke: '#45475a', kind: 'import', from: 'a', to: 'b' },
+    { id: 'imp:b->row', points: [250, 120, 50, 220], stroke: '#45475a', kind: 'import', from: 'b', to: 'row' },
+    { id: 'nest:a->b', points: [0, 0, 100, 0], stroke: '#45475a', kind: 'nesting', from: 'a', to: 'b' },
+    { id: 'no-kind', points: [0, 0, 10, 10], stroke: '#45475a', from: 'a', to: 'row' },
+  ],
+}
+
+describe('importEdgesIncidentTo', () => {
+  it('lights the import edges touching the element, either end', () => {
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['a']))).toEqual(new Set(['imp:a->b']))
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['b']))).toEqual(
+      new Set(['imp:a->b', 'imp:b->row']),
+    )
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['row']))).toEqual(new Set(['imp:b->row']))
+  })
+
+  it('ignores nesting edges and edges without a kind', () => {
+    // 'a' is incident to nest:a->b and no-kind too, but only the import is lit.
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['a']))).toEqual(new Set(['imp:a->b']))
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['row']))).toEqual(new Set(['imp:b->row']))
+  })
+
+  it('unions the result across a multi-selection', () => {
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['a', 'row']))).toEqual(
+      new Set(['imp:a->b', 'imp:b->row']),
+    )
+  })
+
+  it('is empty for an empty element set or a scene with no import edges', () => {
+    expect(importEdgesIncidentTo(HIGHLIGHT, new Set())).toEqual(new Set())
+    expect(importEdgesIncidentTo({ groups: [], nodes: [], edges: [] }, new Set(['a']))).toEqual(
+      new Set(),
+    )
+  })
+})
+
+describe('highlightedEdgesLast', () => {
+  it('returns the input untouched when nothing is highlighted', () => {
+    const edges = HIGHLIGHT.edges
+    expect(highlightedEdgesLast(edges, new Set())).toBe(edges)
+  })
+
+  it('moves highlighted edges to the end, keeping relative order otherwise', () => {
+    const ordered = highlightedEdgesLast(HIGHLIGHT.edges, new Set(['imp:a->b', 'imp:b->row']))
+    expect(ordered.map((e) => e.id)).toEqual(['nest:a->b', 'no-kind', 'imp:a->b', 'imp:b->row'])
+  })
+
+  it('leaves already-last highlights in place', () => {
+    const ordered = highlightedEdgesLast(HIGHLIGHT.edges, new Set(['no-kind']))
+    expect(ordered.map((e) => e.id)).toEqual(['imp:a->b', 'imp:b->row', 'nest:a->b', 'no-kind'])
   })
 })

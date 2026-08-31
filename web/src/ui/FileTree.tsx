@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FsDir, FsFile, FsNode } from '../data/derive'
+import { GotoIcon } from './GotoIcon'
 
 /**
  * Subtree pruned to the files `matches` accepts (tic-9098: the predicate is
@@ -66,10 +67,11 @@ function TreeNode({ node, depth, overrides, setOverrides }: NodeProps) {
   if (node.type === 'file') {
     return (
       <li>
-        <span className="tree-row tree-file" style={indent} title={node.path}>
+        <div className="tree-row tree-file" style={indent} title={node.path}>
           <span className="tree-caret" />
-          {node.name}
-        </span>
+          <span className="tree-label">{node.name}</span>
+          <GotoIcon target={node.path} label={`Go to ${node.path}`} />
+        </div>
       </li>
     )
   }
@@ -78,18 +80,19 @@ function TreeNode({ node, depth, overrides, setOverrides }: NodeProps) {
 
   return (
     <li>
-      <button
-        type="button"
-        className="tree-row tree-dir"
-        style={indent}
-        title={node.path}
-        aria-expanded={open}
-        onClick={() => setOverrides((prev) => ({ ...prev, [node.path]: !open }))}
-      >
-        <span className="tree-caret">{open ? '▾' : '▸'}</span>
-        {node.name}
-        <span className="tree-count">{node.fileCount}</span>
-      </button>
+      <div className="tree-row tree-dir" style={indent} title={node.path}>
+        <button
+          type="button"
+          className="tree-toggle"
+          aria-expanded={open}
+          onClick={() => setOverrides((prev) => ({ ...prev, [node.path]: !open }))}
+        >
+          <span className="tree-caret">{open ? '▾' : '▸'}</span>
+          <span className="tree-label">{node.name}</span>
+          <span className="tree-count">{node.fileCount}</span>
+        </button>
+        <GotoIcon target={node.path} label={`Go to ${node.path}`} />
+      </div>
       {open && (
         <ul>
           {node.children.map((child) => (

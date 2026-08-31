@@ -7,13 +7,30 @@
  * registry promise is memoised in the data layer, so this is free after the
  * first time).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { ExternalImport } from '../data/derive'
+import { normalizePath } from '../data/filters'
 import { loadRegistry } from '../data/load'
 import type { GraphNode } from '../data/types'
+import { GotoIcon } from './GotoIcon'
 
 type SourceState = 'idle' | 'loading' | 'ready' | 'unavailable'
 
-export function Inspector({ node }: { node: GraphNode | null }) {
+export function Inspector({
+  node,
+  externalImports = [],
+}: {
+  node: GraphNode | null
+  /** The workspace's registry-derived external imports (tic-314c); empty
+   *  until the registry has been fetched. */
+  externalImports?: readonly ExternalImport[]
+}) {
+  // The imports of the file the selected node lives in; empty until the
+  // registry arrives, since codebase_graph.json drops external targets.
+  const fileExternal = useMemo(
+    () => (node ? externalImports.filter((imp) => imp.source === normalizePath(node.file_path)) : []),
+    [node, externalImports],
+  )
   const [source, setSource] = useState<string | null>(null)
   const [sourceState, setSourceState] = useState<SourceState>('idle')
 
@@ -48,6 +65,8 @@ export function Inspector({ node }: { node: GraphNode | null }) {
         <span className={`swatch kind-${node.kind}`} />
         <strong>{node.name}</strong>
         <span className="inspector-kind">{node.kind}</span>
+        {/* Fly the camera to the selected node's file (tic-bee0). */}
+        <GotoIcon target={node.file_path} label={`Go to ${node.file_path}`} />
       </header>
       <p className="inspector-path">{node.file_path}:{node.start_line}</p>
 
@@ -89,6 +108,20 @@ export function Inspector({ node }: { node: GraphNode | null }) {
           <ul className="inspector-list">
             {node.decorators.map((decorator) => (
               <li key={decorator}>@{decorator}</li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {fileExternal.length > 0 && (
+        <>
+          <h3>External imports</h3>
+          <ul className="inspector-list inspector-external">
+            {fileExternal.map((imp) => (
+              <li key={imp.target}>
+                <code>{imp.target}</code>
+                {imp.count > 1 && <span className="inspector-dim"> ×{imp.count}</span>}
+              </li>
             ))}
           </ul>
         </>

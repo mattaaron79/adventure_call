@@ -1,13 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildFsTree,
+  deriveExternalImports,
   deriveFileImports,
   deriveWorkspace,
   indexSymbols,
   walkFiles,
   type FsDir,
 } from './derive'
-import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind } from './types'
+import type {
+  BindingRecord,
+  CodebaseGraph,
+  GraphEdge,
+  GraphNode,
+  ImportRecord,
+  ModuleRecord,
+  SymbolKind,
+  SymbolRegistry,
+} from './types'
 
 /**
  * A six-file stand-in for a real export.  It reproduces the shapes that make
@@ -61,6 +71,66 @@ function imports(source: string, target: string, count = 1): GraphEdge {
 
 function calls(source: string, target: string): GraphEdge {
   return { ...imports(source, target), type: 'CALLS', types: ['CALLS'] }
+}
+
+/** An `import a.b` / `from a.b import c` as the registry records it. */
+function importRecord(
+  module: string,
+  alias: string,
+  target_module: string,
+  target_symbol: string | null,
+  overrides: Partial<ImportRecord> = {},
+): ImportRecord {
+  const target = target_symbol
+    ? target_module
+      ? `${target_module}.${target_symbol}`
+      : target_symbol
+    : target_module
+  return {
+    module,
+    alias,
+    target_module,
+    target_symbol,
+    is_relative: false,
+    level: 1,
+    is_wildcard: false,
+    line: 1,
+    target,
+    ...overrides,
+  }
+}
+
+function binding(alias: string, kind: string, target: string): BindingRecord {
+  return { alias, kind, target, line: 1, statement_module: '', is_relative: false }
+}
+
+/** A minimal symbol_registry.json: just the modules and bindings a test needs. */
+function makeRegistry(
+  modules: Record<string, { file_path: string; imports: ImportRecord[] }>,
+  bindings: Record<string, Record<string, BindingRecord>>,
+): SymbolRegistry {
+  const mods: Record<string, ModuleRecord> = {}
+  for (const [id, m] of Object.entries(modules)) {
+    mods[id] = {
+      file_path: m.file_path,
+      language: 'python',
+      docstring: null,
+      symbol_ids: [],
+      imports: m.imports,
+    }
+  }
+  return {
+    schema_version: 1,
+    generated_at: '2026-08-30T00:00:00+00:00',
+    root: '../fixture',
+    includes_source: false,
+    stats: GRAPH.graph.stats,
+    symbols: {},
+    modules: mods,
+    bindings,
+    unresolved_calls: [],
+    diagnostics: [],
+  }
 }
 
 const NODES: GraphNode[] = [
@@ -248,6 +318,87 @@ describe('deriveFileImports', () => {
   })
 })
 
+describe('deriveExternalImports', () => {
+  const index = indexSymbols(NODES)
+
+  const REGISTRY = makeRegistry(
+    {
+      'app.loop': {
+        file_path: 'src/app/loop.py',
+        imports: [
+          importRecord('app.loop', 'typing', 'typing', null),
+          importRecord('app.loop', 'typing', 'typing', null), // repeated -> grouped
+          importRecord('app.loop', 'Optional', 'typing', 'Optional'),
+          importRecord('app.loop', 'PluginError', 'app.errors', 'PluginError'), // resolves
+          importRecord('app.loop', 'click', 'click', null), // no binding -> index fallback
+          importRecord('app.loop', 'errors_star', 'app.errors', null, { is_wildcard: true }), // no binding, resolves
+        ],
+      },
+      'tests.test_loop': {
+        file_path: 'tests/test_loop.py',
+        imports: [importRecord('tests.test_loop', 'pytest', 'pytest', null)],
+      },
+    },
+    {
+      'app.loop': {
+        typing: binding('typing', 'external', 'typing'),
+        Optional: binding('Optional', 'external', 'typing.Optional'),
+        PluginError: binding('PluginError', 'symbol', 'app.errors.PluginError'),
+      },
+    },
+  )
+
+  const external = deriveExternalImports(REGISTRY, index)
+
+  it('keeps imports the registry labelled external, grouped per file and target', () => {
+    expect(external.filter((imp) => imp.source === 'src/app/loop.py')).toEqual([
+      { source: 'src/app/loop.py', target: 'typing', count: 2 },
+      { source: 'src/app/loop.py', target: 'typing.Optional', count: 1 },
+      { source: 'src/app/loop.py', target: 'click', count: 1 },
+    ])
+    expect(external).toContainEqual({ source: 'tests/test_loop.py', target: 'pytest', count: 1 })
+  })
+
+  it('drops imports that resolve to a known symbol or module, by binding kind', () => {
+    // PluginError has a `symbol` binding; errors_star has none but its target
+    // module resolves in the index, so neither is external.
+    expect(external.some((imp) => imp.target.includes('PluginError'))).toBe(false)
+    expect(external.some((imp) => imp.target === 'app.errors')).toBe(false)
+  })
+
+  it('falls back to the index for imports the resolver did not bind', () => {
+    // `import click` has no binding and does not resolve -> external.
+    expect(external).toContainEqual({ source: 'src/app/loop.py', target: 'click', count: 1 })
+  })
+
+  it('only surfaces files present in the workspace index', () => {
+    // A filtered index drops scratch.spike; its external imports vanish too.
+    const filtered = indexSymbols(NODES.filter((n) => n.module !== 'scratch.spike'))
+    const scratchImports = deriveExternalImports(
+      makeRegistry(
+        { 'scratch.spike': { file_path: 'scratch/spike.py', imports: [importRecord('scratch.spike', 'click', 'click', null)] } },
+        { 'scratch.spike': { click: binding('click', 'external', 'click') } },
+      ),
+      filtered,
+    )
+    expect(scratchImports).toEqual([])
+    expect(
+      deriveExternalImports(
+        makeRegistry(
+          { 'scratch.spike': { file_path: 'scratch/spike.py', imports: [importRecord('scratch.spike', 'click', 'click', null)] } },
+          { 'scratch.spike': { click: binding('click', 'external', 'click') } },
+        ),
+        indexSymbols(NODES),
+      ),
+    ).toEqual([{ source: 'scratch/spike.py', target: 'click', count: 1 }])
+  })
+
+  it('memoises per (registry, index) pair', () => {
+    expect(deriveExternalImports(REGISTRY, index)).toBe(external)
+    expect(deriveExternalImports(REGISTRY, indexSymbols([...NODES]))).not.toBe(external)
+  })
+})
+
 describe('deriveWorkspace', () => {
   it('applies excludes before deriving anything', () => {
     const ws = deriveWorkspace(GRAPH, ['scratch/**'])
@@ -321,5 +472,38 @@ describe('deriveWorkspace', () => {
     expect(deriveWorkspace(GRAPH, [], 'loop')).toBe(ws)
     expect(deriveWorkspace(GRAPH, [], 'errors')).not.toBe(ws)
     expect(deriveWorkspace(GRAPH, [], '')).not.toBe(ws)
+  })
+
+  it('stays on codebase_graph.json alone: external imports are empty until the registry lands', () => {
+    expect(deriveWorkspace(GRAPH, []).externalImports).toEqual([])
+    expect(deriveWorkspace(GRAPH, ['scratch/**']).externalImports).toEqual([])
+  })
+
+  it('populates the external-import layer once a registry is passed (tic-314c)', () => {
+    const registry = makeRegistry(
+      {
+        'app.loop': {
+          file_path: 'src/app/loop.py',
+          imports: [importRecord('app.loop', 'typing', 'typing', null)],
+        },
+      },
+      { 'app.loop': { typing: binding('typing', 'external', 'typing') } },
+    )
+    const ws = deriveWorkspace(GRAPH, [], '', registry)
+    expect(ws.externalImports).toEqual([
+      { source: 'src/app/loop.py', target: 'typing', count: 1 },
+    ])
+  })
+
+  it('memoises the registry-aware workspace per (graph, excludes, query, registry)', () => {
+    const registry = makeRegistry(
+      { 'app.loop': { file_path: 'src/app/loop.py', imports: [importRecord('app.loop', 'typing', 'typing', null)] } },
+      { 'app.loop': { typing: binding('typing', 'external', 'typing') } },
+    )
+    const ws = deriveWorkspace(GRAPH, [], '', registry)
+    expect(deriveWorkspace(GRAPH, [], '', registry)).toBe(ws)
+    // A missing or different registry is a different derivation.
+    expect(deriveWorkspace(GRAPH, [], '')).not.toBe(ws)
+    expect(deriveWorkspace(GRAPH, [], '', makeRegistry({}, {}))).not.toBe(ws)
   })
 })

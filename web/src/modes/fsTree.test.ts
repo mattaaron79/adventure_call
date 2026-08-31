@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
+import { THEME } from '../canvas/theme'
 import { deriveWorkspace, type FsDir } from '../data/derive'
-import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind } from '../data/types'
+import type {
+  BindingRecord,
+  CodebaseGraph,
+  GraphEdge,
+  GraphNode,
+  ImportRecord,
+  SymbolKind,
+  SymbolRegistry,
+} from '../data/types'
 import { fileRows, fsTreeMode, layoutContainer } from './fsTree'
-import { renderMode } from './types'
+import { renderMode, resolveGoto } from './types'
 
 /**
  * Render the mode the way the app does: only through the VizMode interface.
@@ -11,7 +20,8 @@ const render = (
   expanded: Record<string, boolean> = {},
   params = { ...fsTreeMode.defaultParams },
   lod = 0,
-) => renderMode(fsTreeMode, WORKSPACE, params, { expanded, lod })
+  workspace = WORKSPACE,
+) => renderMode(fsTreeMode, workspace, params, { expanded, lod })
 
 /**
  * A miniature corpus with everything the mode has to render: a nested
@@ -107,6 +117,81 @@ const GRAPH: CodebaseGraph = {
 
 const WORKSPACE = deriveWorkspace(GRAPH, [])
 
+// -- external imports (tic-314c) --------------------------------------------
+
+function importRecord(
+  module: string,
+  alias: string,
+  target_module: string,
+  target_symbol: string | null,
+): ImportRecord {
+  const target = target_symbol
+    ? target_module
+      ? `${target_module}.${target_symbol}`
+      : target_symbol
+    : target_module
+  return {
+    module,
+    alias,
+    target_module,
+    target_symbol,
+    is_relative: false,
+    level: 1,
+    is_wildcard: false,
+    line: 1,
+    target,
+  }
+}
+
+function binding(alias: string, kind: string, target: string): BindingRecord {
+  return { alias, kind, target, line: 1, statement_module: '', is_relative: false }
+}
+
+function makeRegistry(
+  imports: ImportRecord[],
+  bindings: Record<string, BindingRecord>,
+): SymbolRegistry {
+  return {
+    schema_version: 1,
+    generated_at: '2026-08-30T00:00:00+00:00',
+    root: '../fixture',
+    includes_source: false,
+    stats: GRAPH.graph.stats,
+    symbols: {},
+    modules: {
+      'app.loop': {
+        file_path: 'src/app/loop.py',
+        language: 'python',
+        docstring: null,
+        symbol_ids: [],
+        imports,
+      },
+    },
+    bindings: { 'app.loop': bindings },
+    unresolved_calls: [],
+    diagnostics: [],
+  }
+}
+
+// loop.py imports collections.abc and typing (external, typing twice so the
+// grouping is exercised) plus app.errors.PluginError (an internal symbol that
+// must not be surfaced as external).
+const EXTERNAL_REGISTRY = makeRegistry(
+  [
+    importRecord('app.loop', 'collections', 'collections.abc', null),
+    importRecord('app.loop', 'typing', 'typing', null),
+    importRecord('app.loop', 'typing', 'typing', null),
+    importRecord('app.loop', 'PluginError', 'app.errors', 'PluginError'),
+  ],
+  {
+    collections: binding('collections', 'external', 'collections.abc'),
+    typing: binding('typing', 'external', 'typing'),
+    PluginError: binding('PluginError', 'symbol', 'app.errors.PluginError'),
+  },
+)
+
+const EXTERNAL_WORKSPACE = deriveWorkspace(GRAPH, [], '', EXTERNAL_REGISTRY)
+
 function dir(root: FsDir, path: string): FsDir {
   if (path === '') return root
   for (const segment of path.split('/')) {
@@ -161,6 +246,13 @@ describe('fsTreeMode, everything collapsed', () => {
       to.x + to.width / 2,
       to.y + to.height / 2,
     ])
+  })
+
+  it('labels import edges with the import kind and nesting edges with nesting (tic-5393)', () => {
+    // The canvas needs a stable discriminator so selection highlighting does
+    // not mistake an elbow (nesting) for a centre line (import).
+    expect(scene.edges.find((e) => e.id.startsWith('imp:'))!.kind).toBe('import')
+    expect(scene.edges.find((e) => !e.id.startsWith('imp:'))!.kind).toBe('nesting')
   })
 
   it('is deterministic', () => {
@@ -296,5 +388,76 @@ describe('fileRows and layoutContainer', () => {
     expect(layout.width).toBeGreaterThan(300)
     expect(layout.height).toBeGreaterThan(36 + 12 + 2 * 24)
     expect(layout.rows[0].y).toBeLessThan(layout.rows[1].y)
+  })
+})
+
+describe('fsTreeMode goto index (tic-bee0)', () => {
+  it('resolves a visible file and a visible directory to their chips', () => {
+    const layout = render()
+    const file = resolveGoto(layout, 'src/app/loop.py')
+    expect(file).toEqual({ elementId: 'src/app/loop.py', rect: layout.rects.get('src/app/loop.py') })
+    const dir = resolveGoto(layout, 'src/app')
+    expect(dir!.elementId).toBe('dir:src/app')
+    expect(dir!.rect).toBe(layout.rects.get('dir:src/app'))
+  })
+
+  it('resolves a file inside a collapsed directory to the nearest visible chip', () => {
+    const layout = render({ 'dir:src/app': false })
+    // The file is gone from the scene, but goto still lands on its closed dir.
+    expect(layout.scene.nodes.map((n) => n.id)).not.toContain('src/app/loop.py')
+    const target = resolveGoto(layout, 'src/app/loop.py')
+    expect(target!.elementId).toBe('dir:src/app')
+    expect(target!.rect).toBe(layout.rects.get('dir:src/app'))
+  })
+
+  it('resolves a deep file under a collapsed parent to the nearest open chip', () => {
+    const layout = render({ 'dir:src': false })
+    const target = resolveGoto(layout, 'src/app/cli/main.py')
+    expect(target!.elementId).toBe('dir:src')
+    expect(target!.rect).toBe(layout.rects.get('dir:src'))
+  })
+
+  it('resolves nothing for a target absent from the workspace', () => {
+    expect(resolveGoto(render(), 'does/not/exist.py')).toBeNull()
+  })
+})
+
+describe('fsTreeMode, external imports (tic-314c)', () => {
+  it('lists external imports in the Imports section, grouped and linkless', () => {
+    const layout = render({ 'src/app/loop.py': true }, undefined, 0, EXTERNAL_WORKSPACE)
+    const ids = layout.scene.nodes.map((n) => n.id)
+    expect(ids).toContain('row:src/app/loop.py:section:Imports')
+    expect(ids).toContain('row:src/app/loop.py:imp:app.errors.PluginError')
+    expect(ids).toContain('row:src/app/loop.py:ext:collections.abc')
+    expect(ids).toContain('row:src/app/loop.py:ext:typing')
+    // External rows carry no symbol: they link to nothing by design.
+    expect(layout.symbolOf.has('row:src/app/loop.py:ext:collections.abc')).toBe(false)
+    expect(layout.symbolOf.has('row:src/app/loop.py:ext:typing')).toBe(false)
+    // Internal imports keep their symbol mapping.
+    expect(layout.symbolOf.get('row:src/app/loop.py:imp:app.errors.PluginError')).toBe(
+      'app.errors.PluginError',
+    )
+  })
+
+  it('groups repeated targets into one row with a count', () => {
+    const layout = render({ 'src/app/loop.py': true }, undefined, 0, EXTERNAL_WORKSPACE)
+    const external = layout.scene.nodes.filter((n) => n.id.startsWith('row:src/app/loop.py:ext:'))
+    expect(external.map((n) => n.label)).toEqual(['collections.abc', 'typing ×2'])
+  })
+
+  it('mutes external rows against the resolved ones', () => {
+    const layout = render({ 'src/app/loop.py': true }, undefined, 0, EXTERNAL_WORKSPACE)
+    const external = layout.scene.nodes.find((n) => n.id === 'row:src/app/loop.py:ext:typing')!
+    expect(external.stroke).toBe(THEME.textFaint)
+    expect(external.accent).toBe(THEME.textFaint)
+    const internal = layout.scene.nodes.find(
+      (n) => n.id === 'row:src/app/loop.py:imp:app.errors.PluginError',
+    )!
+    expect(internal.stroke).toBe(THEME.line)
+  })
+
+  it('starts on codebase_graph.json alone: no registry, no external rows', () => {
+    const layout = render({ 'src/app/loop.py': true })
+    expect(layout.scene.nodes.map((n) => n.id)).not.toContain('row:src/app/loop.py:ext:typing')
   })
 })

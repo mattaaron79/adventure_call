@@ -124,6 +124,7 @@ export function placeholderScene(workspace: Workspace | null): Scene {
       stroke: THEME.edge,
       strokeWidth: 1,
       opacity: 0.5,
+      kind: 'import',
     })
   }
 

@@ -9,10 +9,12 @@
  */
 import { create } from 'zustand'
 import {
+  centerOn,
   clampScale,
   fitToRect,
   translate,
   zoomAt,
+  type CenterOnOptions,
   type Point,
   type Rect,
   type Size,
@@ -48,6 +50,8 @@ export interface WorkspaceState {
   zoomAtPointer: (pointer: Point, factor: number) => void
   panBy: (dx: number, dy: number) => void
   fitTo: (rect: Rect, size: Size, padding?: number) => void
+  /** Centre the camera on a world rect (tic-bee0); see viewport.centerOn. */
+  centerOn: (rect: Rect, size: Size, opts?: CenterOnOptions) => void
 
   moveNodes: (positions: Readonly<Record<string, Point>>) => void
   clearOverrides: () => void
@@ -122,6 +126,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
     fitTo: (rect, size, padding) =>
       patchMode((mode) => ({ ...mode, viewport: fitToRect(rect, size, padding) })),
+
+    centerOn: (rect, size, opts) =>
+      patchMode((mode) => {
+        const viewport = centerOn(mode.viewport, rect, size, opts)
+        return viewport === mode.viewport ? null : { ...mode, viewport }
+      }),
 
     moveNodes: (positions) =>
       patchMode((mode) => ({ ...mode, overrides: { ...mode.overrides, ...positions } })),

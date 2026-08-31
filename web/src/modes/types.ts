@@ -77,6 +77,14 @@ export interface SceneSpec {
   root: SpecNode
   groups: readonly SpecGroup[]
   edges: readonly SpecEdge[]
+  /**
+   * Optional goto index (tic-bee0): user-facing target -> scene element id.
+   * Lets the camera centre on a file/dir/symbol even when its element is
+   * filtered out or hidden behind a collapsed container -- the mode resolves
+   * such targets to the nearest element that is actually in the scene.  When
+   * absent, goto resolves nothing.
+   */
+  goto?: ReadonlyMap<string, string>
 }
 
 /** Intrinsic size per element id, from `measure`. */
@@ -146,8 +154,36 @@ export interface ModeOutput {
   rects: ReadonlyMap<string, Rect>
   /** Element id -> symbol id, for the inspector. */
   symbolOf: ReadonlyMap<string, string>
+  /** User-facing goto target -> scene element id (see {@link SceneSpec.goto}). */
+  goto: ReadonlyMap<string, string>
   /** Ids whose activation toggles expand/collapse. */
   expandable: ReadonlySet<string>
+}
+
+/** A resolved camera-goto target (tic-bee0). */
+export interface GotoTarget {
+  /** The scene element to centre on (and select, so the inspector follows). */
+  elementId: string
+  /** The element's world rect, for the camera to centre on. */
+  rect: Rect
+}
+
+const EMPTY_GOTO: ReadonlyMap<string, string> = new Map()
+
+/**
+ * Resolve a user-facing target -- a file/dir path or a symbol id -- to the
+ * scene element the camera should centre on, through the mode's goto index.
+ * The mode has already collapsed hidden targets onto their nearest visible
+ * ancestor, so a target inside a collapsed container still lands somewhere
+ * real.  Returns null when nothing in the current scene can be reached (the
+ * target was filtered out entirely), which the caller treats as a silent no-op.
+ */
+export function resolveGoto(output: ModeOutput, target: string): GotoTarget | null {
+  const elementId = output.goto.get(target)
+  if (elementId === undefined) return null
+  const rect = output.rects.get(elementId)
+  if (!rect) return null
+  return { elementId, rect }
 }
 
 const TRANSPARENT = 'rgba(0,0,0,0)'
@@ -241,8 +277,15 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
       from: edge.from,
       to: edge.to,
       route: edge.route,
+      kind: edge.kind,
     })
   }
 
-  return { scene: { groups, edges, nodes }, rects: positioned.rects, symbolOf, expandable }
+  return {
+    scene: { groups, edges, nodes },
+    rects: positioned.rects,
+    symbolOf,
+    goto: spec.goto ?? EMPTY_GOTO,
+    expandable,
+  }
 }

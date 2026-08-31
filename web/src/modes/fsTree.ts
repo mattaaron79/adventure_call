@@ -72,6 +72,8 @@ interface Row {
   label: string
   kind: SymbolKind | 'section'
   indent: boolean
+  /** A muted, linkless treatment, e.g. an external import (tic-314c). */
+  external?: boolean
 }
 
 const rowId = (path: string, suffix: string): string => `row:${path}:${suffix}`
@@ -106,7 +108,10 @@ export function fileRows(workspace: Workspace, file: FsFile): Row[] {
   const index = workspace.index
 
   const imports = workspace.fileImports.filter((edge) => edge.source === file.path)
-  if (imports.length > 0) {
+  // External imports (tic-314c) only exist once the registry has been fetched;
+  // they share the Imports section but render muted and link to nothing.
+  const external = workspace.externalImports.filter((imp) => imp.source === file.path)
+  if (imports.length > 0 || external.length > 0) {
     rows.push(sectionRow(file.path, 'Imports'))
     for (const edge of imports) {
       for (const symbolId of edge.symbolIds) {
@@ -119,6 +124,16 @@ export function fileRows(workspace: Workspace, file: FsFile): Row[] {
           indent: false,
         })
       }
+    }
+    for (const imp of external) {
+      rows.push({
+        id: rowId(file.path, `ext:${imp.target}`),
+        symbolId: null,
+        label: imp.count > 1 ? `${imp.target} ×${imp.count}` : imp.target,
+        kind: 'module',
+        indent: false,
+        external: true,
+      })
     }
   }
 
@@ -192,6 +207,43 @@ export function layoutContainer(rows: Row[]): ContainerLayout {
 // -- select -------------------------------------------------------------------
 
 const dirId = (path: string): string => `dir:${path}`
+
+/**
+ * The goto index (tic-bee0): map every user-facing target -- a directory path
+ * or a file path -- to the scene element that represents it, or its nearest
+ * visible ancestor when the element itself is hidden (a directory closed on
+ * the canvas, or a file inside one).  A directory's chip exists in the scene
+ * once its ancestors are open; a file's chip exists once its parent chain is
+ * open.  Targets the workspace excludes entirely are absent and resolve to
+ * nothing, which is correct -- there is nothing to centre on.
+ */
+function buildGotoIndex(data: Workspace, expanded: Readonly<Record<string, boolean>>): Map<string, string> {
+  const goto = new Map<string, string>()
+  const dirOpen = (dir: FsDir): boolean => expanded[dirId(dir.path)] ?? true
+
+  const visit = (dir: FsDir, inScene: boolean, nearest: string): void => {
+    // `inScene` says whether this dir's own chip is in the scene (its
+    // ancestors all open); `nearest` is the element id of the closest ancestor
+    // chip that is.  The root is always in the scene; a child is when its
+    // parent is in the scene and open.
+    const dirElement = dirId(dir.path)
+    goto.set(dir.path, inScene ? dirElement : nearest)
+    // A child is in the scene iff this dir is in the scene and open.  The
+    // closest in-scene element beneath us is this dir's own chip when the dir
+    // is in the scene, else whatever the caller handed down.
+    const childInScene = inScene && dirOpen(dir)
+    const childNearest = inScene ? dirElement : nearest
+    for (const child of dir.children) {
+      if (child.type === 'dir') visit(child, childInScene, childNearest)
+      // A file centres on its own chip when it is in the scene; a file inside
+      // a closed-but-present dir centres on that dir's chip; a file under a
+      // dir that is itself hidden falls back to the nearest ancestor chip.
+      else goto.set(child.path, childInScene ? child.path : childNearest)
+    }
+  }
+  visit(data.tree, true, dirId(''))
+  return goto
+}
 
 /** Symbol ids each file imports, so an expanded importer can anchor its
  *  import edges onto the matching rows instead of its chip. */
@@ -310,7 +362,7 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
     }
   }
 
-  return { root, groups, edges }
+  return { root, groups, edges, goto: buildGotoIndex(data, expanded) }
 }
 
 // -- measure ------------------------------------------------------------------
@@ -421,13 +473,21 @@ function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
       nodes.set(node.id, { fill: TRANSPARENT, stroke: TRANSPARENT, draggable: false })
     } else {
       const row = node.data as Row
-      nodes.set(node.id, {
-        fill: THEME.surface2,
-        stroke: THEME.line,
-        // Sections are handled by their role above, so the kind is a symbol.
-        accent: KIND_COLOR[row.kind as SymbolKind],
-        draggable: false,
-      })
+      // External imports read as muted against the resolved rows: a grey
+      // border and accent bar instead of a kind colour, since they link to
+      // nothing (tic-314c).
+      nodes.set(
+        node.id,
+        row.external
+          ? { fill: THEME.surface2, stroke: THEME.textFaint, accent: THEME.textFaint, draggable: false }
+          : {
+              fill: THEME.surface2,
+              stroke: THEME.line,
+              // Sections are handled by their role above, so the kind is a symbol.
+              accent: KIND_COLOR[row.kind as SymbolKind],
+              draggable: false,
+            },
+      )
     }
     for (const child of node.children) visit(child)
   }

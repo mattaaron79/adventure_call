@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_SCALE,
   MIN_SCALE,
+  centerOn,
   clampScale,
   fitToRect,
   rectFromCorners,
@@ -98,6 +99,40 @@ describe('fitToRect', () => {
   it('does not exceed the scale range on a tiny or vast scene', () => {
     expect(fitToRect({ x: 0, y: 0, width: 1, height: 1 }, size).scale).toBe(MAX_SCALE)
     expect(fitToRect({ x: 0, y: 0, width: 1e7, height: 1e7 }, size).scale).toBe(MIN_SCALE)
+  })
+})
+
+describe('centerOn', () => {
+  const size = { width: 800, height: 600 }
+
+  it('pans so the rect is centred without touching the scale', () => {
+    const vp = { x: 10, y: -20, scale: 1 }
+    const rect = { x: 100, y: 50, width: 40, height: 20 }
+    const out = centerOn(vp, rect, size)
+    expect(out.scale).toBe(1)
+    expect(worldToScreen(out, { x: 120, y: 60 })).toEqual({ x: 400, y: 300 })
+  })
+
+  it('zooms to the comfortable fit floor only when asked, without zooming out', () => {
+    const vp = { x: 0, y: 0, scale: 0.2 }
+    const rect = { x: 0, y: 0, width: 100, height: 100 }
+    // Pan-only keeps the user's zoom.
+    expect(centerOn(vp, rect, size).scale).toBe(0.2)
+    // Zoom raises it to the fit-to-rect scale and the rect is centred.
+    const zoomed = centerOn(vp, rect, size, { zoom: true })
+    expect(zoomed.scale).toBeCloseTo(fitToRect(rect, size).scale)
+    const c = worldToScreen(zoomed, { x: 50, y: 50 })
+    expect(c.x).toBeCloseTo(400, 6)
+    expect(c.y).toBeCloseTo(300, 6)
+    // Already zoomed in further than a comfortable fit: never zoom out.
+    const hot = { x: 0, y: 0, scale: 6 }
+    expect(centerOn(hot, rect, size, { zoom: true }).scale).toBe(6)
+  })
+
+  it('clamps to the scale range like everything else', () => {
+    const vp = { x: 0, y: 0, scale: 1 }
+    const out = centerOn(vp, { x: 0, y: 0, width: 1, height: 1 }, size, { zoom: true })
+    expect(out.scale).toBe(MAX_SCALE)
   })
 })
 

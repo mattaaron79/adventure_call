@@ -67,6 +67,12 @@ export interface SceneEdge {
   to?: string
   /** How the polyline follows the endpoint rects. Default 'center'. */
   route?: EdgeRoute
+  /**
+   * The spec's edge kind (e.g. 'nesting' | 'import'), carried through from
+   * the spec so the canvas can tell import lines apart for selection
+   * highlighting (tic-5393).  Absent on edges that never had a kind.
+   */
+  kind?: string
 }
 
 export interface Scene {
@@ -214,4 +220,55 @@ export function cullScene(scene: Scene, visible: Rect): Scene {
     edges: scene.edges.filter((edge) => inView(edgeBounds(edge.points))),
     nodes: scene.nodes.filter(inView),
   }
+}
+
+// -- selection highlighting (tic-5393) ---------------------------------------
+
+/**
+ * The import edges incident to any of the given element ids.
+ *
+ * Incidence follows the scene's anchors, which the mode has already shaped to
+ * the expand state (fsTree's anchorId): a collapsed file's import edges anchor
+ * to the file chip, an expanded file's to the contributing rows.  Selecting a
+ * collapsed file therefore lights every import its symbols own, while
+ * selecting one row inside an expanded container lights only that row's.  A
+ * union is returned, so multi-selection (or a selection plus a hover) lights
+ * every edge touching any of the ids.  Only edges the mode labelled 'import'
+ * are considered -- nesting edges keep their current treatment.
+ */
+export function importEdgesIncidentTo(
+  scene: Scene,
+  elementIds: ReadonlySet<string>,
+): Set<string> {
+  const hit = new Set<string>()
+  for (const edge of scene.edges) {
+    if (edge.kind !== 'import') continue
+    if (
+      (edge.from !== undefined && elementIds.has(edge.from)) ||
+      (edge.to !== undefined && elementIds.has(edge.to))
+    ) {
+      hit.add(edge.id)
+    }
+  }
+  return hit
+}
+
+/**
+ * Reorder edges so highlighted ones draw last -- and therefore on top of the
+ * grey neighbours (tic-5393).  Stable one-pass partition; when nothing is
+ * highlighted the input array is returned untouched, so the common no-selection
+ * case (and every pan/zoom frame) pays nothing extra.
+ */
+export function highlightedEdgesLast(
+  edges: SceneEdge[],
+  highlightIds: ReadonlySet<string>,
+): SceneEdge[] {
+  if (highlightIds.size === 0) return edges
+  const plain: SceneEdge[] = []
+  const lit: SceneEdge[] = []
+  for (const edge of edges) {
+    if (highlightIds.has(edge.id)) lit.push(edge)
+    else plain.push(edge)
+  }
+  return [...plain, ...lit]
 }
