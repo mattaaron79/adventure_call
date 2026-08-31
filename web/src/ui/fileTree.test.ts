@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FsDir, FsFile } from '../data/derive'
-import { matchTree } from './FileTree'
+import { ancestorDirs, matchTree } from './FileTree'
 
 const file = (path: string): FsFile => {
   const name = path.split('/').pop()!
@@ -67,5 +67,34 @@ describe('matchTree', () => {
 
   it('is null when nothing matches', () => {
     expect(matchTree(TREE, () => false)).toBeNull()
+  })
+})
+
+describe('ancestorDirs', () => {
+  it('lists every folder a file sits in, root first', () => {
+    expect(ancestorDirs('src/app/loop.py')).toEqual(['src', 'src/app'])
+  })
+
+  it('omits the target itself so a goto does not expand the target', () => {
+    expect(ancestorDirs('src/app')).toEqual(['src'])
+  })
+
+  it('is empty for a top-level file', () => {
+    expect(ancestorDirs('setup.py')).toEqual([])
+  })
+
+  it('is empty for a top-level directory', () => {
+    expect(ancestorDirs('src')).toEqual([])
+  })
+
+  it('is empty for a non-path target (scene element id, symbol id, empty string)', () => {
+    expect(ancestorDirs('dir:src/app')).toEqual([])
+    expect(ancestorDirs('row:src/app/loop.py:imp:typing')).toEqual([])
+    expect(ancestorDirs('src.auth.login')).toEqual([])
+    expect(ancestorDirs('')).toEqual([])
+  })
+
+  it('tolerates a leading slash, normalising to root-relative dirs', () => {
+    expect(ancestorDirs('/src/app/cli.py')).toEqual(['src', 'src/app'])
   })
 })

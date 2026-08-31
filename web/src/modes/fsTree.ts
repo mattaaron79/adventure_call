@@ -22,7 +22,14 @@
 import type { FsDir, FsFile, FsNode, Workspace } from '../data/derive'
 import type { SymbolKind } from '../data/types'
 import { KIND_COLOR, THEME } from '../canvas/theme'
-import { elbow, elbowConnectors, layoutTree, subtreeGroups, type Size } from '../layout/tidyTree'
+import {
+  elbow,
+  elbowConnectors,
+  layoutTree,
+  subtreeGroups,
+  type Orientation,
+  type Size,
+} from '../layout/tidyTree'
 import type {
   GroupStyle,
   EdgeStyle,
@@ -60,6 +67,11 @@ const TRANSPARENT = 'rgba(0,0,0,0)'
 export interface FsTreeParams {
   /** Draw the file-to-file import lines. */
   showImports: boolean
+  /** Which way the tree grows (tic-0419): 'lr' left-to-right, 'tb' top-to-bottom. */
+  orientation: Orientation
+  /** Sibling wrapping (tic-3d87): 0/1 = single line, N >= 2 = pack children
+   *  into N columns ('lr') or N rows ('tb'). */
+  wrap: number
 }
 
 // -- rows ---------------------------------------------------------------------
@@ -506,9 +518,11 @@ const isTreeNode = (node: SpecNode): boolean => node.role === 'dir' || node.role
 
 const treeChildrenOf = (node: SpecNode): readonly SpecNode[] => node.children.filter(isTreeNode)
 
-function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positioned {
+function layout(spec: SceneSpec, sizes: SizeMap, params: FsTreeParams): Positioned {
   const rects = layoutTree(spec.root, (node) => sizes.get(node.id) ?? { width: 0, height: 0 }, {
     childrenOf: treeChildrenOf,
+    orientation: params.orientation,
+    wrap: params.wrap,
   })
 
   // Rows inside their containers, offset from the container's world rect; a
@@ -531,12 +545,25 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
       if (stub) {
         const size = sizes.get(stub.id)
         if (size) {
-          rects.set(stub.id, {
-            x: at.x + at.width + 6,
-            y: at.y + (at.height - size.height) / 2,
-            width: size.width,
-            height: size.height,
-          })
+          // The stub hangs off the chip's output side, which flips with the
+          // tree orientation (tic-0419): right of the chip in 'lr', below it
+          // in 'tb'.
+          rects.set(
+            stub.id,
+            params.orientation === 'tb'
+              ? {
+                  x: at.x + (at.width - size.width) / 2,
+                  y: at.y + at.height + 6,
+                  width: size.width,
+                  height: size.height,
+                }
+              : {
+                  x: at.x + at.width + 6,
+                  y: at.y + (at.height - size.height) / 2,
+                  width: size.width,
+                  height: size.height,
+                },
+          )
         }
       }
     }
@@ -551,11 +578,19 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
   }
 
   const edgePoints = new Map<string, readonly number[]>()
+  // The per-edge pipe override (wrapped lines' inter-column gap) rides along
+  // so the canvas `reproject` (tic-1d7c) keeps it when a drag re-routes the
+  // edge, instead of reverting to the midpoint pipe.
+  const edgePipes = new Map<string, { dx: number } | { dy: number }>()
 
   // Nesting lines: directory chip -> each child, elbow-routed.  The connector
   // ids are `${parent}->${child}`, exactly the nesting edge ids from select.
-  for (const edge of elbowConnectors(spec.root, rects, { childrenOf: treeChildrenOf })) {
+  for (const edge of elbowConnectors(spec.root, rects, {
+    childrenOf: treeChildrenOf,
+    orientation: params.orientation,
+  })) {
     edgePoints.set(edge.id, edge.points)
+    if (edge.pipe) edgePipes.set(edge.id, edge.pipe)
   }
 
   // Stub lines (tic-3430): the stub is not a tree child, so elbowConnectors
@@ -565,7 +600,7 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
     const from = rects.get(edge.from)
     const to = rects.get(edge.to)
     if (!from || !to) continue
-    edgePoints.set(edge.id, elbow(from, to, 'lr'))
+    edgePoints.set(edge.id, elbow(from, to, params.orientation))
   }
 
   // Import lines: centre of the anchor element on each side -- the file chip
@@ -584,7 +619,7 @@ function layout(spec: SceneSpec, sizes: SizeMap, _params: FsTreeParams): Positio
     edgePoints.set(edge.id, points)
   }
 
-  return { rects, edgePoints }
+  return { rects, edgePoints, edgePipes, orientation: params.orientation }
 }
 
 // -- style --------------------------------------------------------------------
@@ -661,8 +696,27 @@ function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
 export const fsTreeMode: VizMode<FsTreeParams> = {
   id: 'fs-tree',
   label: 'Files & symbols',
-  defaultParams: { showImports: true },
+  defaultParams: { showImports: true, orientation: 'lr', wrap: 0 },
   paramToggles: [{ key: 'showImports', label: 'Import lines' }],
+  paramOptions: [
+    {
+      key: 'orientation',
+      label: 'Tree direction',
+      options: [
+        { value: 'lr', label: 'Horizontal →' },
+        { value: 'tb', label: 'Vertical ↓' },
+      ],
+    },
+  ],
+  paramNumbers: [
+    {
+      key: 'wrap',
+      label: 'Sibling wrap',
+      min: 0,
+      max: 8,
+      step: 1,
+    },
+  ],
   select,
   measure,
   layout,

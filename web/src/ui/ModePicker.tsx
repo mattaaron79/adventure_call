@@ -102,6 +102,50 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
           {toggle.label}
         </label>
       ))}
+      {/* Multi-value params (tic-0419), e.g. the fs-tree orientation, render
+          as a segmented control: one radio per declared option. */}
+      {mode.paramOptions?.map((group) => (
+        <fieldset key={group.key} className="param-options">
+          <legend>{group.label}</legend>
+          <div className="param-options-row">
+            {group.options.map((option) => (
+              <label
+                key={option.value}
+                className={`param-option${params[group.key] === option.value ? ' active' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name={`param-${mode.id}-${group.key}`}
+                  value={option.value}
+                  checked={params[group.key] === option.value}
+                  onChange={() =>
+                    useWorkspace.getState().setParams({ ...params, [group.key]: option.value })
+                  }
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ))}
+      {/* Numeric params (tic-3d87), e.g. the fs-tree sibling wrap, render as
+          a labelled number input; 0/1 both mean "off". */}
+      {mode.paramNumbers?.map((param) => (
+        <label key={param.key} className="param-number">
+          <span>{param.label}</span>
+          <input
+            type="number"
+            min={param.min}
+            max={param.max}
+            step={param.step}
+            value={Number(params[param.key] ?? 0)}
+            onChange={(event) => {
+              const next = event.target.value === '' ? 0 : Number(event.target.value)
+              useWorkspace.getState().setParams({ ...params, [param.key]: next })
+            }}
+          />
+        </label>
+      ))}
 
       <h2>Presets</h2>
       <div className="preset-save">

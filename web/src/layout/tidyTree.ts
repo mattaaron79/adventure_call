@@ -51,6 +51,18 @@ export interface TidyOptions {
   /** Tier direction. Default 'lr'. */
   orientation?: Orientation
   /**
+   * Sibling wrapping (tic-3d87): how many lines a node's children are packed
+   * into along the tier axis.  0 or 1 means no wrapping (the historical
+   * single-line layout, unchanged); N >= 2 packs children into that many
+   * lines -- N columns in 'lr', N rows in 'tb'.  Each line stacks its
+   * children from the same base, so the block is only as deep as its widest
+   * line -- a directory with hundreds of leaves becomes a compact block
+   * instead of one very long line.  Lines fill up to ceil(k / N) children,
+   * and each line clears the tier extent of the subtrees before it, so
+   * descendants never overlap the next line.  Default 0.
+   */
+  wrap?: number
+  /**
    * Children accessor, for trees that keep their children under another name
    * or mix childless leaves with branching nodes.  Defaults to a `children`
    * property, which may be absent on leaves.
@@ -63,11 +75,21 @@ export interface ElbowEdge {
   /** `${parentId}->${childId}`. */
   id: string
   points: number[]
+  /**
+   * The pipe override used to route this edge (see {@link elbow}), stored as
+   * a fixed offset from the child's leading edge -- not an absolute world
+   * coordinate -- so the canvas `reproject` (tic-1d7c) can re-derive it from
+   * the child's current position on every drag instead of a stale value.
+   */
+  pipe?: { dx: number } | { dy: number }
 }
 
 export interface ElbowOptions {
   orientation?: Orientation
   childrenOf?: TidyOptions['childrenOf']
+  /** Tier gap; used to space wrapped lines' elbow pipes in the inter-line gap.
+   *  Defaults to {@link DEFAULT_TIER_GAP}. */
+  tierGap?: number
 }
 
 /** A translucent rounded rect drawn behind a directory subtree. */
@@ -100,6 +122,10 @@ interface Measured {
   extent: number
   /** Placement of this node along the stack axis, canonical space. */
   stack: number
+  /** Extra tier-axis offset from being in a wrapped sibling line (tic-3d87). */
+  wrapOffset: number
+  /** Cached absolute tier reach of the subtree (see reachOf), once known. */
+  reach?: number
 }
 
 /**
@@ -118,6 +144,9 @@ export function layoutTree<N>(
   const tierGap = opts.tierGap ?? DEFAULT_TIER_GAP
   const siblingGap = opts.siblingGap ?? DEFAULT_SIBLING_GAP
   const orientation = opts.orientation ?? 'lr'
+  // Wrapping (tic-3d87): 0/1 keeps the single-line layout; N >= 2 packs each
+  // node's children into that many lines along the tier axis.
+  const wrap = Math.max(0, Math.floor(Number(opts.wrap ?? 0) || 0))
   const childrenOf = childrenAccessor<N>(opts.childrenOf)
 
   // Canonical space: tiers along y, siblings stacked along x.  Which world
@@ -127,6 +156,23 @@ export function layoutTree<N>(
 
   const seen = new Set<string>()
   const maxTier: number[] = []
+
+  /**
+   * Split a node's children into wrap lines: a single line when wrapping is
+   * off (or they already fit in `wrap` lines), otherwise `wrap` lines of up
+   * to `ceil(n / wrap)` children each, the last line possibly short.  Lines
+   * follow child order; every line shares the same stack base (they sit side
+   * by side), differing only in their tier offset.
+   */
+  const wrapLines = (children: Measured[]): Measured[][] => {
+    if (wrap <= 1 || children.length <= wrap) return [children]
+    const chunk = Math.ceil(children.length / wrap)
+    const lines: Measured[][] = []
+    for (let i = 0; i < children.length; i += chunk) {
+      lines.push(children.slice(i, i + chunk))
+    }
+    return lines
+  }
 
   const measure = (node: N, depth: number): Measured => {
     const id = idOf(node)
@@ -138,13 +184,30 @@ export function layoutTree<N>(
     else maxTier[depth] = Math.max(maxTier[depth], tierDim(size))
 
     const children = childrenOf(node).map((child) => measure(child as N, depth + 1))
+    // Stack extent of the subtree.  Wrapped children pack into lines that all
+    // start at the same base, so the block is as deep as its widest line, not
+    // the sum of every child (tic-3d87).
     let extent = stackDim(size)
     if (children.length > 0) {
-      let span = siblingGap * (children.length - 1)
-      for (const child of children) span += child.extent
-      extent = Math.max(extent, span)
+      let block = 0
+      for (const line of wrapLines(children)) {
+        let span = siblingGap * (line.length - 1)
+        for (const child of line) span += child.extent
+        block = Math.max(block, span)
+      }
+      extent = Math.max(extent, block)
     }
-    return { id, width: size.width, height: size.height, depth, children, extent, stack: 0 }
+
+    return {
+      id,
+      width: size.width,
+      height: size.height,
+      depth,
+      children,
+      extent,
+      stack: 0,
+      wrapOffset: 0,
+    }
   }
 
   const measured = measure(root, 0)
@@ -159,12 +222,19 @@ export function layoutTree<N>(
   const place = (m: Measured, start: number): void => {
     m.stack = start
     if (m.children.length === 0) return
-    let cursor = start
-    for (const child of m.children) {
-      place(child, cursor)
-      cursor += child.extent + siblingGap
+    // Each wrap line stacks its children from the same base, so wrapped
+    // columns (or rows) sit side by side instead of one long stack; the
+    // block's extent is the widest line (tic-3d87).  A single line behaves
+    // exactly as before.
+    let span = 0
+    for (const line of wrapLines(m.children)) {
+      let cursor = start
+      for (const child of line) {
+        place(child, cursor)
+        cursor += child.extent + siblingGap
+      }
+      span = Math.max(span, cursor - siblingGap - start)
     }
-    const span = cursor - siblingGap - start
     const own = stackDim(m)
     // Centre against the child block; a parent larger than its block is
     // clamped to the start of its own (wider) extent.
@@ -172,9 +242,56 @@ export function layoutTree<N>(
   }
   place(measured, 0)
 
+  /**
+   * The absolute tier position of the deepest point of a subtree: the largest
+   * `tierPos[depth] + wrapOffset + tier dimension` anywhere beneath it.  A
+   * wrapped line must clear this, not just the line's own nodes, so its
+   * descendants (which sit on later depth bands) are never overlapped by the
+   * next wrapped line.  Cached, since a subtree's wrap offsets are fixed once
+   * assigned.
+   */
+  const reachOf = (m: Measured): number => {
+    if (m.reach === undefined) {
+      let reach = tierPos[m.depth] + m.wrapOffset + tierDim({ width: m.width, height: m.height })
+      for (const child of m.children) reach = Math.max(reach, reachOf(child))
+      m.reach = reach
+    }
+    return m.reach
+  }
+
+  /**
+   * Push wrapped children below their depth band (tic-3d87).  A wrapped node's
+   * children pack into lines along the tier axis; line `j` is offset so it
+   * clears the deepest point of every earlier line's subtree (reachOf), not
+   * just the earlier lines themselves -- so a wrapped row never lands on top
+   * of a previous row's expanded descendants.  The offset is additive, so
+   * every descendant of a wrapped child inherits the same shift.  With
+   * wrapping off every node keeps offset 0 and the layout is exactly the
+   * historical one.
+   */
+  const assignWrapOffsets = (m: Measured, inherited: number): void => {
+    m.wrapOffset = inherited
+    if (m.children.length === 0) return
+    if (wrap <= 1 || m.children.length <= wrap) {
+      for (const child of m.children) assignWrapOffsets(child, inherited)
+      return
+    }
+    let acc = inherited
+    let deepest = 0
+    for (const line of wrapLines(m.children)) {
+      for (const child of line) assignWrapOffsets(child, acc)
+      let lineReach = 0
+      for (const child of line) lineReach = Math.max(lineReach, reachOf(child))
+      deepest = Math.max(deepest, lineReach)
+      // The next line starts below everything the lines so far contain.
+      acc = deepest - tierPos[m.depth + 1] + tierGap
+    }
+  }
+  assignWrapOffsets(measured, 0)
+
   const rects = new Map<string, Rect>()
   const emit = (m: Measured): void => {
-    const tier = tierPos[m.depth]
+    const tier = tierPos[m.depth] + m.wrapOffset
     rects.set(
       m.id,
       orientation === 'lr'
@@ -189,9 +306,15 @@ export function layoutTree<N>(
 
 /**
  * Orthogonal (elbow) connectors from each parent to each child: out of the
- * parent's leading edge, half way across the gap, along the stack axis to
- * the child's centre, then into the child's leading edge.  A child already
- * aligned with its parent collapses to a straight two-point line.
+ * parent's leading edge, across the gap, along the stack axis to the child's
+ * centre, then into the child's leading edge.  A child already aligned with
+ * its parent collapses to a straight two-point line.
+ *
+ * Wrapped children (tic-3d87) are grouped into lines along the tier axis; the
+ * vertical pipe of a later line is placed in the gap before it so it never
+ * slices through an earlier line, and every line gets the same entry distance
+ * so the pipes read as evenly spaced.  A single line keeps the historical
+ * midpoint pipe, so non-wrapped output is unchanged.
  */
 export function elbowConnectors<N>(
   root: N,
@@ -199,17 +322,63 @@ export function elbowConnectors<N>(
   opts: ElbowOptions = {},
 ): ElbowEdge[] {
   const orientation = opts.orientation ?? 'lr'
+  const tierGap = opts.tierGap ?? DEFAULT_TIER_GAP
   const childrenOf = childrenAccessor<N>(opts.childrenOf)
   const edges: ElbowEdge[] = []
 
   const walk = (node: N): void => {
     const parent = rects.get(idOf(node))
     if (!parent) throw new Error(`elbowConnectors: no rect for node "${idOf(node)}"`)
+
+    // A node's direct children group into lines along the tier axis (one
+    // column per line in 'lr', one row per line in 'tb'); without wrapping
+    // there is exactly one line.
+    const lines = new Map<number, Rect[]>()
     for (const child of childrenOf(node)) {
       const c = child as N
       const rect = rects.get(idOf(c))
       if (!rect) throw new Error(`elbowConnectors: no rect for node "${idOf(c)}"`)
-      edges.push({ id: `${idOf(node)}->${idOf(c)}`, points: elbow(parent, rect, orientation) })
+      const key = orientation === 'lr' ? rect.x : rect.y
+      const bucket = lines.get(key)
+      if (bucket) bucket.push(rect)
+      else lines.set(key, [rect])
+    }
+
+    // For a wrapped block, route each line's pipe a fixed entry distance in
+    // front of its line (the inter-line gap is exactly `tierGap`, so half of
+    // it clears the preceding line).  The offset is stored relative to the
+    // child's leading edge and re-derived at route time, so it never lives in
+    // absolute space and stays correct after the child moves.  A single line
+    // keeps the midpoint pipe.
+    const pipeOf = new Map<number, { dx: number } | { dy: number }>()
+    if (lines.size > 1) {
+      const entry = tierGap / 2
+      for (const [key] of lines) {
+        pipeOf.set(key, orientation === 'lr' ? { dx: -entry } : { dy: -entry })
+      }
+    }
+
+    for (const child of childrenOf(node)) {
+      const c = child as N
+      const rect = rects.get(idOf(c))
+      if (!rect) throw new Error(`elbowConnectors: no rect for node "${idOf(c)}"`)
+      const key = orientation === 'lr' ? rect.x : rect.y
+      const pipe = pipeOf.get(key)
+      // The pipe's shape encodes the axis ('dx' = lr, 'dy' = tb), so narrow on
+      // it and derive the absolute coordinate from the child's current rect.
+      const pipeHint =
+        pipe === undefined
+          ? undefined
+          : 'dx' in pipe
+            ? { x: rect.x + pipe.dx }
+            : { y: rect.y + pipe.dy }
+      edges.push({
+        id: `${idOf(node)}->${idOf(c)}`,
+        points: elbow(parent, rect, orientation, pipeHint),
+        // Only wrapped edges carry a pipe, so non-wrapped output (and its
+        // golden snapshot) is unchanged.
+        ...(pipe === undefined ? {} : { pipe }),
+      })
       walk(c)
     }
   }
@@ -218,15 +387,22 @@ export function elbowConnectors<N>(
 }
 
 /** Exported for the canvas `reproject` (tic-1d7c), which re-routes a single
- *  edge from moved endpoint rects without re-running the whole layout. */
-export function elbow(p: Rect, c: Rect, orientation: Orientation): number[] {
+ *  edge from moved endpoint rects without re-running the whole layout.  The
+ *  optional `pipe` overrides the midpoint of the orthogonal run, e.g. to keep
+ *  a wrapped line's connector in the inter-column gap. */
+export function elbow(
+  p: Rect,
+  c: Rect,
+  orientation: Orientation,
+  pipe?: { x: number } | { y: number },
+): number[] {
   if (orientation === 'lr') {
     const x0 = p.x + p.width
     const y0 = p.y + p.height / 2
     const x1 = c.x
     const y1 = c.y + c.height / 2
     if (Math.abs(y0 - y1) < EPSILON) return [x0, y0, x1, y1]
-    const midX = (x0 + x1) / 2
+    const midX = pipe !== undefined && 'x' in pipe ? pipe.x : (x0 + x1) / 2
     return [x0, y0, midX, y0, midX, y1, x1, y1]
   }
   const x0 = p.x + p.width / 2
@@ -234,7 +410,7 @@ export function elbow(p: Rect, c: Rect, orientation: Orientation): number[] {
   const x1 = c.x + c.width / 2
   const y1 = c.y
   if (Math.abs(x0 - x1) < EPSILON) return [x0, y0, x1, y1]
-  const midY = (y0 + y1) / 2
+  const midY = pipe !== undefined && 'y' in pipe ? pipe.y : (y0 + y1) / 2
   return [x0, y0, x0, midY, x1, midY, x1, y1]
 }
 

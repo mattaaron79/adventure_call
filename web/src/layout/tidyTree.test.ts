@@ -117,6 +117,144 @@ describe('layoutTree', () => {
   })
 })
 
+describe('layoutTree sibling wrap (tic-3d87)', () => {
+  // Five same-sized leaves, so every coordinate the default gaps produce is an
+  // exact integer and the wrap lines are easy to reason about.
+  const five: TidyNode = {
+    id: 'root',
+    children: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }],
+  }
+  const size = (): Size => ({ width: 100, height: 40 })
+
+  it('is a single line when wrap is 0 or 1, identical to the historical layout', () => {
+    const off = layoutTree(five, size)
+    const zero = layoutTree(five, size, { wrap: 0 })
+    const one = layoutTree(five, size, { wrap: 1 })
+    expect(zero).toEqual(off)
+    expect(one).toEqual(off)
+    // All five children share the same tier (x in lr).
+    const xs = ['a', 'b', 'c', 'd', 'e'].map((id) => off.get(id)!.x)
+    expect(new Set(xs).size).toBe(1)
+  })
+
+  it('packs children into wrap columns along the tier axis (lr)', () => {
+    // lr: wrap lines advance along x, so wrap=2 with 5 children makes a 3+2
+    // pair of columns; the stack axis (y) still packs all five without overlap.
+    const lr = layoutTree(five, size, { wrap: 2 })
+    const a = lr.get('a')!
+    const b = lr.get('b')!
+    const c = lr.get('c')!
+    const d = lr.get('d')!
+    const e = lr.get('e')!
+    expect(a.x).toBe(b.x)
+    expect(b.x).toBe(c.x)
+    expect(d.x).toBe(e.x)
+    expect(d.x).toBeGreaterThan(a.x)
+    expect(b.y).toBeGreaterThan(a.y)
+    expect(e.y).toBeGreaterThan(d.y)
+  })
+
+  it('packs children into wrap rows along the tier axis (tb)', () => {
+    // tb: wrap lines advance along y, so wrap=2 makes two rows.
+    const tb = layoutTree(five, size, { orientation: 'tb', wrap: 2 })
+    const a = tb.get('a')!
+    const d = tb.get('d')!
+    const e = tb.get('e')!
+    expect(a.y).toBe(tb.get('b')!.y)
+    expect(tb.get('c')!.y).toBe(a.y)
+    expect(d.y).toBe(e.y)
+    expect(d.y).toBeGreaterThan(a.y)
+    expect(e.x).toBeGreaterThan(d.x)
+  })
+
+  it('clears the preceding lines descendants so wrapped siblings never overlap (tb)', () => {
+    const deep: TidyNode = {
+      id: 'root',
+      children: [
+        { id: 'a', children: [{ id: 'a1' }] },
+        { id: 'b', children: [{ id: 'b1' }] },
+        { id: 'c', children: [{ id: 'c1' }] },
+      ],
+    }
+    const rects = layoutTree(deep, size, { orientation: 'tb', wrap: 2 })
+    const a = rects.get('a')!
+    const b = rects.get('b')!
+    const a1 = rects.get('a1')!
+    const b1 = rects.get('b1')!
+    const c = rects.get('c')!
+    // a and b share the first row...
+    expect(a.y).toBe(b.y)
+    // ...c is wrapped onto the second row, below b...
+    expect(c.y).toBeGreaterThan(b.y)
+    // ...and still below the first row's descendants (a1, b1).
+    expect(c.y).toBeGreaterThan(a1.y)
+    expect(c.y).toBeGreaterThan(b1.y)
+    // Descendants sit below their own parent, not beside it.
+    expect(a1.y).toBeGreaterThan(a.y)
+    expect(b1.y).toBeGreaterThan(b.y)
+  })
+
+  it('compacts the block: wrapped children are shallower than the single-line stack', () => {
+    const single = layoutTree(five, size)
+    const wrapped = layoutTree(five, size, { wrap: 2 })
+    const span = (rects: ReadonlyMap<string, Rect>): number => {
+      const tops = ['a', 'b', 'c', 'd', 'e'].map((id) => rects.get(id)!.y)
+      const bottoms = tops.map((y) => y + 40)
+      return Math.max(...bottoms) - Math.min(...tops)
+    }
+    // One column stacks all five (5*40 + gaps); two top-aligned columns keep
+    // it to the tallest column's three children.
+    expect(span(wrapped)).toBeLessThan(span(single))
+  })
+
+  it('routes a wrapped second line elbow pipe in the inter-line gap, not through the first line', () => {
+    const rects = layoutTree(five, size, { wrap: 2 })
+    const edges = elbowConnectors(five, rects)
+    const edge = edges.find((e) => e.id === 'root->d')! // d is in the second column
+    const a = rects.get('a')! // first column: x=164
+    const d = rects.get('d')! // second column: x=328
+    // The elbow's vertical pipe is points[2] (midX); it must sit right of the
+    // first column and left of the second, never through the first column.
+    expect(edge.points[2]).toBeGreaterThan(a.x + a.width)
+    expect(edge.points[2]).toBeLessThan(d.x)
+  })
+
+  it('keeps every node cell disjoint, mixing chips and tall/wide subtrees', () => {
+    const mixed: TidyNode = {
+      id: 'root',
+      children: [
+        { id: 'wide', children: [{ id: 'wide1' }, { id: 'wide2' }] },
+        { id: 'tall' },
+        { id: 'deep', children: [{ id: 'deep1' }] },
+        { id: 'chip' },
+      ],
+    }
+    const sizes: Record<string, Size> = {
+      root: { width: 160, height: 48 },
+      wide: { width: 520, height: 60 },
+      wide1: { width: 120, height: 36 },
+      wide2: { width: 120, height: 36 },
+      tall: { width: 120, height: 400 },
+      deep: { width: 130, height: 36 },
+      deep1: { width: 210, height: 44 },
+      chip: { width: 140, height: 40 },
+    }
+    const overlap = (a: Rect, b: Rect): boolean =>
+      a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
+    for (const orientation of ['lr', 'tb'] as const) {
+      for (const wrap of [0, 2, 3]) {
+        const rects = layoutTree(mixed, (n) => sizes[n.id], { orientation, wrap })
+        const list = [...rects.values()]
+        for (let i = 0; i < list.length; i++) {
+          for (let j = i + 1; j < list.length; j++) {
+            expect(overlap(list[i], list[j])).toBe(false)
+          }
+        }
+      }
+    }
+  })
+})
+
 describe('elbowConnectors', () => {
   it('routes parent -> child with the golden elbow polylines', () => {
     const rects = layoutTree(TREE, sizeOf)

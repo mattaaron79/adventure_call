@@ -120,6 +120,85 @@ html, body, #root {
   font-family: ui-monospace, 'Cascadia Code', monospace;
 }
 
+/* Segmented param controls (tic-0419): one option per radio, e.g. the
+   fs-tree tree-direction switch. */
+.param-options {
+  margin: 10px 0 0;
+  padding: 0;
+  border: none;
+}
+.param-options legend {
+  margin-bottom: 5px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+.param-options-row {
+  display: flex;
+  gap: 4px;
+}
+.param-option {
+  flex: 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.param-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.param-option:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.param-option.active {
+  border-color: var(--accent);
+  background: rgba(137, 180, 250, 0.14);
+  color: var(--text);
+}
+.param-option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Numeric param inputs (tic-3d87), e.g. the fs-tree sibling wrap. */
+.param-number {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.param-number input {
+  width: 64px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.param-number input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
 .inspector {
   position: absolute;
   right: 14px;

@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FsDir, FsFile, FsNode } from '../data/derive'
+import { onGoto } from '../data/goto'
 import { GoInIcon } from './GoInIcon'
 import { GotoIcon } from './GotoIcon'
 
@@ -33,12 +34,54 @@ export function matchTree(root: FsDir, matches: (file: FsFile) => boolean): FsDi
 }
 
 /**
+ * The root-relative paths of the directories that would contain `path`, from
+ * the tree root down -- the folders that must be open for `path` to be visible
+ * in the tree (tic-7f65).  `path`'s own folder is not included: a goto into a
+ * collapsed folder opens the chain above the target, it does not expand the
+ * target's contents.  Empty when `path` has no folders above it (a top-level
+ * file) or is not a file-tree path at all -- scene element ids (`dir:src/app`)
+ * and symbol ids (`src.auth.login`) are `:` or `.` separated, so a goto that
+ * names one is a safe no-op here.
+ */
+export function ancestorDirs(path: string): string[] {
+  if (path.includes(':')) return []
+  const segments = path.split('/').filter(Boolean)
+  segments.pop() // the file or dir itself; only its parents need to open
+  const dirs: string[] = []
+  let prefix = ''
+  for (const segment of segments) {
+    prefix = prefix ? `${prefix}/${segment}` : segment
+    dirs.push(prefix)
+  }
+  return dirs
+}
+
+/**
  * The derived directory tree. Top-level directories start open and everything
  * below starts collapsed, which is the only way ~150 files stay readable in a
  * 260px rail; the open set is keyed by path so it survives a `/out` refetch.
+ *
+ * The tree also listens for goto requests (tic-7f65): a goto emitted from any
+ * surface -- this tree, the inspector, a canvas import row -- that names a
+ * target inside a collapsed folder opens the folder chain first, so the file
+ * the camera lands on is actually visible here.  The workspace owns the flight
+ * independently, so expanding is the tree's only job.
  */
 export function FileTree({ root }: { root: FsDir }) {
   const [overrides, setOverrides] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    return onGoto((target) => {
+      const dirs = ancestorDirs(target)
+      if (dirs.length === 0) return
+      setOverrides((prev) => {
+        if (dirs.every((dir) => prev[dir] === true)) return prev
+        const next = { ...prev }
+        for (const dir of dirs) next[dir] = true
+        return next
+      })
+    })
+  }, [])
 
   return (
     <ul className="tree">

@@ -365,10 +365,89 @@ describe('fsTreeMode, with a collapsed directory', () => {
 
 describe('fsTreeMode params', () => {
   it('drops the import lines when showImports is off', () => {
-    const layout = render({}, { showImports: false })
+    const layout = render({}, { ...fsTreeMode.defaultParams, showImports: false })
     expect(layout.scene.edges.filter((e) => e.id.startsWith('imp:'))).toEqual([])
     // Everything else is untouched.
     expect(layout.scene.nodes.map((n) => n.id)).toContain('src/app/loop.py')
+  })
+})
+
+describe('fsTreeMode orientation (tic-0419)', () => {
+  it('grows left-to-right by default: children sit on the +x side of the parent', () => {
+    const layout = render()
+    const root = layout.rects.get('dir:')!
+    const child = layout.rects.get('dir:src')!
+    expect(child.x).toBeGreaterThan(root.x + root.width)
+  })
+
+  it('grows downward in tb: children sit on the +y side of the parent', () => {
+    const layout = render({}, { ...fsTreeMode.defaultParams, orientation: 'tb' })
+    const root = layout.rects.get('dir:')!
+    const child = layout.rects.get('dir:src')!
+    expect(child.y).toBeGreaterThan(root.y + root.height)
+  })
+
+  it('keeps the same node set in either orientation', () => {
+    const lr = render()
+    const tb = render({}, { ...fsTreeMode.defaultParams, orientation: 'tb' })
+    expect(tb.scene.nodes.map((n) => n.id).sort()).toEqual(lr.scene.nodes.map((n) => n.id).sort())
+  })
+
+  it('keeps expanded container rows stacked top-to-bottom regardless of orientation', () => {
+    const layout = render(
+      { 'src/app/loop.py': true },
+      { ...fsTreeMode.defaultParams, orientation: 'tb' },
+    )
+    const container = layout.rects.get('src/app/loop.py')!
+    const imports = layout.rects.get('row:src/app/loop.py:section:Imports')!
+    const classes = layout.rects.get('row:src/app/loop.py:section:Classes')!
+    expect(imports.y).toBeGreaterThanOrEqual(container.y)
+    expect(classes.y).toBeGreaterThan(imports.y)
+  })
+
+  it('hangs a collapsed folder stub below its chip in tb (its output side)', () => {
+    const layout = render(
+      { 'dir:src/app': false },
+      { ...fsTreeMode.defaultParams, orientation: 'tb' },
+    )
+    const dir = layout.rects.get('dir:src/app')!
+    const stub = layout.rects.get('dir:src/app:stub')!
+    expect(stub.y).toBeGreaterThan(dir.y + dir.height)
+    expect(stub.x).toBeGreaterThanOrEqual(dir.x)
+  })
+
+  it('declares the horizontal/vertical control for the ModePicker', () => {
+    const control = fsTreeMode.paramOptions?.find((o) => o.key === 'orientation')
+    expect(control?.options.map((o) => o.value)).toEqual(['lr', 'tb'])
+  })
+})
+
+describe('fsTreeMode sibling wrap (tic-3d87)', () => {
+  it('packs a wide directory into wrap rows in tb', () => {
+    // src/app has three children, sorted dirs-first then files by name:
+    // [cli, errors.py, loop.py].  wrap=2 packs them into two rows, so cli and
+    // errors.py share the first row and loop.py wraps below -- clearing the
+    // first row's descendants (main.py under cli) as well.
+    const layout = render({}, { ...fsTreeMode.defaultParams, orientation: 'tb', wrap: 2 })
+    const errors = layout.rects.get('src/app/errors.py')!
+    const cli = layout.rects.get('dir:src/app/cli')!
+    const loop = layout.rects.get('src/app/loop.py')!
+    const main = layout.rects.get('src/app/cli/main.py')!
+    expect(errors.y).toBe(cli.y)
+    expect(loop.y).toBeGreaterThan(errors.y)
+    expect(loop.y).toBeGreaterThan(main.y)
+  })
+
+  it('keeps the single-line layout when wrap is 0', () => {
+    const off = render()
+    const wrapped0 = render({}, { ...fsTreeMode.defaultParams, wrap: 0 })
+    expect(wrapped0.rects).toEqual(off.rects)
+  })
+
+  it('declares the numeric wrap control for the ModePicker, off at 0', () => {
+    const control = fsTreeMode.paramNumbers?.find((n) => n.key === 'wrap')
+    expect(control?.min).toBe(0)
+    expect(fsTreeMode.defaultParams.wrap).toBe(0)
   })
 })
 

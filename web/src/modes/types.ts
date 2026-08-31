@@ -114,6 +114,13 @@ export interface Positioned {
   rects: ReadonlyMap<string, Rect>
   /** Flat `[x0, y0, x1, y1, ...]` polylines, as the canvas `Line` wants. */
   edgePoints: ReadonlyMap<string, readonly number[]>
+  /** Per-edge pipe override (see tidyTree.elbow), stored as a fixed offset
+   *  from the child's leading edge so a drag re-routes a wrapped connector
+   *  with the same inter-line gap pipe, re-derived from the child's current
+   *  position (tic-1d7c). */
+  edgePipes?: ReadonlyMap<string, { dx: number } | { dy: number }>
+  /** The layout orientation, so reproject re-routes elbows in the right axis. */
+  orientation?: 'lr' | 'tb'
 }
 
 export interface NodeStyle {
@@ -150,12 +157,35 @@ export interface ParamToggle {
   label: string
 }
 
+/** A multi-value param the ModePicker can render as a segmented control. */
+export interface ParamOption {
+  /** Key in the mode's params object. */
+  key: string
+  label: string
+  /** The choices, in display order; the stored value is the selected one. */
+  options: readonly { value: string; label: string }[]
+}
+
+/** A numeric param the ModePicker can render as a small number input. */
+export interface ParamNumber {
+  /** Key in the mode's params object. */
+  key: string
+  label: string
+  min?: number
+  max?: number
+  step?: number
+}
+
 export interface VizMode<P> {
   id: string
   label: string
   defaultParams: P
   /** Boolean params the ModePicker offers as checkboxes, if any. */
   readonly paramToggles?: readonly ParamToggle[]
+  /** Multi-value params the ModePicker renders as segmented controls, if any. */
+  readonly paramOptions?: readonly ParamOption[]
+  /** Numeric params the ModePicker renders as small number inputs, if any. */
+  readonly paramNumbers?: readonly ParamNumber[]
   /** Which nodes, groups and edges exist for this data, params and ui state. */
   select(data: Derived, params: P, ui: UiState): SceneSpec
   /** Intrinsic sizes for everything the spec contains. */
@@ -302,6 +332,10 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
       to: edge.to,
       route: edge.route,
       kind: edge.kind,
+      // Carried so the canvas reproject (tic-1d7c) re-routes a dragged edge
+      // with the same wrapped gap pipe and in the same orientation.
+      pipe: positioned.edgePipes?.get(edge.id),
+      orientation: positioned.orientation,
     })
   }
 

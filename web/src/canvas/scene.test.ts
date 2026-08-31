@@ -135,6 +135,34 @@ describe('reproject', () => {
       ROUTED.groups.map((g) => [g.x, g.y, g.width, g.height]),
     )
   })
+
+  it('re-routes a wrapped elbow with a pipe derived from the child, not a stale absolute coordinate', () => {
+    // A wrapped second-column edge carries its pipe as a fixed offset from the
+    // child's leading edge (tic-3d87); a drag re-derives the pipe from the
+    // child's current position instead of reverting to the midpoint.
+    const wrapped: Scene = {
+      groups: [],
+      edges: [
+        {
+          id: 'p->c2',
+          points: [100, 72, 296, 72, 296, 20, 328, 20],
+          stroke: '#222',
+          from: 'p',
+          to: 'c2',
+          route: 'elbow',
+          orientation: 'lr',
+          pipe: { dx: -32 }, // 32px before c2's left edge (328 - 32 = 296)
+        },
+      ],
+      nodes: [node('p', 0, 52), node('c1', 164, 0), node('c2', 328, 0)],
+    }
+    // Dragging the parent re-routes and keeps the pipe relative to the child.
+    const parentDragged = reproject(wrapped, { p: { x: 0, y: 100 } })
+    expect(parentDragged.edges[0].points[2]).toBe(296) // not the naive midpoint 214
+    // Dragging the child too moves the pipe with it (still 32px before c2).
+    const childDragged = reproject(wrapped, { p: { x: 0, y: 100 }, c2: { x: 400, y: 0 } })
+    expect(childDragged.edges[0].points[2]).toBe(400 - 32)
+  })
 })
 
 // -- ancestor translation (tic-2697) ------------------------------------------

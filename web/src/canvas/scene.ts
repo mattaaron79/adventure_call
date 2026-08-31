@@ -94,6 +94,16 @@ export interface SceneEdge {
    * highlighting (tic-5393).  Absent on edges that never had a kind.
    */
   kind?: string
+  /**
+   * The pipe override used to route a wrapped elbow (see tidyTree.elbow),
+   * carried from the layout as a fixed offset from the child's leading edge
+   * so a drag re-routes the edge with the same inter-line gap pipe, derived
+   * from the child's current position rather than a stale absolute value
+   * (tic-1d7c).
+   */
+  pipe?: { dx: number } | { dy: number }
+  /** The layout orientation, so reproject re-routes elbows in the right axis. */
+  orientation?: 'lr' | 'tb'
 }
 
 export interface Scene {
@@ -131,7 +141,21 @@ export function reproject(scene: Scene, overrides: Readonly<Record<string, Point
     const from = placed.get(edge.from)
     const to = placed.get(edge.to)
     if (!from || !to) return edge
-    const points = edge.route === 'elbow' ? elbow(from, to, 'lr') : centerLine(from, to)
+    // Re-route in the layout's orientation, honouring the wrapped pipe so a
+    // dragged edge keeps its inter-column gap instead of reverting to the
+    // midpoint.  The pipe is a fixed offset from the child's leading edge, so
+    // it is re-derived from the child's current position on every drag and
+    // never lives in absolute space (tic-1d7c).
+    const absPipe =
+      edge.pipe === undefined
+        ? undefined
+        : 'dx' in edge.pipe
+          ? { x: to.x + edge.pipe.dx }
+          : { y: to.y + edge.pipe.dy }
+    const points =
+      edge.route === 'elbow'
+        ? elbow(from, to, edge.orientation ?? 'lr', absPipe)
+        : centerLine(from, to)
     return { ...edge, points }
   })
 
