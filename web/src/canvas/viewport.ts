@@ -89,6 +89,15 @@ export function fitToRect(rect: Rect, size: Size, padding = FIT_PADDING): Viewpo
   }
 }
 
+/** True when two sizes are equal (tic-de05).  A measurement effect can use
+ *  this to bail out of its state update when the size did not change -- a
+ *  fresh `{width,height}` object every time would never be `Object.is`-equal,
+ *  so `setState` would schedule a render on every pass and re-trigger the
+ *  effect that measured it, looping past React's update-depth limit. */
+export function sameSize(a: Size, b: Size): boolean {
+  return a.width === b.width && a.height === b.height
+}
+
 /** Options for {@link centerOn}. */
 export interface CenterOnOptions {
   /** Screen padding around the target rect, in CSS px. */

@@ -10,13 +10,13 @@
  * the canvas, and the toolbar clamps to the visible workspace so a folder
  * that hugs an edge keeps its navigation on screen.
  */
-import { memo, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   breadcrumbSegments,
   elideBreadcrumbs,
   parentPath,
 } from './breadcrumbs'
-import { worldToScreen, type Rect, type Size, type Viewport } from './viewport'
+import { sameSize, worldToScreen, type Rect, type Size, type Viewport } from './viewport'
 
 /** How many crumbs (plus at most one ellipsis) the toolbar shows before
  *  eliding the middle of a long trail (tic-b1ab). */
@@ -42,7 +42,15 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   /** Jump to a focus path -- a breadcrumb level, '..' or root (''). */
   onNavigate: (path: string) => void
 }) {
-  const crumbs = elideBreadcrumbs(breadcrumbSegments(focusPath), MAX_CRUMBS)
+  // The crumbs array is memoised on focusPath (tic-de05): elideBreadcrumbs
+  // always builds a fresh array, and the measurement effect below keys on it.
+  // Without the memo, every render gets a new reference, so the effect
+  // re-runs every render, setBox() of a fresh size object never bails out
+  // (Object.is), and the loop blows past React's update-depth limit.
+  const crumbs = useMemo(
+    () => elideBreadcrumbs(breadcrumbSegments(focusPath), MAX_CRUMBS),
+    [focusPath],
+  )
 
   // Measure the toolbar so it can be clamped to the visible workspace: the
   // horizontal position keeps the whole bar on screen, and the vertical
@@ -51,7 +59,13 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   const [box, setBox] = useState({ width: 0, height: 0 })
   useLayoutEffect(() => {
     const el = ref.current
-    if (el) setBox({ width: el.offsetWidth, height: el.offsetHeight })
+    if (!el) return
+    const width = el.offsetWidth
+    const height = el.offsetHeight
+    // Bail out when the measured size is unchanged (tic-de05): a fresh
+    // {width,height} object every time would never be Object.is-equal, so
+    // setBox would schedule a render on every pass and re-trigger this effect.
+    setBox((prev) => (sameSize(prev, { width, height }) ? prev : { width, height }))
   }, [crumbs, focusPath])
 
   const top = worldToScreen(viewport, { x: rect.x, y: rect.y })

@@ -8,6 +8,7 @@ import {
   fitToRect,
   rectFromCorners,
   rectsIntersect,
+  sameSize,
   screenToWorld,
   translate,
   unionRects,
@@ -186,5 +187,29 @@ describe('rects', () => {
 
   it('translates without touching the scale', () => {
     expect(translate(VP, 10, -10)).toEqual({ x: 147, y: -72, scale: 0.7 })
+  })
+})
+
+describe('sameSize (tic-de05)', () => {
+  it('matches when both dimensions agree', () => {
+    expect(sameSize({ width: 120, height: 24 }, { width: 120, height: 24 })).toBe(true)
+  })
+
+  it('mismatches when either dimension differs', () => {
+    expect(sameSize({ width: 120, height: 24 }, { width: 300, height: 24 })).toBe(false)
+    expect(sameSize({ width: 120, height: 24 }, { width: 120, height: 40 })).toBe(false)
+  })
+
+  it('is what the toolbar updater keys on, returning the same box when unchanged (regression)', () => {
+    // The BreadcrumbToolbar measurement effect would loop past React's
+    // update-depth limit if every measurement scheduled a render: a fresh
+    // {width,height} object is never Object.is-equal, so setState re-renders
+    // and re-runs the effect.  Baling out with the previous reference (the
+    // same object) lets React skip the render entirely.
+    const prev = { width: 120, height: 24 }
+    const published = sameSize(prev, { width: 120, height: 24 })
+      ? prev
+      : { width: 120, height: 24 }
+    expect(published).toBe(prev)
   })
 })
