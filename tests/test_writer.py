@@ -49,11 +49,40 @@ def test_graph_json_records_run_metadata(tmp_path, builder, index, parsed_files)
     meta = data["graph"]
     assert meta["schema_version"] == 1
     assert meta["root"] == "sample"
+    assert meta["root_abs"] == Path("sample").resolve().as_posix()
     assert meta["stats"]["edge_types"]["CALLS"] > 0
     assert meta["generated_at"].endswith("+00:00")
 
 
+def test_root_abs_resolves_a_relative_root(tmp_path, builder, index, parsed_files):
+    # The ticket's repro: root is relative to the generation cwd ('../carnot'),
+    # which the browser cannot resolve; root_abs must pin the same directory in
+    # an absolute, POSIX-style form (tic-7f0b).
+    writer = OutputWriter(tmp_path / "out")
+    written = writer.write_all(builder.graph, index, parsed_files, root=Path("..") / "carnot")
+    data = json.loads(written["graph"].read_text("utf-8"))
+    expected = (Path("..") / "carnot").resolve().as_posix()
+
+    assert data["graph"]["root"] == "../carnot"
+    assert data["graph"]["root_abs"] == expected
+    assert ":" in expected.split("/", 1)[0] or expected.startswith("/"), expected
+
+
+def test_root_abs_empty_when_no_root_given(tmp_path, builder, index, parsed_files):
+    writer = OutputWriter(tmp_path / "out")
+    written = writer.write_all(builder.graph, index, parsed_files, root="")
+    data = json.loads(written["graph"].read_text("utf-8"))
+    assert data["graph"]["root"] == ""
+    assert data["graph"]["root_abs"] == ""
+
+
 # -- registry export -------------------------------------------------------
+
+
+def test_registry_records_absolute_root(tmp_path, builder, index, parsed_files):
+    data = json.loads(_write(tmp_path, builder, index, parsed_files)["registry"].read_text("utf-8"))
+    assert data["root"] == "sample"
+    assert data["root_abs"] == Path("sample").resolve().as_posix()
 
 
 def test_registry_holds_full_metadata(tmp_path, builder, index, parsed_files):

@@ -86,6 +86,8 @@ export interface CodebaseGraph {
     schema_version: number
     generated_at: string
     root: string
+    /** Absolute, resolved analysed root (tic-7f0b); absent in older exports. */
+    root_abs?: string
     stats: GraphStats
   }
   nodes: GraphNode[]
@@ -151,6 +153,8 @@ export interface SymbolRegistry {
   schema_version: number
   generated_at: string
   root: string
+  /** Absolute, resolved analysed root (tic-7f0b); absent in older exports. */
+  root_abs?: string
   includes_source: boolean
   stats: GraphStats
   symbols: Record<string, SymbolRecord>

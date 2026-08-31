@@ -18,7 +18,7 @@ export default defineConfig({
   test: {
     // The data layer is pure; nothing under test touches the DOM yet.
     environment: 'node',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'plugins/**/*.test.ts'],
     // The default 'threads'/'forks' pools fail to provide the vitest worker
     // state in this environment (every suite dies at its first describe with
     // "Cannot read properties of undefined (reading 'config')"); vmThreads

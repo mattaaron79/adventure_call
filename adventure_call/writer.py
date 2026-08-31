@@ -83,6 +83,7 @@ class OutputWriter:
                 "schema_version": SCHEMA_VERSION,
                 "generated_at": _timestamp(),
                 "root": _as_posix(root),
+                "root_abs": _as_abs_posix(root),
                 "stats": stats or {},
             }
         )
@@ -108,6 +109,7 @@ class OutputWriter:
             "schema_version": SCHEMA_VERSION,
             "generated_at": _timestamp(),
             "root": _as_posix(root),
+            "root_abs": _as_abs_posix(root),
             "includes_source": self.include_source,
             "stats": stats or {},
             "symbols": {
@@ -197,3 +199,16 @@ def _timestamp() -> str:
 
 def _as_posix(root: Path | str) -> str:
     return Path(root).as_posix() if root else ""
+
+
+def _as_abs_posix(root: Path | str) -> str:
+    """The analysed root as an absolute, resolved, POSIX-style path (drive
+    letter kept on Windows), or ``""`` when no root was given.
+
+    Written alongside the relative ``root`` (tic-7f0b): ``root`` is recorded
+    exactly as the caller passed it -- often relative to the generation cwd --
+    so ``vscode://`` deep links cannot resolve it.  ``root_abs`` pins the same
+    directory in an absolute form the browser (via the dev server) can use
+    directly.
+    """
+    return Path(root).expanduser().resolve().as_posix() if root else ""

@@ -20,6 +20,25 @@ const SERVED = ['codebase_graph.json', 'symbol_registry.json'] as const
  *  (tic-4b0a).  Not a file on disk, so it is handled explicitly below. */
 const META_NAME = 'meta.json'
 
+/**
+ * The absolute analysed root for `vscode://` deep links (tic-4b0a, tic-7f0b).
+ *
+ * Prefers the absolute root recorded at generation time (`root_abs`), which is
+ * pinned against the cwd adventure-call ran in and so needs no guessing.  Older
+ * exports carry only the relative `root`; for those we fall back to resolving
+ * it against the out directory -- degraded, but still something.  Exported for
+ * tests.
+ */
+export function resolveAbsoluteRoot(
+  graph: { root?: unknown; root_abs?: unknown } | undefined,
+  dir: string,
+): string | null {
+  const rootAbs = typeof graph?.root_abs === 'string' ? graph.root_abs : ''
+  if (rootAbs !== '') return rootAbs.replace(/\\/g, '/')
+  const root = typeof graph?.root === 'string' ? graph.root : ''
+  return root === '' ? null : resolve(dir, root)
+}
+
 export interface OutDataOptions {
   /** Directory holding the adventure-call exports, relative to the Vite root. */
   outDir?: string
@@ -41,11 +60,12 @@ export function outData({ outDir = '../out' }: OutDataOptions = {}): Plugin {
       server.watcher.add(paths)
 
       /**
-       * The absolute analysed root, resolved once per export change (tic-4b0a).
-       * The graph's `root` is written relative to the generation cwd
-       * ('../carnot' in the current export), which the browser cannot resolve;
-       * the dev server knows the out dir, so it joins them and exposes the
-       * result.  Recomputes only when `codebase_graph.json` on disk changes.
+       * The absolute analysed root, resolved once per export change
+       * (tic-4b0a, tic-7f0b).  Modern exports record `root_abs` at generation
+       * time and are used verbatim; an older export has only the relative
+       * `root`, which the dev server joins with the out dir -- degraded but
+       * still something.  Recomputes only when `codebase_graph.json` on disk
+       * changes.
        */
       let cachedRoot: string | null = null
       let cachedMtime = -1
@@ -62,10 +82,9 @@ export function outData({ outDir = '../out' }: OutDataOptions = {}): Plugin {
         if (mtime === cachedMtime) return cachedRoot
         try {
           const graph = JSON.parse(readFileSync(graphFile, 'utf8')) as {
-            graph?: { root?: unknown }
+            graph?: { root?: unknown; root_abs?: unknown }
           }
-          const root = typeof graph.graph?.root === 'string' ? graph.graph.root : ''
-          cachedRoot = root === '' ? null : resolve(dir, root)
+          cachedRoot = resolveAbsoluteRoot(graph.graph, dir)
         } catch {
           cachedRoot = null
         }
