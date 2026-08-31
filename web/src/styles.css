@@ -353,21 +353,60 @@ html, body, #root {
   cursor: default;
 }
 
-/* A thin vertical separator (tic-e7d2): the focus-scope buttons sit to the
-   left of Fit/Relayout, and this keeps the two groups visually apart. */
-.hud-divider {
-  width: 1px;
-  align-self: stretch;
-  margin: 2px 3px;
-  background: var(--line);
-}
-
 .hud-stat {
   padding: 0 4px;
   color: var(--text-faint);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* The on-workspace breadcrumb toolbar (tic-b1ab): floats above the focused
+   folder's group box in world space.  It is an HTML overlay positioned from
+   the viewport transform, so its text stays at a readable size at any zoom --
+   unlike a Konva layer, which would shrink to nothing when zoomed out.  The
+   workspace host already carries user-select:none; the buttons are small and
+   sit above the group, so they only ever capture their own clicks. */
+.breadcrumb-toolbar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+.breadcrumb-toolbar button {
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.breadcrumb-toolbar button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+/* '/' and '..' read as the same bordered action buttons the HUD used. */
+.breadcrumb-toolbar .crumb-nav {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+/* The focused folder is the current breadcrumb: accent, not dim. */
+.breadcrumb-toolbar .crumb.current {
+  color: var(--accent);
+  font-weight: 600;
+}
+.breadcrumb-toolbar .crumb-ellipsis {
+  padding: 0 4px;
+  color: var(--text-faint);
 }
 
 /* Derived filesystem tree. */

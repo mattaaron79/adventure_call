@@ -196,6 +196,38 @@ describe('focus scope (tic-e7d2)', () => {
     flushWorkspaceState()
     localStorage.removeItem(storageKey('call-graph'))
   })
+
+  it('auto-expands the entered folder without collapsing anything (tic-b1ab)', () => {
+    useWorkspace.getState().setExpanded({ 'dir:src': true, 'src/app/loop.py': true })
+    useWorkspace.getState().setFocusPath('src/app')
+    const state = useWorkspace.getState()
+    expect(activeMode(state).focusPath).toBe('src/app')
+    // The focused folder joins the expand state; what was already open stays.
+    expect(selectExpanded(state)).toEqual({
+      'dir:src': true,
+      'src/app/loop.py': true,
+      'dir:src/app': true,
+    })
+  })
+
+  it('does not add an expand entry when leaving the scope back to root (tic-b1ab)', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    expect(selectExpanded(useWorkspace.getState())).toEqual({ 'dir:src/app': true })
+
+    useWorkspace.getState().setFocusPath('')
+    // Leaving the scope touches neither the path nor the expand state.
+    expect(selectExpanded(useWorkspace.getState())).toEqual({ 'dir:src/app': true })
+  })
+
+  it('re-opens a folder explicitly collapsed from inside the scope (tic-b1ab)', () => {
+    useWorkspace.getState().setFocusPath('src/app') // auto-expands
+    useWorkspace.getState().toggleExpanded('dir:src/app') // collapse it -> false
+    expect(selectExpanded(useWorkspace.getState())).toEqual({ 'dir:src/app': false })
+
+    // Re-entering the same scope (its own breadcrumb) flips it back open.
+    useWorkspace.getState().setFocusPath('src/app')
+    expect(selectExpanded(useWorkspace.getState())).toEqual({ 'dir:src/app': true })
+  })
 })
 
 describe('persistence', () => {

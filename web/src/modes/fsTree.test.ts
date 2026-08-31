@@ -455,6 +455,17 @@ describe('fsTreeMode focus scope (tic-e7d2)', () => {
     expect(ids).not.toContain('dir:src')
   })
 
+  it('backs the focused folder with a group box the toolbar can anchor to (tic-b1ab)', () => {
+    // The store auto-expands the entered folder; the scoped render then has a
+    // group box for it, so the on-workspace breadcrumb toolbar floats above it
+    // in world space.
+    const scoped = render({ 'dir:src/app': true }, undefined, 0, WORKSPACE, 'src/app')
+    const group = scoped.rects.get('dir:src/app:group')
+    expect(group).toBeDefined()
+    expect(group!.width).toBeGreaterThan(0)
+    expect(group!.height).toBeGreaterThan(0)
+  })
+
   it('resolves goto targets inside the scope and nothing outside it', () => {
     const scoped = render({}, undefined, 0, WORKSPACE, 'src/app')
     const file = resolveGoto(scoped, 'src/app/loop.py')

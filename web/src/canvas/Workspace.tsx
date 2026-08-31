@@ -39,6 +39,7 @@ import {
 } from '../state/store'
 import { GOTO_ICON_PATHS } from '../ui/GotoIcon'
 import { GO_IN_ICON_PATHS } from '../ui/GoInIcon'
+import { BreadcrumbToolbar } from './BreadcrumbToolbar'
 import { Grid } from './Grid'
 import { CanvasIconButton } from './IconButton'
 import { shouldShowGoIn } from './iconButtonLogic'
@@ -62,13 +63,6 @@ import { useViewport } from './useViewport'
 import { centerOn, type Point, type Rect as WorldRect } from './viewport'
 
 const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif'
-
-/** The parent directory of a focus path, or the empty string at the root
- *  (tic-e7d2).  The '..' HUD button walks up one level with this. */
-function parentPath(path: string): string {
-  const slash = path.lastIndexOf('/')
-  return slash === -1 ? '' : path.slice(0, slash)
-}
 
 /** Nothing selected and nothing hovered: the highlight set stays this stable
  *  reference so the idle scene (and every pan/zoom frame) re-renders for free
@@ -490,6 +484,16 @@ export function Workspace({
     return () => window.removeEventListener('keydown', onKey)
   }, [fit])
 
+  // The world rect the breadcrumb toolbar floats above (tic-b1ab): the
+  // focused folder's group box when it has one (it is auto-expanded on scope
+  // enter, and an empty folder renders no box), falling back to its chip.
+  // The ids are the fs-tree mode's `dir:<path>` scheme, matching the expand
+  // keys the store auto-expands.
+  const focusRect = useMemo(() => {
+    if (!output || focusPath === '') return null
+    return output.rects.get(`dir:${focusPath}:group`) ?? output.rects.get(`dir:${focusPath}`) ?? null
+  }, [output, focusPath])
+
   return (
     <div ref={host} className="workspace" style={{ cursor }}>
       {size.width > 0 && size.height > 0 && (
@@ -564,26 +568,20 @@ export function Workspace({
         </Stage>
       )}
 
+      {/* On-workspace navigation (tic-b1ab): the '/' and '..' buttons moved out
+          of the HUD into this toolbar, which floats above the focused folder
+          and can jump straight to any ancestor level. */}
+      {focusRect && (
+        <BreadcrumbToolbar
+          viewport={viewport}
+          size={size}
+          rect={focusRect}
+          focusPath={focusPath}
+          onNavigate={(path) => useWorkspace.getState().setFocusPath(path)}
+        />
+      )}
+
       <div className="hud">
-        {focusPath !== '' && (
-          <>
-            <button
-              type="button"
-              onClick={() => useWorkspace.getState().setFocusPath('')}
-              title="Back to the whole graph"
-            >
-              /
-            </button>
-            <button
-              type="button"
-              onClick={() => useWorkspace.getState().setFocusPath(parentPath(focusPath))}
-              title={`Up to ${parentPath(focusPath) || '/'}`}
-            >
-              ..
-            </button>
-            <span className="hud-divider" aria-hidden="true" />
-          </>
-        )}
         <button type="button" onClick={fit} title="Frame everything">
           Fit
         </button>

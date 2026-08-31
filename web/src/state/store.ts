@@ -142,11 +142,25 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
     setFocusPath: (path) =>
       patchMode((mode) => {
-        if (mode.focusPath === path) return null
+        // Entering a scope auto-expands the focused folder (tic-b1ab): a
+        // folder the user had collapsed would otherwise open to an empty
+        // scope.  The `dir:` key is the fs-tree mode's directory expand-key
+        // convention; the add is additive, so nothing the user already has
+        // open is collapsed.  The root (empty path) has no folder to expand.
+        const expanded =
+          path !== '' && mode.expanded[`dir:${path}`] !== true
+            ? { ...mode.expanded, [`dir:${path}`]: true }
+            : mode.expanded
+        if (mode.focusPath === path) {
+          // Re-entering the current scope (e.g. its own breadcrumb) re-opens
+          // a folder the user had collapsed from inside it.
+          if (expanded === mode.expanded) return null
+          return { ...mode, expanded }
+        }
         // Entering a scope must not inherit drag overrides from the wider
         // view: a chip dragged around the whole graph has no meaningful
         // position inside the focused subtree.
-        return { ...mode, focusPath: path, overrides: {} }
+        return { ...mode, focusPath: path, overrides: {}, expanded }
       }),
 
     moveNodes: (positions) =>
