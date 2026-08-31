@@ -10,7 +10,7 @@ import { modeById } from './modes/registry'
 import { minimalScopeForTarget } from './modes/fsTree'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
-import { Inspector } from './ui/Inspector'
+import { buildSourceLinks, Inspector } from './ui/Inspector'
 import { Sidebar } from './ui/Sidebar'
 
 type Status =
@@ -111,6 +111,17 @@ export function App() {
   )
   const scene = layout?.scene ?? EMPTY_SCENE
 
+  // The vscode:// source link per scene element (tic-468e): every element that
+  // resolves to a symbol or file gets the same deep link the inspector shows,
+  // so the canvas can offer a file-symlink button on each item.
+  const sourceLinks = useMemo(
+    () =>
+      layout && workspace
+        ? buildSourceLinks(layout.rects.keys(), layout.symbolOf, workspace.index, absoluteRoot)
+        : new Map<string, string>(),
+    [layout, workspace, absoluteRoot],
+  )
+
   // Clicking a directory chip or a file chip/container toggles it; rows and
   // everything else just select (which the pointer-down handler already did).
   const onActivate = useCallback(
@@ -192,6 +203,7 @@ export function App() {
         <Workspace
           scene={scene}
           output={layout}
+          sourceLinks={sourceLinks}
           onActivate={onActivate}
           expandable={layout?.expandable}
           resolveGotoScope={resolveGotoScope}

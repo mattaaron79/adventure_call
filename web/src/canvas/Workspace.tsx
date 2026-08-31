@@ -28,8 +28,10 @@ import {
   selectViewport,
   useWorkspace,
 } from '../state/store'
+import { FILE_SYMLINK_ICON_PATHS } from '../ui/FileSymlinkIcon'
 import { GOTO_ICON_PATHS } from '../ui/GotoIcon'
 import { GO_IN_ICON_PATHS } from '../ui/GoInIcon'
+import { launchVscodeLink } from '../ui/Inspector'
 import { BreadcrumbToolbar } from './BreadcrumbToolbar'
 import { Grid } from './Grid'
 import { CanvasIconButton } from './IconButton'
@@ -101,6 +103,7 @@ function applyGroupGeometry(shapes: GroupShapes, group: SceneGroup): void {
 export function Workspace({
   scene,
   output,
+  sourceLinks,
   onActivate,
   expandable,
   resolveGotoScope,
@@ -111,6 +114,11 @@ export function Workspace({
    * while there is no mode (loading, error) -- goto then silently no-ops.
    */
   output: ModeOutput | null
+  /**
+   * Element id -> vscode:// source link (tic-468e).  A node with one renders a
+   * small file-symlink button that opens its source line in VS Code.
+   */
+  sourceLinks: ReadonlyMap<string, string>
   onActivate?: (id: string) => void
   /** Ids whose activation toggles expand/collapse; the `e` shortcut uses it. */
   expandable?: ReadonlySet<string>
@@ -619,6 +627,7 @@ export function Workspace({
                   showSublabel={lod === 0}
                   showGoIn={lod < 2}
                   focusPath={focusPath}
+                  sourceLinks={sourceLinks}
                   onTooltip={handleIconTooltip}
                   handlers={handlers}
                   register={register}
@@ -788,6 +797,9 @@ interface ChipProps {
   /** The active focus path: a folder never offers to go into itself
    *  (tic-4d7c). */
   focusPath: string
+  /** Element id -> vscode:// source link (tic-468e); a node with one renders a
+   *  file-symlink button that opens its source line in VS Code. */
+  sourceLinks: ReadonlyMap<string, string>
   /** Reports icon-button hover tooltips in client coords (tic-1d9a). */
   onTooltip: (text: string | null, clientX: number, clientY: number) => void
   handlers: NodeHandlers
@@ -806,6 +818,7 @@ const NodeChip = memo(function NodeChip({
   showSublabel,
   showGoIn,
   focusPath,
+  sourceLinks,
   onTooltip,
   handlers,
   register,
@@ -814,9 +827,14 @@ const NodeChip = memo(function NodeChip({
 }: ChipProps) {
   const stroke = selected ? THEME.selected : hovered ? THEME.hovered : node.stroke
   const labelY = node.sublabel === undefined ? node.height / 2 - 7 : 8
-  // A row with a goto button reserves the right edge so the icon never covers
-  // its label (tic-4d7c); everything else keeps the current inset.
-  const labelInset = node.gotoTo !== undefined ? 40 : 20
+  // Icon buttons reserve the right edge so they never cover the label
+  // (tic-4d7c / tic-468e): a source link and a goto button together need room
+  // for both, a single icon needs the current 40px slot, otherwise the label
+  // runs to the original inset.
+  const hasGoto = node.gotoTo !== undefined
+  const hasSource = sourceLinks.has(node.id)
+  const labelInset = hasGoto ? (hasSource ? 64 : 40) : hasSource ? 40 : 20
+  const sourceLink = sourceLinks.get(node.id)
 
   // Position is owned imperatively, not through props: react-konva would
   // teleport the node on re-render, while a Konva tween glides it there
@@ -921,6 +939,19 @@ const NodeChip = memo(function NodeChip({
           tooltip={`Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
           onTooltip={onTooltip}
           onClick={() => onGoIn(node.focusTo!)}
+        />
+      )}
+      {/* Source-line affordance (tic-468e): opens the item's source line in VS
+          Code, the same deep link the inspector shows.  Sits to the left of
+          the goto button when both are present. */}
+      {showGoIn && sourceLink !== undefined && (
+        <CanvasIconButton
+          x={node.width - (hasGoto ? 50 : 26)}
+          y={node.height / 2 - 9}
+          paths={FILE_SYMLINK_ICON_PATHS}
+          tooltip="Open in VS Code"
+          onTooltip={onTooltip}
+          onClick={() => launchVscodeLink(sourceLink)}
         />
       )}
       {/* Camera-goto affordance on import rows (tic-4d7c): flies the camera to

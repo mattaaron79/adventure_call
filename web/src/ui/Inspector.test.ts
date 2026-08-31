@@ -6,6 +6,7 @@ import type { GraphNode, SymbolKind } from '../data/types'
 import {
   Inspector,
   buildImportRows,
+  buildSourceLinks,
   countSymbolsByKind,
   launchVscodeLink,
   lineRange,
@@ -102,6 +103,56 @@ describe('vscodeFileLink', () => {
 
   it('degrades to null without a file path', () => {
     expect(vscodeFileLink('/repo', '', 1)).toBeNull()
+  })
+})
+
+describe('buildSourceLinks', () => {
+  const moduleByFile = new Map<string, GraphNode>([
+    ['src/app/loop.py', node('app.loop', 'module', 'loop', 'app.loop')],
+  ])
+  const sourceIndex: SymbolIndex = {
+    byId,
+    byModule: new Map(),
+    byParent: new Map(),
+    rootsByModule: new Map(),
+    moduleByFile,
+    moduleById: new Map(),
+  }
+
+  it('links a symbol element through symbolOf -> byId', () => {
+    const symbolOf = new Map([
+      ['row:src/app/loop.py:imp:app.errors.PluginError', 'app.errors.PluginError'],
+    ])
+    const links = buildSourceLinks(
+      ['row:src/app/loop.py:imp:app.errors.PluginError'],
+      symbolOf,
+      sourceIndex,
+      '/repo/carnot',
+    )
+    expect(links.get('row:src/app/loop.py:imp:app.errors.PluginError')).toBe(
+      'vscode://file//repo/carnot/src/app/loop.py:1:1',
+    )
+  })
+
+  it('links a file chip straight through moduleByFile', () => {
+    const links = buildSourceLinks(['src/app/loop.py'], new Map(), sourceIndex, '/repo/carnot')
+    expect(links.get('src/app/loop.py')).toBe('vscode://file//repo/carnot/src/app/loop.py:1:1')
+  })
+
+  it('skips elements with no symbol or file (dirs, sections, stubs, groups)', () => {
+    const links = buildSourceLinks(
+      ['dir:src', 'row:src/app/loop.py:section:Classes', 'dir:src:stub', 'dir:src:group'],
+      new Map(),
+      sourceIndex,
+      '/repo/carnot',
+    )
+    expect(links.size).toBe(0)
+  })
+
+  it('returns no links without an absolute root', () => {
+    const symbolOf = new Map([['row:x', 'app.errors.PluginError']])
+    const links = buildSourceLinks(['row:x'], symbolOf, sourceIndex, null)
+    expect(links.size).toBe(0)
   })
 })
 

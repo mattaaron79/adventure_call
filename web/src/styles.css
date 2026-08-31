@@ -621,11 +621,13 @@ html, body, #root {
 /* Camera goto (tic-bee0): a crosshair, visually distinct from the
    expand/collapse carets, and a separate hit target so activating it never
    expands a directory or selects the row on the way. */
-/* Camera goto (tic-bee0) and focus-scope 'go in' (tic-e7d2) share the same
-   chrome: a small, frameless icon button that is a separate hit target from
-   the row it sits in.  The glyphs stay distinct (crosshair vs folder+arrow). */
+/* Camera goto (tic-bee0), focus-scope 'go in' (tic-e7d2) and the source-line
+   file-symlink (tic-468e) share the same chrome: a small, frameless icon
+   button that is a separate hit target from the row it sits in.  The glyphs
+   stay distinct (crosshair vs folder+arrow vs file+link). */
 .goto-icon,
-.go-in-icon {
+.go-in-icon,
+.file-symlink-icon {
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -640,19 +642,23 @@ html, body, #root {
   cursor: pointer;
 }
 .goto-icon:hover,
-.go-in-icon:hover {
+.go-in-icon:hover,
+.file-symlink-icon:hover {
   color: var(--accent);
   background: var(--surface-2);
 }
-/* In the tree both are a hover/focus reveal so rows stay clean. */
+/* In the tree all three are a hover/focus reveal so rows stay clean. */
 .tree .goto-icon,
-.tree .go-in-icon {
+.tree .go-in-icon,
+.tree .file-symlink-icon {
   opacity: 0;
 }
 .tree-row:hover .goto-icon,
 .tree-row:focus-within .goto-icon,
 .tree-row:hover .go-in-icon,
-.tree-row:focus-within .go-in-icon {
+.tree-row:focus-within .go-in-icon,
+.tree-row:hover .file-symlink-icon,
+.tree-row:focus-within .file-symlink-icon {
   opacity: 1;
 }
 

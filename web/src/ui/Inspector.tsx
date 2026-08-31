@@ -8,7 +8,7 @@
  * first time).
  */
 import { useEffect, useMemo, useState } from 'react'
-import type { Workspace } from '../data/derive'
+import type { SymbolIndex, Workspace } from '../data/derive'
 import { normalizePath } from '../data/filters'
 import { loadRegistry } from '../data/load'
 import type { GraphNode, SymbolKind } from '../data/types'
@@ -34,6 +34,33 @@ export function vscodeFileLink(
   const root = absoluteRoot.replace(/\\/g, '/').replace(/\/+$/, '')
   const file = filePath.replace(/^\/+/, '')
   return `vscode://file/${root}/${file}:${line}:1`
+}
+
+/**
+ * The vscode:// source link for every scene element that resolves to a symbol
+ * or a file (tic-468e), keyed by the element id the canvas renders.  Symbols
+ * resolve through the mode output's `symbolOf` (element id -> symbol id) to the
+ * index; file chips carry their own path as the element id and resolve straight
+ * to their module.  Elements with no symbol or file -- directory chips, section
+ * headers, stubs, group boxes -- get no link, so the canvas shows the
+ * file-symlink affordance only where there is a real source line to open.
+ */
+export function buildSourceLinks(
+  elementIds: Iterable<string>,
+  symbolOf: ReadonlyMap<string, string>,
+  index: SymbolIndex,
+  absoluteRoot: string | null,
+): Map<string, string> {
+  const links = new Map<string, string>()
+  for (const elementId of elementIds) {
+    const symbolId = symbolOf.get(elementId)
+    const node =
+      symbolId !== undefined ? index.byId.get(symbolId) : index.moduleByFile.get(elementId)
+    if (!node) continue
+    const url = vscodeFileLink(absoluteRoot, node.file_path, node.start_line)
+    if (url !== null) links.set(elementId, url)
+  }
+  return links
 }
 
 /**
