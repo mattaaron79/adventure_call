@@ -11,7 +11,7 @@
  * Every phase is a pure function of its arguments, so React and Konva stay
  * outside and the whole pipeline is trivially testable.
  */
-import type { Scene, SceneEdge, SceneGroup, SceneNode } from '../canvas/scene'
+import type { EdgeRoute, Scene, SceneEdge, SceneGroup, SceneNode } from '../canvas/scene'
 import type { Rect, Size } from '../canvas/viewport'
 import type { Workspace } from '../data/derive'
 
@@ -51,6 +51,11 @@ export interface SpecNode {
 export interface SpecGroup {
   id: string
   label: string
+  /**
+   * The spec node whose subtree the box wraps, so the assembled SceneGroup
+   * can carry its member ids and follow dragged nodes (tic-1d7c).
+   */
+  of?: string
 }
 
 /** A connection between two elements; layout resolves the ids to points. */
@@ -60,6 +65,11 @@ export interface SpecEdge {
   to: string
   /** Mode-defined kind, e.g. 'nesting' | 'import'. */
   kind: string
+  /**
+   * How the polyline follows its endpoint rects when a drag moves them
+   * (tic-1d7c).  Defaults to 'center'; the fs-tree's nesting lines elbow.
+   */
+  route?: EdgeRoute
 }
 
 /** Which nodes, groups and edges exist -- no geometry, no styling. */
@@ -166,8 +176,10 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
   const edges: SceneEdge[] = []
   const symbolOf = new Map<string, string>()
   const expandable = new Set<string>()
+  const specById = new Map<string, SpecNode>()
 
   const visit = (node: SpecNode): void => {
+    specById.set(node.id, node)
     const rect = positioned.rects.get(node.id)
     if (rect) {
       const s = styles.nodes.get(node.id)
@@ -188,6 +200,19 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
   }
   visit(spec.root)
 
+  /** The wrapped node and every descendant, so a group box can be recomputed
+   *  from member rects after a drag (tic-1d7c). */
+  const subtreeIds = (id: string): string[] => {
+    const ids: string[] = []
+    const walk = (node: SpecNode): void => {
+      ids.push(node.id)
+      for (const child of node.children) walk(child)
+    }
+    const start = specById.get(id)
+    if (start) walk(start)
+    return ids
+  }
+
   for (const group of spec.groups) {
     const rect = positioned.rects.get(group.id)
     if (!rect) continue
@@ -198,6 +223,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
       ...rect,
       fill: s?.fill ?? TRANSPARENT,
       stroke: s?.stroke ?? TRANSPARENT,
+      members: group.of !== undefined ? subtreeIds(group.of) : undefined,
     })
   }
 
@@ -212,6 +238,9 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
       strokeWidth: s?.strokeWidth,
       dash: s?.dash,
       opacity: s?.opacity,
+      from: edge.from,
+      to: edge.to,
+      route: edge.route,
     })
   }
 

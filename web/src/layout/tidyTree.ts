@@ -85,7 +85,9 @@ export interface GroupOptions {
 
 const DEFAULT_TIER_GAP = 64
 const DEFAULT_SIBLING_GAP = 12
-const DEFAULT_GROUP_PADDING = 12
+/** Padding `subtreeGroups` adds around a subtree box; `reproject` reuses it so
+ *  a recomputed group box lands exactly where the layout would have put it. */
+export const DEFAULT_GROUP_PADDING = 12
 const EPSILON = 1e-6
 
 interface Measured {
@@ -215,7 +217,9 @@ export function elbowConnectors<N>(
   return edges
 }
 
-function elbow(p: Rect, c: Rect, orientation: Orientation): number[] {
+/** Exported for the canvas `reproject` (tic-1d7c), which re-routes a single
+ *  edge from moved endpoint rects without re-running the whole layout. */
+export function elbow(p: Rect, c: Rect, orientation: Orientation): number[] {
   if (orientation === 'lr') {
     const x0 = p.x + p.width
     const y0 = p.y + p.height / 2

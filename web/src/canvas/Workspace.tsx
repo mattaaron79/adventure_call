@@ -25,6 +25,7 @@ import {
   cullScene,
   nodesInRect,
   placedRect,
+  reproject,
   sceneBounds,
   visibleWorldRect,
   type Scene,
@@ -57,6 +58,21 @@ interface DragSession {
   start: Map<string, Point>
 }
 
+/** The Konva nodes of one group box, for imperative drag updates (tic-1d7c). */
+interface GroupShapes {
+  group: Konva.Group
+  rect: Konva.Rect
+  text: Konva.Text
+}
+
+/** Push a recomputed group rect onto its Konva nodes. */
+function applyGroupGeometry(shapes: GroupShapes, group: SceneGroup): void {
+  shapes.group.position({ x: group.x, y: group.y })
+  shapes.rect.width(group.width)
+  shapes.rect.height(group.height)
+  shapes.text.width(Math.max(0, group.width - 28))
+}
+
 export function Workspace({
   scene,
   onActivate,
@@ -83,6 +99,13 @@ export function Workspace({
 
   const konvaNodes = useRef(new Map<string, Konva.Group>())
   const drag = useRef<DragSession | null>(null)
+  // Edge and group geometry is updated imperatively during a drag (tic-1d7c):
+  // routing per-frame positions through the store would re-render the whole
+  // scene on every pointer move, which the design deliberately avoids.
+  const groupLayer = useRef<Konva.Layer>(null)
+  const edgeLayer = useRef<Konva.Layer>(null)
+  const edgeShapes = useRef(new Map<string, Konva.Line>())
+  const groupShapes = useRef(new Map<string, GroupShapes>())
   /** Where the current press began, to tell a click from the start of a drag. */
   const press = useRef<{ id: string; x: number; y: number } | null>(null)
   const onActivateRef = useRef(onActivate)
@@ -129,6 +152,16 @@ export function Workspace({
   const register = useCallback((id: string, node: Konva.Group | null) => {
     if (node) konvaNodes.current.set(id, node)
     else konvaNodes.current.delete(id)
+  }, [])
+
+  const registerEdge = useCallback((id: string, line: Konva.Line | null) => {
+    if (line) edgeShapes.current.set(id, line)
+    else edgeShapes.current.delete(id)
+  }, [])
+
+  const registerGroup = useCallback((id: string, shapes: GroupShapes | null) => {
+    if (shapes) groupShapes.current.set(id, shapes)
+    else groupShapes.current.delete(id)
   }, [])
 
   const handlers = useMemo<NodeHandlers>(() => {
@@ -178,7 +211,7 @@ export function Workspace({
 
       onDragMove(e) {
         const session = drag.current
-        if (!session || session.ids.length < 2) return
+        if (!session) return
         const delta = deltaOf(e, session)
         // The rest of the selection moves imperatively: routing it through the
         // store would re-render the whole scene on every pointer move.
@@ -188,6 +221,26 @@ export function Workspace({
           const node = konvaNodes.current.get(id)
           if (from && node) node.position({ x: from.x + delta.x, y: from.y + delta.y })
         }
+        // Live reproject (tic-1d7c): re-route edges and regrow group boxes
+        // from where the dragged nodes are right now -- multi-selection
+        // included, since every travelling id is in `session.start` -- then
+        // paint just the two affected layers.  The store stays untouched
+        // until the drag commits.
+        const live: Record<string, Point> = { ...overridesRef.current }
+        for (const [id, from] of session.start) {
+          live[id] = { x: from.x + delta.x, y: from.y + delta.y }
+        }
+        const projected = reproject(sceneRef.current, live)
+        for (const edge of projected.edges) {
+          const line = edgeShapes.current.get(edge.id)
+          if (line) line.points(edge.points)
+        }
+        for (const group of projected.groups) {
+          const shapes = groupShapes.current.get(group.id)
+          if (shapes) applyGroupGeometry(shapes, group)
+        }
+        groupLayer.current?.batchDraw()
+        edgeLayer.current?.batchDraw()
       },
 
       onDragEnd(e) {
@@ -215,12 +268,20 @@ export function Workspace({
   const world = { x: viewport.x, y: viewport.y, scaleX: viewport.scale, scaleY: viewport.scale }
   const cursor = panning ? 'grabbing' : hovered !== null ? 'pointer' : 'grab'
 
+  // Re-route edges and regrow group boxes around committed drag overrides
+  // (tic-1d7c) before culling, so a dropped drag updates lines and boxes.
+  // Skipped while there are no overrides: the laid-out scene is already
+  // correct, and pan/zoom then pays nothing beyond the cull itself.
+  const projected = useMemo(
+    () => (Object.keys(overrides).length > 0 ? reproject(scene, overrides) : scene),
+    [scene, overrides],
+  )
   // Render-time culling (tic-fa56): filter the computed scene to what the
   // camera can see, plus a margin.  Selection, marquee and fit keep using the
   // full scene through the refs above.
   const visible = useMemo(
-    () => cullScene(scene, visibleWorldRect(viewport, size)),
-    [scene, viewport, size],
+    () => cullScene(projected, visibleWorldRect(viewport, size)),
+    [projected, viewport, size],
   )
   // Text thinning on the same thresholds the modes read; both only change on
   // a threshold crossing, never per pan/zoom frame.
@@ -276,15 +337,15 @@ export function Workspace({
             />
           </Layer>
 
-          <Layer {...world} listening={false}>
+          <Layer ref={groupLayer} {...world} listening={false}>
             {visible.groups.map((group) => (
-              <GroupBox key={group.id} group={group} />
+              <GroupBox key={group.id} group={group} register={registerGroup} />
             ))}
           </Layer>
 
-          <Layer {...world} listening={false}>
+          <Layer ref={edgeLayer} {...world} listening={false}>
             {visible.edges.map((edge) => (
-              <EdgeLine key={edge.id} edge={edge} />
+              <EdgeLine key={edge.id} edge={edge} register={registerEdge} />
             ))}
           </Layer>
 
@@ -348,10 +409,33 @@ export function Workspace({
   )
 }
 
-const GroupBox = memo(function GroupBox({ group }: { group: SceneGroup }) {
+const GroupBox = memo(function GroupBox({
+  group,
+  register,
+}: {
+  group: SceneGroup
+  register: (id: string, shapes: GroupShapes | null) => void
+}) {
+  // The Konva nodes are kept for imperative drag updates (tic-1d7c): during a
+  // drag the box follows its members without a React re-render.
+  const shapes = useRef<GroupShapes>({ group: null!, rect: null!, text: null! })
+  useEffect(() => {
+    register(group.id, shapes.current)
+    return () => register(group.id, null)
+  }, [group.id, register])
   return (
-    <Group x={group.x} y={group.y} listening={false}>
+    <Group
+      x={group.x}
+      y={group.y}
+      listening={false}
+      ref={(instance) => {
+        if (instance) shapes.current.group = instance
+      }}
+    >
       <Rect
+        ref={(instance) => {
+          if (instance) shapes.current.rect = instance
+        }}
         width={group.width}
         height={group.height}
         cornerRadius={10}
@@ -362,6 +446,9 @@ const GroupBox = memo(function GroupBox({ group }: { group: SceneGroup }) {
         shadowForStrokeEnabled={false}
       />
       <Text
+        ref={(instance) => {
+          if (instance) shapes.current.text = instance
+        }}
         x={14}
         y={9}
         width={Math.max(0, group.width - 28)}
@@ -378,9 +465,16 @@ const GroupBox = memo(function GroupBox({ group }: { group: SceneGroup }) {
   )
 })
 
-const EdgeLine = memo(function EdgeLine({ edge }: { edge: SceneEdge }) {
+const EdgeLine = memo(function EdgeLine({
+  edge,
+  register,
+}: {
+  edge: SceneEdge
+  register: (id: string, line: Konva.Line | null) => void
+}) {
   return (
     <Line
+      ref={(instance) => register(edge.id, instance)}
       points={edge.points}
       stroke={edge.stroke}
       strokeWidth={edge.strokeWidth ?? 1}

@@ -267,7 +267,11 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
     const open = dirOpen(node)
     const children = open ? node.children.map(visit) : []
     if (open && children.length > 0) {
-      groups.push({ id: `${dirId(node.path)}:group`, label: node.path === '' ? '/' : node.path })
+      groups.push({
+        id: `${dirId(node.path)}:group`,
+        label: node.path === '' ? '/' : node.path,
+        of: dirId(node.path),
+      })
     }
     for (const child of children) {
       edges.push({
@@ -275,6 +279,7 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
         from: dirId(node.path),
         to: child.id,
         kind: 'nesting',
+        route: 'elbow',
       })
     }
     return {
@@ -300,6 +305,7 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
         from: anchorId(edge.source, edge.symbolIds, expanded, importedBy),
         to: anchorId(edge.target, edge.symbolIds, expanded, importedBy),
         kind: 'import',
+        route: 'center',
       })
     }
   }

@@ -8,6 +8,7 @@
  * them.  Ids are the currency of selection, hover, expansion and position
  * overrides, so they must be stable across a re-layout.
  */
+import { DEFAULT_GROUP_PADDING, elbow } from '../layout/tidyTree'
 import {
   rectsIntersect,
   screenToWorld,
@@ -31,12 +32,21 @@ export interface SceneNode extends Rect {
   draggable?: boolean
 }
 
+/** How an edge's polyline is derived from its endpoint rects. */
+export type EdgeRoute = 'elbow' | 'center'
+
 /** A translucent rounded rect behind a subtree -- the grouping primitive. */
 export interface SceneGroup extends Rect {
   id: string
   label: string
   fill: string
   stroke: string
+  /**
+   * The node ids the box wraps, so its bounds can be recomputed when a drag
+   * moves members (tic-1d7c).  Absent on groups that were never given a
+   * subtree; those keep their laid-out rect forever.
+   */
+  members?: readonly string[]
 }
 
 /** A polyline in world coordinates. Elbow routing lives in the layout module. */
@@ -48,6 +58,15 @@ export interface SceneEdge {
   strokeWidth?: number
   dash?: number[]
   opacity?: number
+  /**
+   * Endpoint element ids, carried through from the spec so a drag can
+   * re-route the polyline (tic-1d7c).  Both must be present for the edge to
+   * be re-derivable; edges without them keep their laid-out points.
+   */
+  from?: string
+  to?: string
+  /** How the polyline follows the endpoint rects. Default 'center'. */
+  route?: EdgeRoute
 }
 
 export interface Scene {
@@ -57,6 +76,61 @@ export interface Scene {
 }
 
 export const EMPTY_SCENE: Scene = { groups: [], edges: [], nodes: [] }
+
+/**
+ * Re-derive edge polylines and group boxes from the placed rects (tic-1d7c).
+ *
+ * A drag override moves a node chip, but the scene's edge points and group
+ * rects were baked by the mode's layout phase and know nothing about it.
+ * This is the missing half: given the scene and the current overrides, it
+ * returns a new Scene whose edges are re-routed between the placed endpoint
+ * rects and whose group boxes are the padded bounding box of their placed
+ * members.  The routing itself is not duplicated here -- elbows come from
+ * {@link ../layout/tidyTree.elbow | elbow}, the same function the layout
+ * phase used, so a reprojected edge lands exactly where a re-layout would
+ * have put it.
+ *
+ * Pure: `scene` is never mutated, and nodes pass through untouched (their
+ * positions are applied at render time via `placedRect`).  Edges without
+ * endpoint ids and groups without members are returned as-is.
+ */
+export function reproject(scene: Scene, overrides: Readonly<Record<string, Point>>): Scene {
+  const placed = new Map<string, Rect>()
+  for (const node of scene.nodes) placed.set(node.id, placedRect(node, overrides[node.id]))
+
+  const edges = scene.edges.map((edge) => {
+    if (edge.from === undefined || edge.to === undefined) return edge
+    const from = placed.get(edge.from)
+    const to = placed.get(edge.to)
+    if (!from || !to) return edge
+    const points = edge.route === 'elbow' ? elbow(from, to, 'lr') : centerLine(from, to)
+    return { ...edge, points }
+  })
+
+  const groups = scene.groups.map((group) => {
+    if (!group.members || group.members.length === 0) return group
+    const box = unionRects(
+      group.members
+        .map((id) => placed.get(id))
+        .filter((rect): rect is Rect => rect !== undefined),
+    )
+    if (!box) return group
+    return {
+      ...group,
+      x: box.x - DEFAULT_GROUP_PADDING,
+      y: box.y - DEFAULT_GROUP_PADDING,
+      width: box.width + 2 * DEFAULT_GROUP_PADDING,
+      height: box.height + 2 * DEFAULT_GROUP_PADDING,
+    }
+  })
+
+  return { groups, edges, nodes: scene.nodes }
+}
+
+/** Straight line between the centres of two rects -- the import-line routing. */
+function centerLine(a: Rect, b: Rect): number[] {
+  return [a.x + a.width / 2, a.y + a.height / 2, b.x + b.width / 2, b.y + b.height / 2]
+}
 
 /** Where a node actually sits, once the user's drag override is applied. */
 export function placedRect(node: SceneNode, override: Point | undefined): Rect {
