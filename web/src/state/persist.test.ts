@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MIN_SCALE } from '../canvas/viewport'
 import { memoryStorage } from '../testing/memoryStorage'
 import {
+  UI_STORAGE_KEY,
   createDebouncedWriter,
   clearModeState,
   emptyModeState,
   readModeState,
+  readUiPrefs,
   storageKey,
   writeModeState,
+  writeUiPrefs,
 } from './persist'
 
 beforeEach(() => {
@@ -134,6 +137,42 @@ describe('mode state', () => {
     vi.stubGlobal('localStorage', undefined)
     expect(() => writeModeState('fs-tree', STATE)).not.toThrow()
     expect(readModeState('fs-tree')).toBeNull()
+  })
+})
+
+describe('ui preferences (tic-88ac)', () => {
+  it('round trips the inspector collapse flag under its own key', () => {
+    writeUiPrefs({ inspectorCollapsed: true })
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: true })
+    expect(localStorage.getItem(UI_STORAGE_KEY)).toBe(JSON.stringify({ inspectorCollapsed: true }))
+  })
+
+  it('defaults to expanded when nothing is stored', () => {
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+  })
+
+  it('degrades to the default on junk left by a hand edit or older build', () => {
+    localStorage.setItem(UI_STORAGE_KEY, 'not json')
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+
+    localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ inspectorCollapsed: 'yes' }))
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+  })
+
+  it('lives apart from mode state, so a saved preset never captures it', () => {
+    writeUiPrefs({ inspectorCollapsed: true })
+    writeModeState('fs-tree', STATE)
+    // The collapse flag is under its own key; the mode slice has no such field.
+    expect(readModeState('fs-tree')).toEqual(STATE)
+    expect(JSON.parse(localStorage.getItem(storageKey('fs-tree'))!)).not.toHaveProperty(
+      'inspectorCollapsed',
+    )
+  })
+
+  it('is a no-op when storage is unavailable', () => {
+    vi.stubGlobal('localStorage', undefined)
+    expect(() => writeUiPrefs({ inspectorCollapsed: true })).not.toThrow()
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
   })
 })
 

@@ -1,7 +1,15 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { FsDir, SymbolIndex, Workspace } from '../data/derive'
 import type { GraphNode, SymbolKind } from '../data/types'
-import { buildImportRows, countSymbolsByKind, lineRange, vscodeFileLink } from './Inspector'
+import {
+  Inspector,
+  buildImportRows,
+  countSymbolsByKind,
+  lineRange,
+  vscodeFileLink,
+} from './Inspector'
 
 function node(id: string, kind: SymbolKind, name?: string, module?: string): GraphNode {
   return {
@@ -159,5 +167,59 @@ describe('lineRange', () => {
   it('renders a span as L<start>–L<end>', () => {
     const span = { ...node('a.fn', 'function'), start_line: 5, end_line: 12 }
     expect(lineRange(span)).toBe('L5\u2013L12')
+  })
+})
+
+describe('Inspector collapse (tic-88ac)', () => {
+  const sel = node('app.loop.run', 'function', 'run')
+  const render = (collapsed: boolean) =>
+    renderToStaticMarkup(
+      createElement(Inspector, {
+        node: sel,
+        workspace: WORKSPACE,
+        absoluteRoot: '/repo',
+        collapsed,
+        onToggleCollapsed: () => {},
+      }),
+    )
+
+  it('renders the detail card expanded with an aria-expanded toggle button', () => {
+    const html = render(false)
+    // The control is a real button reporting the body region as expanded.
+    expect(html).toMatch(/<button[^>]*class="inspector-toggle"[^>]*aria-expanded="true"/)
+    // The full detail body is present when expanded.
+    expect(html).toContain('id="inspector-body"')
+    expect(html).toContain('inspector-facts')
+    expect(html).toContain('inspector-imports')
+  })
+
+  it('collapses to a compact identifying bar still naming the selection', () => {
+    const html = render(true)
+    expect(html).toMatch(/<button[^>]*class="inspector-toggle"[^>]*aria-expanded="false"/)
+    expect(html).toContain('inspector-collapsed')
+    // The bar keeps the kind swatch, the name and the kind...
+    expect(html).toContain('swatch')
+    expect(html).toContain('run')
+    expect(html).toContain('function')
+    // ...but the detail body is gone.
+    expect(html).not.toContain('id="inspector-body"')
+    expect(html).not.toContain('inspector-facts')
+    expect(html).not.toContain('inspector-imports')
+  })
+
+  it('keeps the compact bar identifying the newly selected node', () => {
+    const html = renderToStaticMarkup(
+      createElement(Inspector, {
+        node: node('app.other.DoStuff', 'class', 'DoStuff'),
+        workspace: WORKSPACE,
+        absoluteRoot: null,
+        collapsed: true,
+        onToggleCollapsed: () => {},
+      }),
+    )
+    // A changed selection shows through the collapsed bar without re-expanding.
+    expect(html).toContain('DoStuff')
+    expect(html).toContain('class')
+    expect(html).not.toContain('inspector-facts')
   })
 })

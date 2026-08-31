@@ -152,6 +152,44 @@ html, body, #root {
   letter-spacing: 0.06em;
   color: var(--text-faint);
 }
+/* Collapse toggle (tic-88ac): a real button with aria-expanded; the chevron
+   points down while the card is open and right once collapsed. */
+.inspector-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.inspector-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.inspector-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Collapsed (tic-88ac): the card shrinks to the compact identifying header
+   bar -- kind swatch, name, kind, goto -- so it is out of the way but still
+   says what is selected, ready to expand again without reselecting. */
+.inspector.inspector-collapsed {
+  width: auto;
+  min-width: 200px;
+  max-width: 570px;
+  max-height: none;
+  overflow: hidden;
+  padding: 6px 10px;
+}
 .inspector-path {
   margin: 2px 0 8px;
   color: var(--text-faint);

@@ -144,6 +144,55 @@ export function clearModeState(modeId: string): void {
   }
 }
 
+// -- standalone UI preferences ----------------------------------------------
+
+/**
+ * Chrome around the visualisation, as opposed to per-mode workspace state
+ * (tic-88ac): whether the inspector card is collapsed to its identifying bar.
+ * Unlike the mode slices, these preferences are global to the app and describe
+ * the chrome, not what is visualised, so they live under their own key --
+ * never inside a mode's `ModeState` and never inside a saved preset
+ * (src/modes/presets.ts).
+ */
+export const UI_STORAGE_KEY = 'adventure-call:ui'
+
+export interface UiPrefs {
+  /** The inspector card is collapsed to its compact identifying bar. */
+  inspectorCollapsed: boolean
+}
+
+export function emptyUiPrefs(): UiPrefs {
+  return { inspectorCollapsed: false }
+}
+
+export function readUiPrefs(): UiPrefs {
+  let raw: string | null | undefined
+  try {
+    raw = storage()?.getItem(UI_STORAGE_KEY)
+  } catch {
+    return emptyUiPrefs()
+  }
+  if (!raw) return emptyUiPrefs()
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return emptyUiPrefs()
+    const record = parsed as Record<string, unknown>
+    return {
+      inspectorCollapsed: record.inspectorCollapsed === true,
+    }
+  } catch {
+    return emptyUiPrefs()
+  }
+}
+
+export function writeUiPrefs(prefs: UiPrefs): void {
+  try {
+    storage()?.setItem(UI_STORAGE_KEY, JSON.stringify(prefs))
+  } catch {
+    // Persistence is a convenience; the in-memory state still applies.
+  }
+}
+
 /**
  * Coalesce the writes.  A pan is one state update per pointer move, and
  * `JSON.stringify` over a few thousand position overrides is not something to

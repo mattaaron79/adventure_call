@@ -24,6 +24,8 @@ import {
   createDebouncedWriter,
   emptyModeState,
   readModeState,
+  readUiPrefs,
+  writeUiPrefs,
   type ModeState,
 } from './persist'
 
@@ -40,6 +42,8 @@ export interface WorkspaceState {
   /** Selected node ids. Replaced, never mutated, so React sees the change. */
   selection: ReadonlySet<string>
   hovered: string | null
+  /** Whether the inspector card is collapsed to its identifying bar (tic-88ac). */
+  inspectorCollapsed: boolean
 
   setMode: (modeId: string) => void
   /** Replace the active mode's params (a preset load, a picker toggle). */
@@ -65,6 +69,8 @@ export interface WorkspaceState {
   toggleExpanded: (id: string) => void
   /** Whether the Filter Files query also drives the canvas (tic-9098). */
   setFilterVisible: (visible: boolean) => void
+  /** Whether the inspector card is collapsed to its identifying bar (tic-88ac). */
+  setInspectorCollapsed: (collapsed: boolean) => void
 
   select: (ids: readonly string[], additive?: boolean) => void
   toggleSelected: (id: string) => void
@@ -92,6 +98,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     restored: initial !== null,
     selection: EMPTY_SELECTION,
     hovered: null,
+    inspectorCollapsed: readUiPrefs().inspectorCollapsed,
 
     setMode: (modeId) =>
       set((state) => {
@@ -175,6 +182,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     setFilterVisible: (visible) =>
       patchMode((mode) => (mode.filterVisible === visible ? null : { ...mode, filterVisible: visible })),
 
+    setInspectorCollapsed: (collapsed) =>
+      set((state) =>
+        state.inspectorCollapsed === collapsed ? state : { inspectorCollapsed: collapsed },
+      ),
+
     select: (ids, additive = false) =>
       set((state) => {
         const next = new Set(additive ? state.selection : undefined)
@@ -239,6 +251,13 @@ useWorkspace.subscribe((state, previous) => {
   const mode = activeMode(state)
   if (state.modeId === previous.modeId && mode === activeMode(previous)) return
   writer.write(state.modeId, mode)
+})
+
+// The inspector's collapse is a standalone UI preference (tic-88ac): written to
+// its own key, never into a mode slice, so a saved preset cannot capture it.
+useWorkspace.subscribe((state, previous) => {
+  if (state.inspectorCollapsed === previous.inspectorCollapsed) return
+  writeUiPrefs({ inspectorCollapsed: state.inspectorCollapsed })
 })
 
 /** Write the pending state out now, rather than when the debounce expires. */

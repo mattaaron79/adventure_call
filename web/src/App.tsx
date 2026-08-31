@@ -127,6 +127,7 @@ export function App() {
   }, [])
 
   const selection = useWorkspace((s) => s.selection)
+  const inspectorCollapsed = useWorkspace((s) => s.inspectorCollapsed)
   const selectedNode = useMemo<GraphNode | null>(() => {
     if (!workspace || !layout) return null
     for (const id of selection) {
@@ -191,7 +192,13 @@ export function App() {
             reloaded from /out
           </div>
         )}
-        <Inspector node={selectedNode} workspace={workspace} absoluteRoot={absoluteRoot} />
+        <Inspector
+          node={selectedNode}
+          workspace={workspace}
+          absoluteRoot={absoluteRoot}
+          collapsed={inspectorCollapsed}
+          onToggleCollapsed={() => useWorkspace.getState().setInspectorCollapsed(!inspectorCollapsed)}
+        />
       </div>
     </div>
   )

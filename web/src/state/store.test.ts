@@ -12,6 +12,8 @@ const SAVED = vi.hoisted(() => {
   const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {}, params: {}, filterVisible: false, focusPath: '' }
   const map = new Map<string, string>([
     ['adventure-call:workspace:fs-tree', JSON.stringify(saved)],
+    // A saved standalone UI preference (tic-88ac): the inspector is collapsed.
+    ['adventure-call:ui', JSON.stringify({ inspectorCollapsed: true })],
   ])
   globalThis.localStorage = {
     get length() {
@@ -43,6 +45,7 @@ const RESET = {
   restored: true,
   selection: new Set<string>(),
   hovered: null,
+  inspectorCollapsed: true,
 }
 
 beforeEach(() => {
@@ -55,6 +58,47 @@ describe('hydration', () => {
     expect(state.restored).toBe(true)
     expect(selectViewport(state)).toEqual(SAVED.viewport)
     expect(selectOverrides(state)).toEqual(SAVED.overrides)
+  })
+
+  it('restores the saved inspector collapse UI preference (tic-88ac)', () => {
+    expect(useWorkspace.getState().inspectorCollapsed).toBe(true)
+  })
+})
+
+describe('inspector collapse (tic-88ac)', () => {
+  it('toggles the flag and persists it to its own UI-pref key, not the mode slice', () => {
+    useWorkspace.getState().setInspectorCollapsed(false)
+    expect(useWorkspace.getState().inspectorCollapsed).toBe(false)
+    // The mode slice itself never carries the flag...
+    expect(activeMode(useWorkspace.getState())).not.toHaveProperty('inspectorCollapsed')
+    // ...and neither does the mode's serialized state.
+    flushWorkspaceState()
+    const mode = JSON.parse(localStorage.getItem(storageKey(DEFAULT_MODE_ID))!)
+    expect(mode).not.toHaveProperty('inspectorCollapsed')
+    // The standalone UI pref is written to its own key.
+    expect(JSON.parse(localStorage.getItem('adventure-call:ui')!)).toEqual({
+      inspectorCollapsed: false,
+    })
+  })
+
+  it('stays collapsed while the selection changes', () => {
+    useWorkspace.getState().setInspectorCollapsed(true)
+    useWorkspace.getState().select(['a'])
+    useWorkspace.getState().select(['b', 'c'])
+    expect(useWorkspace.getState().inspectorCollapsed).toBe(true)
+  })
+
+  it('survives a mode switch, because it is chrome, not per-mode state', () => {
+    useWorkspace.getState().setInspectorCollapsed(true)
+    useWorkspace.getState().setMode('call-graph')
+    expect(useWorkspace.getState().inspectorCollapsed).toBe(true)
+    useWorkspace.getState().setMode(DEFAULT_MODE_ID)
+    expect(useWorkspace.getState().inspectorCollapsed).toBe(true)
+
+    // Settle the write queued by the mode switch and drop the entry so later
+    // tests still see 'call-graph' as never-saved.
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey('call-graph'))
   })
 })
 
