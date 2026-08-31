@@ -1,7 +1,7 @@
 ---
 id: tic-4b0a
 title: 'Inspector: wider panel, vscode:// deep link, import list with goto'
-status: in_progress
+status: closed
 type: feature
 tier: medium
 domain: ui
@@ -17,8 +17,8 @@ depends_on:
 - tic-bee0
 blocked_by: null
 created: '2026-08-30T18:46:18'
-updated: '2026-08-30T20:29:51'
-closed: null
+updated: '2026-08-30T20:30:02'
+closed: '2026-08-30T20:30:02'
 ---
 
 ## Description
