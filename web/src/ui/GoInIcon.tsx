@@ -1,6 +1,19 @@
 import { useWorkspace } from '../state/store'
 
 /**
+ * The folder-with-arrow glyph's SVG path data (tic-4d7c).  Shared between the
+ * sidebar's GoInIcon and the on-canvas 'go into' button so both surfaces draw
+ * the same shape from the same data -- the canvas renders it as a Konva Path
+ * rather than hand-redrawing it.  Coordinates live in a 16x16 viewBox.
+ */
+export const GO_IN_ICON_PATHS = [
+  // The folder outline.
+  'M2 3.5h4.5l1.5 2.5H14v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z',
+  // The arrow dropping into it.
+  'M8 8.5v3M6.5 10l1.5 1.5L9.5 10',
+]
+
+/**
  * The focus-scope affordance (tic-e7d2): a small folder-and-arrow that asks
  * the workspace to drill the canvas into `target`.  Drawn as a folder with an
  * arrow dropping into it so it reads as "go into" and stays visually distinct
@@ -25,21 +38,17 @@ export function GoInIcon({ target, label }: { target: string; label?: string }) 
       }}
     >
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-        <path
-          d="M2 3.5h4.5l1.5 2.5H14v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M8 8.5v3M6.5 10l1.5 1.5L9.5 10"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+        {GO_IN_ICON_PATHS.map((d) => (
+          <path
+            key={d}
+            d={d}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ))}
       </svg>
     </button>
   )

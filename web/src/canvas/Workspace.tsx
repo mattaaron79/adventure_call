@@ -14,11 +14,20 @@
  * re-renders this component and then bails out of its children instead of
  * rebuilding them.
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react'
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
-import { onGoto } from '../data/goto'
+import { emitGoto, onGoto } from '../data/goto'
 import { resolveGoto, type ModeOutput } from '../modes/types'
 import {
   relayout,
@@ -27,7 +36,11 @@ import {
   selectViewport,
   useWorkspace,
 } from '../state/store'
+import { GOTO_ICON_PATHS } from '../ui/GotoIcon'
+import { GO_IN_ICON_PATHS } from '../ui/GoInIcon'
 import { Grid } from './Grid'
+import { CanvasIconButton } from './IconButton'
+import { shouldShowGoIn } from './iconButtonLogic'
 import { lodOf } from './lod'
 import {
   cullScene,
@@ -275,6 +288,13 @@ export function Workspace({
     useWorkspace.getState().setFocusPath(target)
   }, [])
 
+  /** Fly the camera to a file/dir path (tic-bee0): the button just emits the
+   *  goto event; the onGoto subscription above owns the resolution and the
+   *  flight, so the import-row goto reuses the existing camera logic. */
+  const onGotoButton = useCallback((target: string) => {
+    emitGoto(target)
+  }, [])
+
   const handlers = useMemo<NodeHandlers>(() => {
     /** How far the anchor has travelled since the drag began. */
     const deltaOf = (e: KonvaEventObject<DragEvent>, session: DragSession): Point => {
@@ -513,9 +533,12 @@ export function Workspace({
                   showLabel={lod < 2}
                   showSublabel={lod === 0}
                   showGoIn={lod < 2}
+                  focusPath={focusPath}
+                  container={host}
                   handlers={handlers}
                   register={register}
                   onGoIn={onGoIn}
+                  onGoto={onGotoButton}
                 />
               )
             })}
@@ -671,12 +694,18 @@ interface ChipProps {
   /** Zoom LOD (tic-fa56): text thins out as the camera pulls back. */
   showLabel: boolean
   showSublabel: boolean
-  /** Zoom LOD for the 'go into' affordance (tic-e7d2): dropped when labels
+  /** Zoom LOD for the icon buttons (tic-e7d2 / tic-4d7c): dropped when labels
    *  go, since at that zoom a tiny icon is neither legible nor clickable. */
   showGoIn: boolean
+  /** The active focus path: a folder never offers to go into itself
+   *  (tic-4d7c). */
+  focusPath: string
+  /** The workspace host element, whose title doubles as the icon tooltip. */
+  container: RefObject<HTMLDivElement | null>
   handlers: NodeHandlers
   register: (id: string, node: Konva.Group | null) => void
   onGoIn: (target: string) => void
+  onGoto: (target: string) => void
 }
 
 const NodeChip = memo(function NodeChip({
@@ -688,12 +717,18 @@ const NodeChip = memo(function NodeChip({
   showLabel,
   showSublabel,
   showGoIn,
+  focusPath,
+  container,
   handlers,
   register,
   onGoIn,
+  onGoto,
 }: ChipProps) {
   const stroke = selected ? THEME.selected : hovered ? THEME.hovered : node.stroke
   const labelY = node.sublabel === undefined ? node.height / 2 - 7 : 8
+  // A row with a goto button reserves the right edge so the icon never covers
+  // its label (tic-4d7c); everything else keeps the current inset.
+  const labelInset = node.gotoTo !== undefined ? 40 : 20
 
   // Position is owned imperatively, not through props: react-konva would
   // teleport the node on re-render, while a Konva tween glides it there
@@ -756,7 +791,7 @@ const NodeChip = memo(function NodeChip({
         <Text
           x={12}
           y={labelY}
-          width={Math.max(0, node.width - 20)}
+          width={Math.max(0, node.width - labelInset)}
           text={node.label}
           fontFamily={FONT}
           fontSize={12}
@@ -782,81 +817,30 @@ const NodeChip = memo(function NodeChip({
           wrap="none"
         />
       )}
-      {showGoIn && node.focusTo !== undefined && (
-        <GoInChip x={node.width - 26} y={node.height / 2 - 9} hovered={hovered} target={node.focusTo} onGoIn={onGoIn} />
+      {/* 'Go into' affordance (tic-e7d2): a folder never offers to go into
+          itself -- the focused folder hides its button (tic-4d7c). */}
+      {showGoIn && shouldShowGoIn(node.focusTo, focusPath) && (
+        <CanvasIconButton
+          x={node.width - 26}
+          y={node.height / 2 - 9}
+          paths={GO_IN_ICON_PATHS}
+          tooltip={`Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
+          container={container}
+          onClick={() => onGoIn(node.focusTo!)}
+        />
       )}
-    </Group>
-  )
-})
-
-/**
- * The 'go into' affordance on a directory chip (tic-e7d2): a distinct hit
- * target on the right edge that drills the scene into `target`.  It sits
- * inside the chip's group so it travels with the chip, but stops the pointer
- * events from reaching the chip body -- a click here must neither toggle
- * expand nor arm the chip's Konva drag.  preventDefault on pointerdown
- * suppresses the browser's compat mouse events, which are what the draggable
- * parent listens on to start a drag.
- */
-const GoInChip = memo(function GoInChip({
-  x,
-  y,
-  hovered,
-  target,
-  onGoIn,
-}: {
-  x: number
-  y: number
-  hovered: boolean
-  target: string
-  onGoIn: (target: string) => void
-}) {
-  const press = useRef<{ x: number; y: number } | null>(null)
-  const color = hovered ? THEME.accent : THEME.textDim
-  return (
-    <Group
-      x={x}
-      y={y}
-      onPointerDown={(e) => {
-        e.cancelBubble = true
-        e.evt.preventDefault()
-        press.current = { x: e.evt.clientX, y: e.evt.clientY }
-      }}
-      onPointerUp={(e) => {
-        e.cancelBubble = true
-        const down = press.current
-        press.current = null
-        if (!down) return
-        const dx = e.evt.clientX - down.x
-        const dy = e.evt.clientY - down.y
-        if (dx * dx + dy * dy > 25) return // dragged, not clicked
-        onGoIn(target)
-      }}
-    >
-      <Rect
-        width={18}
-        height={18}
-        cornerRadius={4}
-        fill={hovered ? THEME.surface2 : 'rgba(0,0,0,0)'}
-        stroke={hovered ? THEME.accent : 'rgba(0,0,0,0)'}
-        strokeWidth={1}
-        perfectDrawEnabled={false}
-        shadowForStrokeEnabled={false}
-      />
-      <Text
-        x={2}
-        y={1}
-        width={14}
-        height={16}
-        text="→"
-        fontFamily={FONT}
-        fontSize={14}
-        fill={color}
-        align="center"
-        verticalAlign="middle"
-        listening={false}
-        perfectDrawEnabled={false}
-      />
+      {/* Camera-goto affordance on import rows (tic-4d7c): flies the camera to
+          the imported file via the existing goto event. */}
+      {showGoIn && node.gotoTo !== undefined && (
+        <CanvasIconButton
+          x={node.width - 26}
+          y={node.height / 2 - 9}
+          paths={GOTO_ICON_PATHS}
+          tooltip={`Go to ${node.gotoTo}`}
+          container={container}
+          onClick={() => onGoto(node.gotoTo!)}
+        />
+      )}
     </Group>
   )
 })

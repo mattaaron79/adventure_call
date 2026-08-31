@@ -74,6 +74,13 @@ interface Row {
   indent: boolean
   /** A muted, linkless treatment, e.g. an external import (tic-314c). */
   external?: boolean
+  /**
+   * A camera-goto target for the row (tic-4d7c): import rows carry the path
+   * of the file they import, so the canvas can draw a goto button that flies
+   * the camera there.  Absent on rows with no resolvable target -- members of
+   * the same file, external imports (tic-314c).
+   */
+  gotoTo?: string
 }
 
 const rowId = (path: string, suffix: string): string => `row:${path}:${suffix}`
@@ -122,6 +129,9 @@ export function fileRows(workspace: Workspace, file: FsFile): Row[] {
           label: target ? `${target.name} · ${target.module}` : symbolId,
           kind: target?.kind ?? 'variable',
           indent: false,
+          // The row can fly the camera to the file that owns the import
+          // (tic-4d7c); the target is a file path the goto index resolves.
+          gotoTo: edge.target,
         })
       }
     }
@@ -330,6 +340,9 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
         expandable: false,
         children: [],
         data: row,
+        // Import rows get a canvas goto button that flies the camera to the
+        // file they import (tic-4d7c); rows without a target stay plain.
+        gotoTo: row.gotoTo,
       }))
     }
     return node

@@ -53,6 +53,13 @@ export interface SpecNode {
    * fs-tree sets it on directory chips; the framework renders it generically.
    */
   focusTo?: string
+  /**
+   * When set, the element carries a camera-goto target (tic-4d7c): the canvas
+   * renders a 'goto' button that flies the camera to this path via the goto
+   * event.  The fs-tree sets it on import rows; the framework renders it
+   * generically.
+   */
+  gotoTo?: string
   /** Elements visually contained by this one, e.g. rows in a container. */
   children: readonly SpecNode[]
   /** Mode-private payload for the later phases; opaque to the framework. */
@@ -241,6 +248,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         accent: s?.accent,
         draggable: s?.draggable,
         focusTo: node.focusTo,
+        gotoTo: node.gotoTo,
         // Containment (tic-2697): the spec node this one lives inside, so
         // reproject can translate it by its ancestors' drag offsets.
         parent: parentId,

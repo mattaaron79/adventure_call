@@ -37,6 +37,13 @@ export interface SceneNode extends Rect {
    */
   focusTo?: string
   /**
+   * A camera-goto target (tic-4d7c): when set, the canvas renders a small
+   * 'goto' button on the node that flies the camera to this file/dir path via
+   * the existing goto event.  Set by the mode on import rows; absent on rows
+   * with no resolvable target (e.g. external imports).  Rendered generically.
+   */
+  gotoTo?: string
+  /**
    * The id of the node this one is visually contained by -- a row's container,
    * a container's directory chip (tic-2697).  Set during assembly from the
    * spec's children tree, so `reproject` can translate a node by the

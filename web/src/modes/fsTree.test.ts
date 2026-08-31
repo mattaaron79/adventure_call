@@ -496,6 +496,49 @@ describe('fsTreeMode goto index (tic-bee0)', () => {
   })
 })
 
+describe('fsTreeMode goto buttons on import rows (tic-4d7c)', () => {
+  it('carries a goto target on import rows, pointing at the imported file', () => {
+    const layout = render({ 'src/app/loop.py': true })
+    const row = layout.scene.nodes.find(
+      (n) => n.id === 'row:src/app/loop.py:imp:app.errors.PluginError',
+    )!
+    expect(row.gotoTo).toBe('src/app/errors.py')
+  })
+
+  it('resolves that target to the imported file, so a goto flies the camera there', () => {
+    const layout = render({ 'src/app/loop.py': true })
+    const row = layout.scene.nodes.find(
+      (n) => n.id === 'row:src/app/loop.py:imp:app.errors.PluginError',
+    )!
+    // The canvas button emits gotoTo through the existing goto event; the
+    // flight resolves it via resolveGoto, exactly what this asserts.
+    expect(resolveGoto(layout, row.gotoTo!)).toEqual({
+      elementId: 'src/app/errors.py',
+      rect: layout.rects.get('src/app/errors.py'),
+    })
+  })
+
+  it('leaves member rows without a goto target', () => {
+    const layout = render({ 'src/app/loop.py': true })
+    for (const n of layout.scene.nodes) {
+      if (n.id.startsWith('row:src/app/loop.py:') && !n.id.includes(':imp:')) {
+        expect(n.gotoTo).toBeUndefined()
+      }
+    }
+  })
+
+  it('leaves external import rows without a goto target (tic-314c)', () => {
+    const layout = render({ 'src/app/loop.py': true }, undefined, 0, EXTERNAL_WORKSPACE)
+    const external = layout.scene.nodes.find((n) => n.id === 'row:src/app/loop.py:ext:typing')!
+    expect(external.gotoTo).toBeUndefined()
+    // The internal import row still carries its target beside the external rows.
+    const internal = layout.scene.nodes.find(
+      (n) => n.id === 'row:src/app/loop.py:imp:app.errors.PluginError',
+    )!
+    expect(internal.gotoTo).toBe('src/app/errors.py')
+  })
+})
+
 describe('fsTreeMode, external imports (tic-314c)', () => {
   it('lists external imports in the Imports section, grouped and linkless', () => {
     const layout = render({ 'src/app/loop.py': true }, undefined, 0, EXTERNAL_WORKSPACE)
