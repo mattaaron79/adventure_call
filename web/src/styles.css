@@ -409,7 +409,7 @@ html, body, #root {
   position: absolute;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   padding: 3px 5px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -432,7 +432,7 @@ html, body, #root {
   background: var(--surface-2);
   color: var(--text);
 }
-/* '/' and '..' read as the same bordered action buttons the HUD used. */
+/* '..' and '/' read as the same bordered action buttons the HUD used. */
 .breadcrumb-toolbar .crumb-nav {
   border: 1px solid var(--line);
   background: var(--surface-2);
@@ -441,6 +441,13 @@ html, body, #root {
 .breadcrumb-toolbar .crumb.current {
   color: var(--accent);
   font-weight: 600;
+}
+/* A subtle '/' that reads the crumb trail as a path (tic-9f02). */
+.breadcrumb-toolbar .crumb-sep {
+  padding: 0 2px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  user-select: none;
 }
 .breadcrumb-toolbar .crumb-ellipsis {
   padding: 0 4px;

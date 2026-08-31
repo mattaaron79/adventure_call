@@ -1,7 +1,7 @@
 /**
  * The on-workspace breadcrumb toolbar (tic-b1ab).
  *
- * `/`, '..' and one button per ancestor segment of the focus path, floating
+ * '..', '/' and one button per ancestor segment of the focus path, floating
  * just above the focused folder's group box in world space.  It is an HTML
  * overlay positioned from the viewport transform -- not a Konva layer -- so
  * its text stays at a readable size at any zoom, exactly the weakness the
@@ -10,19 +10,18 @@
  * the canvas, and the toolbar clamps to the visible workspace so a folder
  * that hugs an edge keeps its navigation on screen.
  */
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   breadcrumbSegments,
   elideBreadcrumbs,
   parentPath,
+  toolbarScreenY,
 } from './breadcrumbs'
 import { sameSize, worldToScreen, type Rect, type Size, type Viewport } from './viewport'
 
 /** How many crumbs (plus at most one ellipsis) the toolbar shows before
  *  eliding the middle of a long trail (tic-b1ab). */
 const MAX_CRUMBS = 6
-/** Screen px of clearance between the toolbar and the group rect it floats on. */
-const GAP = 8
 /** Screen px of padding kept between the toolbar and the workspace edge. */
 const EDGE_PAD = 8
 
@@ -70,8 +69,9 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
 
   const top = worldToScreen(viewport, { x: rect.x, y: rect.y })
   const bottom = worldToScreen(viewport, { x: rect.x, y: rect.y + rect.height })
-  const above = top.y - GAP - box.height >= 0
-  const y = above ? top.y - GAP : bottom.y + GAP
+  // Vertical placement (tic-9f02): the pure function clears the folder's top
+  // boundary by the toolbar's own height when it fits above, or drops below.
+  const y = toolbarScreenY(top.y, bottom.y, box.height)
   const x = Math.min(
     Math.max(EDGE_PAD, top.x),
     Math.max(EDGE_PAD, size.width - box.width - EDGE_PAD),
@@ -88,36 +88,44 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
       <button
         type="button"
         className="crumb-nav"
-        onClick={() => onNavigate('')}
-        title="Back to the whole graph"
-      >
-        /
-      </button>
-      <button
-        type="button"
-        className="crumb-nav"
         onClick={() => onNavigate(parentPath(focusPath))}
         title={`Up to ${parentPath(focusPath) || '/'}`}
       >
         ..
       </button>
-      {crumbs.map((crumb, i) =>
-        crumb === null ? (
-          <span key={`…${i}`} className="crumb-ellipsis" aria-hidden="true">
-            …
-          </span>
-        ) : (
-          <button
-            key={crumb.path}
-            type="button"
-            className={crumb.current ? 'crumb current' : 'crumb'}
-            onClick={() => onNavigate(crumb.path)}
-            title={crumb.path}
-          >
-            {crumb.label}
-          </button>
-        ),
-      )}
+      <button
+        type="button"
+        className="crumb-nav"
+        onClick={() => onNavigate('')}
+        title="Back to the whole graph"
+      >
+        /
+      </button>
+      {crumbs.map((crumb, i) => (
+        <Fragment key={crumb === null ? `…${i}` : crumb.path}>
+          {/* A subtle '/' reads the trail as a path (tic-9f02); the ellipsis
+              is a level too, so it separates as well. */}
+          {i > 0 && (
+            <span className="crumb-sep" aria-hidden="true">
+              /
+            </span>
+          )}
+          {crumb === null ? (
+            <span className="crumb-ellipsis" aria-hidden="true">
+              …
+            </span>
+          ) : (
+            <button
+              type="button"
+              className={crumb.current ? 'crumb current' : 'crumb'}
+              onClick={() => onNavigate(crumb.path)}
+              title={crumb.path}
+            >
+              {crumb.label}
+            </button>
+          )}
+        </Fragment>
+      ))}
     </div>
   )
 })

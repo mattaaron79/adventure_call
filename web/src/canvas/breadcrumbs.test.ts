@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { breadcrumbSegments, elideBreadcrumbs, parentPath } from './breadcrumbs'
+import {
+  breadcrumbSegments,
+  elideBreadcrumbs,
+  parentPath,
+  toolbarScreenY,
+} from './breadcrumbs'
 
 describe('parentPath', () => {
   it('returns the parent directory, or the root for a top-level path', () => {
@@ -54,5 +59,24 @@ describe('elideBreadcrumbs (tic-b1ab)', () => {
     const elided = elideBreadcrumbs(crumbs, 3)
     expect(elided.length).toBeGreaterThanOrEqual(3)
     expect(elided[elided.length - 1]).toEqual(crumbs[crumbs.length - 1])
+  })
+})
+
+describe('toolbarScreenY (tic-9f02)', () => {
+  it('floats above the folder when there is room, clearing its top boundary', () => {
+    // Folder top at 100, toolbar height 24, GAP 8: the toolbar's top must sit
+    // at 100 - 8 - 24 so its bottom just clears the folder, not overlapping
+    // it by the toolbar's own height.
+    expect(toolbarScreenY(100, 200, 24)).toBe(100 - 8 - 24)
+  })
+
+  it('drops below the folder when there is not enough room above', () => {
+    // Folder top at 10 (too close to the canvas edge for the toolbar above):
+    // the toolbar goes below the folder's bottom instead.
+    expect(toolbarScreenY(10, 60, 24)).toBe(60 + 8)
+  })
+
+  it('uses the custom gap when supplied', () => {
+    expect(toolbarScreenY(100, 200, 24, 12)).toBe(100 - 12 - 24)
   })
 })
