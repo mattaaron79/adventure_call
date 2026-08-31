@@ -67,6 +67,14 @@ export interface WorkspaceState {
   moveNodes: (positions: Readonly<Record<string, Point>>) => void
   clearOverrides: () => void
   toggleExpanded: (id: string) => void
+  /** Fold every id in `dirIds` for the active mode (fs-tree `dir:<path>`
+   *  folder keys, and expanded-file container keys for the object-expansion
+   *  collapse), persisting like any other expand change. */
+  collapseAllFolders: (dirIds: readonly string[]) => void
+  /** Open every id in `dirIds` (fs-tree `dir:<path>` folder keys) for the
+   *  active mode, persisting like any other expand change. */
+  expandAllFolders: (dirIds: readonly string[]) => void
+
   /** Whether the Filter Files query also drives the canvas (tic-9098). */
   setFilterVisible: (visible: boolean) => void
   /** Whether the inspector card is collapsed to its identifying bar (tic-88ac). */
@@ -175,6 +183,33 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
     clearOverrides: () =>
       patchMode((mode) => (Object.keys(mode.overrides).length === 0 ? null : { ...mode, overrides: {} })),
+
+    collapseAllFolders: (dirIds) =>
+      patchMode((mode) => {
+        const expanded = { ...mode.expanded }
+        let changed = false
+        for (const id of dirIds) {
+          if (expanded[id] !== false) {
+            expanded[id] = false
+            changed = true
+          }
+        }
+        return changed ? { ...mode, expanded } : null
+      }),
+
+    expandAllFolders: (dirIds) =>
+      patchMode((mode) => {
+        const expanded = { ...mode.expanded }
+        let changed = false
+        for (const id of dirIds) {
+          if (expanded[id] !== true) {
+            expanded[id] = true
+            changed = true
+          }
+        }
+        return changed ? { ...mode, expanded } : null
+      }),
+
 
     toggleExpanded: (id) =>
       patchMode((mode) => ({ ...mode, expanded: { ...mode.expanded, [id]: !mode.expanded[id] } })),

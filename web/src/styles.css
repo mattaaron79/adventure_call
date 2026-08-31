@@ -470,6 +470,13 @@ html, body, #root {
   cursor: default;
 }
 
+.hud-sep {
+  color: var(--text-faint);
+  opacity: 0.6;
+  user-select: none;
+}
+
+
 .hud-stat {
   padding: 0 4px;
   color: var(--text-faint);

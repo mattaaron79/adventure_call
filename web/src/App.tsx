@@ -7,7 +7,7 @@ import { Workspace } from './canvas/Workspace'
 import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
-import { minimalScopeForTarget } from './modes/fsTree'
+import { fileOnlyDirIds, minimalScopeForTarget } from './modes/fsTree'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
 import { buildSourceLinks, Inspector } from './ui/Inspector'
@@ -17,6 +17,9 @@ type Status =
   | { phase: 'loading' }
   | { phase: 'ready'; graph: CodebaseGraph }
   | { phase: 'error'; error: string }
+
+/** No fs-tree folders are file-only before a workspace has loaded. */
+const EMPTY_DIR_IDS: ReadonlySet<string> = new Set()
 
 export function App() {
   const [status, setStatus] = useState<Status>({ phase: 'loading' })
@@ -89,6 +92,15 @@ export function App() {
         ? deriveWorkspace(graph, effectiveExcludes, filterVisible ? fileQuery : '', registry)
         : null,
     [graph, effectiveExcludes, filterVisible, fileQuery, registry],
+  )
+
+  // The fs-tree folders Collapse All is allowed to fold up (tic-2356): only
+  // directories whose children are all files, so the tree keeps its folder
+  // skeleton instead of collapsing to the root.  Reused on every layout; the
+  // empty set while there is no workspace.
+  const fileOnlyDirs = useMemo(
+    () => (workspace ? fileOnlyDirIds(workspace.tree) : EMPTY_DIR_IDS),
+    [workspace],
   )
 
   // The active mode renders entirely through the VizMode interface: the app
@@ -206,6 +218,7 @@ export function App() {
           sourceLinks={sourceLinks}
           onActivate={onActivate}
           expandable={layout?.expandable}
+          fileOnlyDirs={fileOnlyDirs}
           resolveGotoScope={resolveGotoScope}
         />
         {workspace === null && status.phase !== 'error' && (

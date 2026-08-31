@@ -23,6 +23,7 @@ import { emitGoto, onGoto } from '../data/goto'
 import { resolveGoto, type ModeOutput } from '../modes/types'
 import {
   relayout,
+  selectExpanded,
   selectFocusPath,
   selectOverrides,
   selectViewport,
@@ -106,6 +107,7 @@ export function Workspace({
   sourceLinks,
   onActivate,
   expandable,
+  fileOnlyDirs,
   resolveGotoScope,
 }: {
   scene: Scene
@@ -122,6 +124,13 @@ export function Workspace({
   onActivate?: (id: string) => void
   /** Ids whose activation toggles expand/collapse; the `e` shortcut uses it. */
   expandable?: ReadonlySet<string>
+  /**
+   * The fs-tree `dir:<path>` ids whose folders contain only files (tic-2356):
+   * the only directories Collapse All folds up, so the tree keeps its folder
+   * skeleton instead of collapsing to the root.  Computed in App from the
+   * derived tree; the empty set while there is no workspace.
+   */
+  fileOnlyDirs?: ReadonlySet<string>
   /**
    * The smallest focus path that puts a goto target in scope (tic-1d9a), or
    * null when the target is not in the workspace at all.  When a goto target
@@ -145,6 +154,55 @@ export function Workspace({
   const selection = useWorkspace((s) => s.selection)
   const hovered = useWorkspace((s) => s.hovered)
   const focusPath = useWorkspace(selectFocusPath)
+
+  const expanded = useWorkspace(selectExpanded)
+
+  // The ids a Collapse All should fold (tic-2356): the fs-tree's `dir:<path>`
+  // expand keys for folders whose children are all files, plus any expanded
+  // file container (a bare-path id, i.e. an object expansion showing a file's
+  // details).  `expandable` carries both kinds; only ids that are currently
+  // open are targeted, so the button disables when nothing is left to fold.
+  const collapseTargets = useMemo(() => {
+    const targets: string[] = []
+    for (const id of expandable ?? []) {
+      if (id.startsWith('dir:')) {
+        if ((fileOnlyDirs?.has(id) ?? false) && expanded[id] !== false) {
+          targets.push(id)
+        }
+      } else if (expanded[id] === true) {
+        targets.push(id)
+      }
+    }
+    return targets
+  }, [expandable, fileOnlyDirs, expanded])
+
+  // The ids an Expand All should open (tic-2356): every fs-tree `dir:<path>`
+  // folder key that is currently folded, so the folder hierarchy shows its
+  // children -- but never a file container (bare path), so the subobject
+  // detail rows stay hidden.
+  const expandTargets = useMemo(
+    () =>
+      [...(expandable ?? [])].filter(
+        (id) => id.startsWith('dir:') && expanded[id] === false,
+      ),
+    [expandable, expanded],
+  )
+
+  // Collapse All / Expand All reframe the camera once the new scene lands
+  // (tic-2356): fit() reads the scene through a ref, so it must run after the
+  // re-render, not inline in the click.  Each flag is set only when the
+  // action will actually change something, so a no-op never leaves a stale
+  // fit pending.
+  const fitAfterCollapse = useRef(false)
+  const fitAfterExpand = useRef(false)
+  const onCollapseAll = useCallback(() => {
+    if (collapseTargets.length > 0) fitAfterCollapse.current = true
+    useWorkspace.getState().collapseAllFolders(collapseTargets)
+  }, [collapseTargets])
+  const onExpandAll = useCallback(() => {
+    if (expandTargets.length > 0) fitAfterExpand.current = true
+    useWorkspace.getState().expandAllFolders(expandTargets)
+  }, [expandTargets])
 
   // Edges incident to the selection or hover light up in the import colour
   // (tic-5393).  Incidence runs off the scene's edge anchors, which the mode
@@ -312,6 +370,17 @@ export function Workspace({
     if (pendingGotoRef.current !== null) return
     fit()
   }, [focusPath, fit])
+
+  // Collapse All / Expand All (tic-2356) reshape the scene, then re-frame the
+  // camera on the new layout.  fit() reads the scene through a ref, so it
+  // cannot run inline in the click -- it runs here, once the new scene has
+  // re-rendered.
+  useEffect(() => {
+    if (!fitAfterCollapse.current && !fitAfterExpand.current) return
+    fitAfterCollapse.current = false
+    fitAfterExpand.current = false
+    fit()
+  }, [scene, fit])
 
   // A goto that widened the focus scope flies once the new scene lands
   // (tic-1d9a): the scene is rebuilt with the broader focus, so the target is
@@ -690,6 +759,30 @@ export function Workspace({
         >
           Relayout
         </button>
+
+        <span className="hud-sep" aria-hidden="true">
+          |
+        </span>
+        <button
+          type="button"
+          onClick={onCollapseAll}
+          disabled={collapseTargets.length === 0}
+          title="Collapse file-only folders and expanded files"
+        >
+          Collapse All
+        </button>
+        <span className="hud-sep" aria-hidden="true">
+          |
+        </span>
+        <button
+          type="button"
+          onClick={onExpandAll}
+          disabled={expandTargets.length === 0}
+          title="Expand all folders without opening files"
+        >
+          Expand All
+        </button>
+
         <span className="hud-stat">{Math.round(viewport.scale * 100)}%</span>
         <span className="hud-stat">
           {scene.nodes.length.toLocaleString()} nodes · {scene.edges.length.toLocaleString()} edges

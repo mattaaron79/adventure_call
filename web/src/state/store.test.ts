@@ -205,6 +205,88 @@ describe('position overrides', () => {
   })
 })
 
+describe('collapse all folders (tic-2356)', () => {
+  it('collapses every dir:* key and leaves file containers alone', () => {
+    useWorkspace.getState().setExpanded({
+      'dir:src': true,
+      'dir:src/app': false,
+      'src/app/loop.py': true,
+      'dir:lib': false,
+    })
+    useWorkspace.getState().collapseAllFolders(['dir:src', 'dir:src/app', 'dir:lib'])
+    expect(selectExpanded(useWorkspace.getState())).toEqual({
+      'dir:src': false,
+      'dir:src/app': false,
+      'src/app/loop.py': true,
+      'dir:lib': false,
+    })
+  })
+
+  it('does not touch keys it was not given', () => {
+    useWorkspace.getState().setExpanded({ 'dir:web': true, 'other:id': true })
+    useWorkspace.getState().collapseAllFolders(['dir:web'])
+    expect(selectExpanded(useWorkspace.getState())).toEqual({
+      'dir:web': false,
+      'other:id': true,
+    })
+  })
+
+  it('returns the same state when nothing needs collapsing', () => {
+    const before = useWorkspace.getState().modes[useWorkspace.getState().modeId]
+    useWorkspace.getState().collapseAllFolders([])
+    expect(useWorkspace.getState().modes[useWorkspace.getState().modeId]).toBe(before)
+  })
+
+  it('collapses expanded file containers when given their bare-path keys', () => {
+    useWorkspace.getState().setExpanded({
+      'dir:src': true,
+      'src/app/loop.py': true,
+      'src/app/errors.py': true,
+    })
+    useWorkspace.getState().collapseAllFolders(['src/app/loop.py', 'src/app/errors.py'])
+    expect(selectExpanded(useWorkspace.getState())).toEqual({
+      'dir:src': true,
+      'src/app/loop.py': false,
+      'src/app/errors.py': false,
+    })
+  })
+})
+
+describe('expand all folders (tic-2356)', () => {
+  it('expands every given dir:* key and leaves file containers alone', () => {
+    useWorkspace.getState().setExpanded({
+      'dir:src': false,
+      'dir:src/app': false,
+      'src/app/loop.py': true,
+      'dir:lib': false,
+    })
+    useWorkspace.getState().expandAllFolders(['dir:src', 'dir:src/app', 'dir:lib'])
+    expect(selectExpanded(useWorkspace.getState())).toEqual({
+      'dir:src': true,
+      'dir:src/app': true,
+      'src/app/loop.py': true,
+      'dir:lib': true,
+    })
+  })
+
+  it('does not touch keys it was not given', () => {
+    useWorkspace.getState().setExpanded({ 'dir:web': false, 'other:id': true })
+    useWorkspace.getState().expandAllFolders(['dir:web'])
+    expect(selectExpanded(useWorkspace.getState())).toEqual({
+      'dir:web': true,
+      'other:id': true,
+    })
+  })
+
+  it('returns the same state when nothing needs expanding', () => {
+    useWorkspace.getState().setExpanded({ 'dir:src': true })
+    const before = useWorkspace.getState().modes[useWorkspace.getState().modeId]
+    useWorkspace.getState().expandAllFolders(['dir:src'])
+    expect(useWorkspace.getState().modes[useWorkspace.getState().modeId]).toBe(before)
+  })
+})
+
+
 describe('focus scope (tic-e7d2)', () => {
   it('sets the active mode focus path and drops stale drag overrides', () => {
     useWorkspace.getState().moveNodes({ 'b.py': { x: 1, y: 2 } })

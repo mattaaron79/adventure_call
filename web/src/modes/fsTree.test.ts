@@ -10,7 +10,7 @@ import type {
   SymbolKind,
   SymbolRegistry,
 } from '../data/types'
-import { fileRows, fsTreeMode, layoutContainer, minimalScopeForTarget } from './fsTree'
+import { fileOnlyDirIds, fileRows, fsTreeMode, layoutContainer, minimalScopeForTarget } from './fsTree'
 import { renderMode, resolveGoto } from './types'
 
 /**
@@ -715,5 +715,48 @@ describe('minimalScopeForTarget (tic-1d9a)', () => {
     expect(minimalScopeForTarget(tree, 'src/app/nope.py')).toBeNull()
     expect(minimalScopeForTarget(tree, 'lib/other.py')).toBeNull()
     expect(minimalScopeForTarget(tree, 'src/nope.py')).toBeNull()
+  })
+})
+
+describe('fileOnlyDirIds (tic-2356)', () => {
+  const tree = WORKSPACE.tree
+
+  it('is the leaf directories whose children are all files', () => {
+    // src/app contains a subdirectory (cli), so it is not file-only; only
+    // src/app/cli's single child is a file.  The root is never targeted.
+    expect(fileOnlyDirIds(tree)).toEqual(new Set(['dir:src/app/cli']))
+  })
+
+  it('never targets the root, even when it holds only files', () => {
+    const flat = {
+      type: 'dir' as const,
+      name: '',
+      path: '',
+      fileCount: 1,
+      children: [{ type: 'file' as const, name: 'a.py', path: 'a.py', module: null as never }],
+    }
+    expect(fileOnlyDirIds(flat)).toEqual(new Set())
+  })
+
+  it('excludes a directory that mixes files and subdirectories', () => {
+    const mixed = {
+      type: 'dir' as const,
+      name: '',
+      path: '',
+      fileCount: 2,
+      children: [
+        { type: 'file' as const, name: 'a.py', path: 'a.py', module: null as never },
+        {
+          type: 'dir' as const,
+          name: 'sub',
+          path: 'sub',
+          fileCount: 0,
+          children: [
+            { type: 'file' as const, name: 'b.py', path: 'sub/b.py', module: null as never },
+          ],
+        },
+      ],
+    }
+    expect(fileOnlyDirIds(mixed)).toEqual(new Set(['dir:sub']))
   })
 })

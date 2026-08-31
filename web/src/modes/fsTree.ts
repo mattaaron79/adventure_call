@@ -301,6 +301,30 @@ export function minimalScopeForTarget(root: FsDir, target: string): string | nul
 }
 
 /**
+ * The `dir:<path>` expand ids whose folders hold only files (no
+ * subdirectories): the only folders Collapse All folds up, so the tree keeps
+ * its directory skeleton instead of collapsing to the root.  The root itself
+ * is never a target -- folding it would hide the whole scene.
+ */
+export function fileOnlyDirIds(root: FsDir): ReadonlySet<string> {
+  const ids = new Set<string>()
+  const visit = (dir: FsDir): void => {
+    if (
+      dir.path !== '' &&
+      dir.children.length > 0 &&
+      dir.children.every((c) => c.type === 'file')
+    ) {
+      ids.add(dirId(dir.path))
+    }
+    for (const child of dir.children) {
+      if (child.type === 'dir') visit(child)
+    }
+  }
+  visit(root)
+  return ids
+}
+
+/**
  * The goto index (tic-bee0): map every user-facing target -- a directory path
  * or a file path -- to the scene element that represents it, or its nearest
  * visible ancestor when the element itself is hidden (a directory closed on
