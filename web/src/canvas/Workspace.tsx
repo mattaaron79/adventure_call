@@ -27,6 +27,7 @@ import {
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
+import { GOTO_DURATION_MS, NODE_DRAG_THRESHOLD, TWEEN_DURATION } from '../settings'
 import { emitGoto, onGoto } from '../data/goto'
 import { resolveGoto, type ModeOutput } from '../modes/types'
 import {
@@ -201,9 +202,10 @@ export function Workspace({
   })
 
   // Camera goto (tic-bee0): any surface can emitGoto(target); the canvas owns
-  // the resolution and the flight.  A ~250ms ease-out pan (and zoom to a
-  // comfortable minimum) keeps the user's bearings on a graph this size, and
-  // the flight writes through the store so pan/zoom afterwards stay coherent.
+  // the resolution and the flight.  A short ease-out pan (GOTO_DURATION_MS, and
+  // zoom to a comfortable minimum) keeps the user's bearings on a graph this
+  // size, and the flight writes through the store so pan/zoom afterwards stay
+  // coherent.
   // Drag overrides are honoured so a goto lands on where a node actually
   // sits, not a stale laid-out spot.
   const flyRef = useRef<number | null>(null)
@@ -229,7 +231,7 @@ export function Workspace({
       const to = centerOn(from, rect, sizeRef.current, { zoom: true })
       const start = performance.now()
       const step = (now: number) => {
-        const t = Math.min(1, (now - start) / 250)
+        const t = Math.min(1, (now - start) / GOTO_DURATION_MS)
         const eased = 1 - Math.pow(1 - t, 3) // ease-out cubic
         useWorkspace.getState().setViewport({
           x: from.x + (to.x - from.x) * eased,
@@ -321,7 +323,7 @@ export function Workspace({
         if (!down || down.id !== e.currentTarget.id()) return
         const dx = e.evt.clientX - down.x
         const dy = e.evt.clientY - down.y
-        if (dx * dx + dy * dy > 25) return // dragged, not clicked
+        if (dx * dx + dy * dy > NODE_DRAG_THRESHOLD ** 2) return // dragged, not clicked
         onActivateRef.current?.(down.id)
       },
 
@@ -746,7 +748,13 @@ const NodeChip = memo(function NodeChip({
       return
     }
     if (group.isDragging() || (group.x() === x && group.y() === y)) return
-    const tween = new Konva.Tween({ node: group, x, y, duration: 0.2, easing: Konva.Easings.EaseOut })
+    const tween = new Konva.Tween({
+      node: group,
+      x,
+      y,
+      duration: TWEEN_DURATION,
+      easing: Konva.Easings.EaseOut,
+    })
     tween.play()
     return () => tween.destroy()
   }, [x, y])

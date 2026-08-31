@@ -6,6 +6,7 @@
  * the focused folder, and glyph geometry -- is unit-testable in the node test
  * environment, matching the rest of the codebase.
  */
+import { NODE_DRAG_THRESHOLD } from '../settings'
 
 /** A point in client coordinates. */
 export interface IconPoint {
@@ -16,15 +17,15 @@ export interface IconPoint {
 /**
  * Whether a pointer press/release pair counts as a click on an on-canvas icon
  * button (tic-4d7c).  Mirrors the chip's own click discrimination: a press
- * that travels more than 5px is a drag, not a click.  Because the button also
- * stops propagation and prevents default, a press that becomes a drag never
- * arms the chip it sits on -- so dragging a folder chip by its body keeps
- * working with the button sitting on its edge.
+ * that travels more than {@link NODE_DRAG_THRESHOLD} is a drag, not a click.
+ * Because the button also stops propagation and prevents default, a press
+ * that becomes a drag never arms the chip it sits on -- so dragging a folder
+ * chip by its body keeps working with the button sitting on its edge.
  */
 export function isIconClick(down: IconPoint, up: IconPoint): boolean {
   const dx = up.x - down.x
   const dy = up.y - down.y
-  return dx * dx + dy * dy <= 25
+  return dx * dx + dy * dy <= NODE_DRAG_THRESHOLD ** 2
 }
 
 /**

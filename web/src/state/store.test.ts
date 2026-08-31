@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAX_SCALE } from '../canvas/viewport'
+import { GOTO_ZOOM_FACTOR } from '../settings'
 import { storageKey } from './persist'
 
 /**
@@ -84,11 +85,27 @@ describe('camera', () => {
     expect(selectViewport(useWorkspace.getState())).toEqual({ x: -40, y: 80, scale: 2 })
   })
 
-  it('zooms to a comfortable minimum when asked', () => {
+  it('zooms to a softened comfortable minimum when asked', () => {
+    // A fresh camera (scale 1) sits below the softened goto target, so the
+    // zoom still engages -- landing at about a third of the old fit scale.
+    useWorkspace.getState().setViewport({ x: 0, y: 0, scale: 1 })
     useWorkspace
       .getState()
       .centerOn({ x: 0, y: 0, width: 100, height: 100 }, { width: 400, height: 400 }, { padding: 0, zoom: true })
-    expect(selectViewport(useWorkspace.getState())).toEqual({ x: 0, y: 0, scale: 4 })
+    const vp = selectViewport(useWorkspace.getState())
+    const scale = 4 * GOTO_ZOOM_FACTOR
+    expect(vp.scale).toBeCloseTo(scale)
+    expect(vp.x).toBeCloseTo(200 - 50 * scale)
+    expect(vp.y).toBeCloseTo(200 - 50 * scale)
+  })
+
+  it('never zooms out past the user zoom, even when asked to zoom', () => {
+    // Saved camera is scale 2; the softened goto target (4 * factor) sits
+    // below it, so the goto keeps the user's zoom and only pans.
+    useWorkspace
+      .getState()
+      .centerOn({ x: 0, y: 0, width: 100, height: 100 }, { width: 400, height: 400 }, { padding: 0, zoom: true })
+    expect(selectViewport(useWorkspace.getState()).scale).toBe(2)
   })
 })
 

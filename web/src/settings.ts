@@ -1,0 +1,61 @@
+/**
+ * Interaction settings for the workspace camera and gestures (tic-8ff7).
+ *
+ * Every tunable that shapes how the canvas feels -- wheel zoom sensitivity,
+ * fit-to-content padding, the goto flight's zoom and duration, gesture drag
+ * thresholds, and node-move tweens -- lives here as a single named export, so
+ * adjusting the feel of the camera is a one-line edit by a human instead of a
+ * hunt through viewport maths and event handlers.  Consumers import these
+ * constants; they never inline their own numbers.
+ *
+ * Kept dependency-free (plain `const` exports) so any module -- pure viewport
+ * maths, React hooks, components -- can read them without pulling in a frame.
+ */
+
+/** Duration of the goto flight, in milliseconds (ease-out cubic). */
+export const GOTO_DURATION_MS = 250
+
+/**
+ * How far a goto zooms in relative to a full fit-to-rect scale.
+ *
+ * A goto used to rise to the full fit scale, which fills the viewport with a
+ * single chip -- far too close.  This factor lands the camera at about a
+ * third of that, leaving the surrounding context visible at a comfortable
+ * middle distance.  Named for what it means rather than its value, so the
+ * next adjustment is a one-line edit here, not a hunt for 'MAGIC_0_33'.
+ */
+export const GOTO_ZOOM_FACTOR = 0.33
+
+/**
+ * Wheel zoom sensitivity: the pixel-delta divisor in the exponential zoom
+ * factor.  Larger values make each wheel notch change the scale less.
+ */
+export const WHEEL_ZOOM_RATE = 320
+
+/**
+ * Wheel deltas beyond this many pixels are clamped before they are scaled, so
+ * a single violent flick (or a line/page-mode wheel event) cannot cross the
+ * whole zoom range in one notch.
+ */
+export const WHEEL_DELTA_CLAMP = 120
+
+/** Screen padding kept around content when framing it (fit-to-content and
+ *  the goto's fit floor), in CSS pixels. */
+export const FIT_PADDING = 48
+
+/**
+ * How far the pointer must move (px) before an empty-space drag counts as a
+ * pan/marquee rather than a click; trackpads are twitchy.
+ */
+export const DRAG_THRESHOLD = 3
+
+/**
+ * How far a press must travel (px, as a radius) before it is a drag instead
+ * of a click -- used by the chip click discrimination and the on-canvas icon
+ * button alike.  The squared comparison at call sites is this value squared.
+ */
+export const NODE_DRAG_THRESHOLD = 5
+
+/** Duration of the Konva tween that glides a node to its new position after a
+ *  re-layout (expansion, collapse, relayout), in seconds. */
+export const TWEEN_DURATION = 0.2

@@ -10,6 +10,7 @@
  *
  * Convention: `screen = world * scale + offset`, y down, no rotation.
  */
+import { FIT_PADDING, GOTO_ZOOM_FACTOR, WHEEL_DELTA_CLAMP, WHEEL_ZOOM_RATE } from '../settings'
 
 export interface Viewport {
   /** Screen-space translation of the world origin, in CSS pixels. */
@@ -64,8 +65,8 @@ export function zoomAt(vp: Viewport, pointer: Point, factor: number): Viewport {
 export function wheelZoomFactor(deltaY: number): number {
   // ~1.1x per notch, continuous for trackpads, and bounded so that one violent
   // flick (or a line/page-mode wheel event) cannot cross the whole range.
-  const clamped = Math.max(-120, Math.min(120, deltaY))
-  return Math.exp(-clamped / 320)
+  const clamped = Math.max(-WHEEL_DELTA_CLAMP, Math.min(WHEEL_DELTA_CLAMP, deltaY))
+  return Math.exp(-clamped / WHEEL_ZOOM_RATE)
 }
 
 export function translate(vp: Viewport, dx: number, dy: number): Viewport {
@@ -73,7 +74,7 @@ export function translate(vp: Viewport, dx: number, dy: number): Viewport {
 }
 
 /** The viewport that centres `rect` in `size` with `padding` screen px around it. */
-export function fitToRect(rect: Rect, size: Size, padding = 48): Viewport {
+export function fitToRect(rect: Rect, size: Size, padding = FIT_PADDING): Viewport {
   const available = {
     width: Math.max(1, size.width - padding * 2),
     height: Math.max(1, size.height - padding * 2),
@@ -93,10 +94,16 @@ export interface CenterOnOptions {
   /** Screen padding around the target rect, in CSS px. */
   padding?: number
   /**
-   * Zoom to the fit-to-rect scale when the current scale would show the target
-   * smaller than that (a "comfortable minimum"). Pan-only when false.
+   * Zoom to a "comfortable minimum" when the current scale would show the
+   * target smaller than that. Pan-only when false.
    */
   zoom?: boolean
+  /**
+   * How much of the fit-to-rect scale a zoom lands on, as a fraction of it.
+   * Defaults to {@link GOTO_ZOOM_FACTOR}, the goto's softened ~1/3 landing
+   * zoom, so a caller that wants a different landing just passes one.
+   */
+  zoomFactor?: number
 }
 
 /**
@@ -104,13 +111,18 @@ export interface CenterOnOptions {
  * (tic-bee0).  Reuses the fitToRect maths rather than writing new projection
  * code, so a goto agrees with fit-to-content.  By default it pans without
  * touching the scale, so the user keeps their bearings; with `zoom` the scale
- * rises to fit `rect` with `padding` whenever the current scale shows it
- * smaller -- a floor, never a zoom-out.
+ * rises towards the fit-to-rect scale -- softened by {@link GOTO_ZOOM_FACTOR}
+ * (about a third, so the flight lands with context visible) -- whenever the
+ * current scale shows the target smaller.  The rise is a floor: it only ever
+ * zooms in, never out past the user's current zoom (tic-8ff7).
  */
 export function centerOn(vp: Viewport, rect: Rect, size: Size, opts: CenterOnOptions = {}): Viewport {
-  const { padding = 48, zoom = false } = opts
+  const { padding = FIT_PADDING, zoom = false } = opts
   let scale = vp.scale
-  if (zoom) scale = clampScale(Math.max(scale, fitToRect(rect, size, padding).scale))
+  if (zoom) {
+    const target = fitToRect(rect, size, padding).scale * (opts.zoomFactor ?? GOTO_ZOOM_FACTOR)
+    scale = clampScale(Math.max(scale, target))
+  }
   const cx = rect.x + rect.width / 2
   const cy = rect.y + rect.height / 2
   return { scale, x: size.width / 2 - cx * scale, y: size.height / 2 - cy * scale }

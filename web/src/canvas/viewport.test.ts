@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { GOTO_ZOOM_FACTOR } from '../settings'
 import {
   MAX_SCALE,
   MIN_SCALE,
@@ -113,25 +114,36 @@ describe('centerOn', () => {
     expect(worldToScreen(out, { x: 120, y: 60 })).toEqual({ x: 400, y: 300 })
   })
 
-  it('zooms to the comfortable fit floor only when asked, without zooming out', () => {
+  it('zooms to a softened comfortable floor only when asked, without zooming out', () => {
     const vp = { x: 0, y: 0, scale: 0.2 }
     const rect = { x: 0, y: 0, width: 100, height: 100 }
     // Pan-only keeps the user's zoom.
     expect(centerOn(vp, rect, size).scale).toBe(0.2)
-    // Zoom raises it to the fit-to-rect scale and the rect is centred.
+    // Zoom rises towards the fit-to-rect scale, softened to ~1/3 of it, and
+    // the rect is centred.
     const zoomed = centerOn(vp, rect, size, { zoom: true })
-    expect(zoomed.scale).toBeCloseTo(fitToRect(rect, size).scale)
+    expect(zoomed.scale).toBeCloseTo(fitToRect(rect, size).scale * GOTO_ZOOM_FACTOR)
+    // The landing is about a third of the full fit zoom: a goto no longer
+    // fills the viewport with a single chip.
+    expect(zoomed.scale).toBeLessThan(fitToRect(rect, size).scale * 0.5)
     const c = worldToScreen(zoomed, { x: 50, y: 50 })
     expect(c.x).toBeCloseTo(400, 6)
     expect(c.y).toBeCloseTo(300, 6)
     // Already zoomed in further than a comfortable fit: never zoom out.
     const hot = { x: 0, y: 0, scale: 6 }
     expect(centerOn(hot, rect, size, { zoom: true }).scale).toBe(6)
+    // Even a softened target below the user's zoom never zooms out.
+    const cozy = { x: 0, y: 0, scale: 3 }
+    expect(centerOn(cozy, rect, size, { zoom: true }).scale).toBe(3)
   })
 
-  it('clamps to the scale range like everything else', () => {
+  it('clamps the softened target to the scale range like everything else', () => {
     const vp = { x: 0, y: 0, scale: 1 }
-    const out = centerOn(vp, { x: 0, y: 0, width: 1, height: 1 }, size, { zoom: true })
+    // An aggressive zoomFactor still cannot escape the scale bounds.
+    const out = centerOn(vp, { x: 0, y: 0, width: 1, height: 1 }, size, {
+      zoom: true,
+      zoomFactor: 4,
+    })
     expect(out.scale).toBe(MAX_SCALE)
   })
 })

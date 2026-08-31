@@ -16,6 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { KonvaEventObject } from 'konva/lib/Node'
+import { DRAG_THRESHOLD } from '../settings'
 import { selectViewport, useWorkspace } from '../state/store'
 import {
   rectFromCorners,
@@ -25,9 +26,6 @@ import {
   type Rect,
   type Size,
 } from './viewport'
-
-/** Below this the gesture was a click, not a drag; trackpads are twitchy. */
-const DRAG_SLOP = 3
 
 type Gesture =
   | { kind: 'pan'; last: Point; moved: boolean }
@@ -96,7 +94,7 @@ export function useViewport({ container, size, getBounds, onMarquee, onEmptyClic
       if (active.kind === 'pan') {
         const dx = pointer.x - active.last.x
         const dy = pointer.y - active.last.y
-        if (!active.moved && Math.hypot(dx, dy) < DRAG_SLOP) return
+        if (!active.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
         active.moved = true
         active.last = pointer
         useWorkspace.getState().panBy(dx, dy)
@@ -119,7 +117,7 @@ export function useViewport({ container, size, getBounds, onMarquee, onEmptyClic
       }
       setMarquee(null)
       const band = rectFromCorners(active.origin, active.current)
-      if (active.moved && band.width + band.height > DRAG_SLOP) {
+      if (active.moved && band.width + band.height > DRAG_THRESHOLD) {
         const vp = selectViewport(useWorkspace.getState())
         onMarquee(
           rectFromCorners(
