@@ -14,16 +14,7 @@
  * re-renders this component and then bails out of its children instead of
  * rebuilding them.
  */
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
@@ -108,6 +99,7 @@ export function Workspace({
   output,
   onActivate,
   expandable,
+  resolveGotoScope,
 }: {
   scene: Scene
   /**
@@ -118,9 +110,24 @@ export function Workspace({
   onActivate?: (id: string) => void
   /** Ids whose activation toggles expand/collapse; the `e` shortcut uses it. */
   expandable?: ReadonlySet<string>
+  /**
+   * The smallest focus path that puts a goto target in scope (tic-1d9a), or
+   * null when the target is not in the workspace at all.  When a goto target
+   * resolves to nothing in the current scene, the canvas uses this to pop the
+   * focus out just far enough, then travels once the wider scene arrives.
+   */
+  resolveGotoScope?: (target: string) => string | null
 }) {
   const host = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
+  // A real, positioned tooltip for the on-canvas icon buttons (tic-1d9a): the
+  // old container-title approach did not reliably show a tooltip, so the
+  // buttons report hover to this state and the host renders it near the cursor.
+  const [iconTooltip, setIconTooltip] = useState<{
+    text: string
+    x: number
+    y: number
+  } | null>(null)
 
   const overrides = useWorkspace(selectOverrides)
   const selection = useWorkspace((s) => s.selection)
@@ -201,46 +208,70 @@ export function Workspace({
   // size, and the flight writes through the store so pan/zoom afterwards stay
   // coherent.
   // Drag overrides are honoured so a goto lands on where a node actually
-  // sits, not a stale laid-out spot.
+  // sits, not a stale laid-out spot.  A target that is not in the current
+  // scope (tic-1d9a) pops the focus out to the minimal scope containing it
+  // and travels once the wider scene arrives.
   const flyRef = useRef<number | null>(null)
-  useEffect(() => {
-    const stopFlight = () => {
-      if (flyRef.current !== null) cancelAnimationFrame(flyRef.current)
-      flyRef.current = null
+  /** A goto that had to widen the focus scope; flown when the new scene lands. */
+  const pendingGotoRef = useRef<string | null>(null)
+  const resolveGotoScopeRef = useRef(resolveGotoScope)
+  resolveGotoScopeRef.current = resolveGotoScope
+
+  const stopFlight = useCallback(() => {
+    if (flyRef.current !== null) cancelAnimationFrame(flyRef.current)
+    flyRef.current = null
+  }, [])
+
+  /** Resolve `target` against the current output and fly to it; false when the
+   *  target is not reachable in the current scene. */
+  const flyTo = useCallback((target: string): boolean => {
+    const modeOutput = outputRef.current
+    const { width, height } = sizeRef.current
+    if (!modeOutput || width === 0 || height === 0) return false
+    const resolved = resolveGoto(modeOutput, target)
+    if (!resolved) return false // nothing reachable in this scene
+    // Select the target so the inspector follows it.
+    useWorkspace.getState().select([resolved.elementId])
+    const overridden = selectOverrides(useWorkspace.getState())[resolved.elementId]
+    const rect: WorldRect = overridden
+      ? { x: overridden.x, y: overridden.y, width: resolved.rect.width, height: resolved.rect.height }
+      : resolved.rect
+    const from = selectViewport(useWorkspace.getState())
+    const to = centerOn(from, rect, sizeRef.current, { zoom: true })
+    const start = performance.now()
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / GOTO_DURATION_MS)
+      const eased = 1 - Math.pow(1 - t, 3) // ease-out cubic
+      useWorkspace.getState().setViewport({
+        x: from.x + (to.x - from.x) * eased,
+        y: from.y + (to.y - from.y) * eased,
+        scale: from.scale + (to.scale - from.scale) * eased,
+      })
+      flyRef.current = t < 1 ? requestAnimationFrame(step) : null
     }
+    flyRef.current = requestAnimationFrame(step)
+    return true
+  }, [])
+
+  useEffect(() => {
     const unsubscribe = onGoto((target) => {
       stopFlight()
-      const modeOutput = outputRef.current
-      const { width, height } = sizeRef.current
-      if (!modeOutput || width === 0 || height === 0) return
-      const resolved = resolveGoto(modeOutput, target)
-      if (!resolved) return // nothing reachable in this scene -- silent no-op
-      // Select the target so the inspector follows it.
-      useWorkspace.getState().select([resolved.elementId])
-      const overridden = selectOverrides(useWorkspace.getState())[resolved.elementId]
-      const rect: WorldRect = overridden
-        ? { x: overridden.x, y: overridden.y, width: resolved.rect.width, height: resolved.rect.height }
-        : resolved.rect
-      const from = selectViewport(useWorkspace.getState())
-      const to = centerOn(from, rect, sizeRef.current, { zoom: true })
-      const start = performance.now()
-      const step = (now: number) => {
-        const t = Math.min(1, (now - start) / GOTO_DURATION_MS)
-        const eased = 1 - Math.pow(1 - t, 3) // ease-out cubic
-        useWorkspace.getState().setViewport({
-          x: from.x + (to.x - from.x) * eased,
-          y: from.y + (to.y - from.y) * eased,
-          scale: from.scale + (to.scale - from.scale) * eased,
-        })
-        flyRef.current = t < 1 ? requestAnimationFrame(step) : null
-      }
-      flyRef.current = requestAnimationFrame(step)
+      if (flyTo(target)) return
+      // Not in the current scene: pop the focus out to the minimal scope that
+      // contains the target, then travel once the wider scene re-renders.  A
+      // scope equal to the current one means the target exists but is filtered
+      // out -- nothing to do.
+      const scope = resolveGotoScopeRef.current?.(target)
+      const current = selectFocusPath(useWorkspace.getState())
+      if (!scope || scope === current) return
+      pendingGotoRef.current = target
+      useWorkspace.getState().setFocusPath(scope)
     })
     return () => {
       unsubscribe()
       stopFlight()
     }
-  }, [])
+  }, [flyTo, stopFlight])
 
   // Frame the scene the first time it arrives, unless a saved camera was
   // restored -- overriding that would defeat the point of persisting it.
@@ -261,8 +292,24 @@ export function Workspace({
   useEffect(() => {
     if (prevFocusPath.current === focusPath) return
     prevFocusPath.current = focusPath
+    // A goto that widened the scope flies straight to its target (tic-1d9a);
+    // skip the fit so it does not fight the pending flight.
+    if (pendingGotoRef.current !== null) return
     fit()
   }, [focusPath, fit])
+
+  // A goto that widened the focus scope flies once the new scene lands
+  // (tic-1d9a): the scene is rebuilt with the broader focus, so the target is
+  // now reachable.  Keyed on the mode output, which changes with the scope;
+  // declared after the focus-scope fit so the fit's pending-goto guard above
+  // has already run and skipped the reframe.
+  useEffect(() => {
+    const target = pendingGotoRef.current
+    if (target === null) return
+    pendingGotoRef.current = null
+    stopFlight()
+    flyTo(target)
+  }, [output, flyTo, stopFlight])
 
   const register = useCallback((id: string, node: Konva.Group | null) => {
     if (node) konvaNodes.current.set(id, node)
@@ -290,6 +337,23 @@ export function Workspace({
   const onGotoButton = useCallback((target: string) => {
     emitGoto(target)
   }, [])
+
+  // Icon-button tooltips (tic-1d9a): convert the pointer's client coordinates
+  // to host-relative ones and surface the text as a real positioned tooltip,
+  // replacing the host-title approach that did not reliably show.
+  const handleIconTooltip = useCallback(
+    (text: string | null, clientX: number, clientY: number) => {
+      const el = host.current
+      if (!el) return
+      if (text === null) {
+        setIconTooltip(null)
+        return
+      }
+      const rect = el.getBoundingClientRect()
+      setIconTooltip({ text, x: clientX - rect.left, y: clientY - rect.top })
+    },
+    [],
+  )
 
   const handlers = useMemo<NodeHandlers>(() => {
     /** How far the anchor has travelled since the drag began. */
@@ -540,7 +604,7 @@ export function Workspace({
                   showSublabel={lod === 0}
                   showGoIn={lod < 2}
                   focusPath={focusPath}
-                  container={host}
+                  onTooltip={handleIconTooltip}
                   handlers={handlers}
                   register={register}
                   onGoIn={onGoIn}
@@ -579,6 +643,15 @@ export function Workspace({
           focusPath={focusPath}
           onNavigate={(path) => useWorkspace.getState().setFocusPath(path)}
         />
+      )}
+
+      {/* Icon-button tooltip (tic-1d9a): a real positioned tooltip near the
+          pointer, above the canvas, replacing the unreliable host-title
+          approach. */}
+      {iconTooltip && (
+        <div className="canvas-tooltip" style={{ left: iconTooltip.x, top: iconTooltip.y }}>
+          {iconTooltip.text}
+        </div>
       )}
 
       <div className="hud">
@@ -700,8 +773,8 @@ interface ChipProps {
   /** The active focus path: a folder never offers to go into itself
    *  (tic-4d7c). */
   focusPath: string
-  /** The workspace host element, whose title doubles as the icon tooltip. */
-  container: RefObject<HTMLDivElement | null>
+  /** Reports icon-button hover tooltips in client coords (tic-1d9a). */
+  onTooltip: (text: string | null, clientX: number, clientY: number) => void
   handlers: NodeHandlers
   register: (id: string, node: Konva.Group | null) => void
   onGoIn: (target: string) => void
@@ -718,7 +791,7 @@ const NodeChip = memo(function NodeChip({
   showSublabel,
   showGoIn,
   focusPath,
-  container,
+  onTooltip,
   handlers,
   register,
   onGoIn,
@@ -831,7 +904,7 @@ const NodeChip = memo(function NodeChip({
           y={node.height / 2 - 9}
           paths={GO_IN_ICON_PATHS}
           tooltip={`Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
-          container={container}
+          onTooltip={onTooltip}
           onClick={() => onGoIn(node.focusTo!)}
         />
       )}
@@ -843,7 +916,7 @@ const NodeChip = memo(function NodeChip({
           y={node.height / 2 - 9}
           paths={GOTO_ICON_PATHS}
           tooltip={`Go to ${node.gotoTo}`}
-          container={container}
+          onTooltip={onTooltip}
           onClick={() => onGoto(node.gotoTo!)}
         />
       )}

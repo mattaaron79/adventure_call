@@ -18,7 +18,7 @@
  * click on the button never selects its chip, and a press that becomes a drag
  * never moves the chip -- the chip's own drag stays intact.
  */
-import { memo, useEffect, useRef, useState, type RefObject } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Path, Rect } from 'react-konva'
 import { iconGlyphGeometry, isIconClick } from './iconButtonLogic'
@@ -30,10 +30,12 @@ interface CanvasIconButtonProps {
   /** SVG path `d` strings of the glyph, in a 16x16 viewBox (e.g.
    *  GO_IN_ICON_PATHS / GOTO_ICON_PATHS). */
   paths: readonly string[]
-  /** The element whose `title` doubles as the tooltip, if a tooltip is set. */
-  container?: RefObject<HTMLDivElement | null>
   /** Tooltip text, shown while the pointer is over the button. */
   tooltip?: string
+  /** Reports the hovered tooltip in client coordinates (tic-1d9a): the host
+   *  renders a real positioned tooltip near the pointer, since Konva shapes
+   *  have no native title and a host-div title did not reliably show. */
+  onTooltip?: (text: string | null, clientX: number, clientY: number) => void
   /** Glyph colour when idle; default THEME.textDim. */
   color?: string
   /** Glyph colour while hovered; default THEME.accent. */
@@ -48,8 +50,8 @@ export const CanvasIconButton = memo(function CanvasIconButton({
   x,
   y,
   paths,
-  container,
   tooltip,
+  onTooltip,
   color = THEME.textDim,
   hoverColor = THEME.accent,
   size = 18,
@@ -60,13 +62,17 @@ export const CanvasIconButton = memo(function CanvasIconButton({
   const [hovered, setHovered] = useState(false)
   const press = useRef<{ x: number; y: number } | null>(null)
 
-  const showTooltip = (text: string | undefined) => {
-    if (container?.current) container.current.title = text ?? ''
+  // Report tooltip changes without letting the memoised component close over a
+  // stale callback: the latest `onTooltip` is read through a ref.
+  const onTooltipRef = useRef(onTooltip)
+  onTooltipRef.current = onTooltip
+  const showTooltip = (text: string | null, clientX: number, clientY: number) => {
+    onTooltipRef.current?.(text, clientX, clientY)
   }
 
   // If the button unmounts while hovered, don't leave a stale tooltip behind.
   useEffect(() => {
-    return () => showTooltip(undefined)
+    return () => showTooltip(null, 0, 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -77,13 +83,13 @@ export const CanvasIconButton = memo(function CanvasIconButton({
     <Group
       x={x}
       y={y}
-      onMouseEnter={() => {
+      onMouseEnter={(e) => {
         setHovered(true)
-        showTooltip(tooltip)
+        showTooltip(tooltip ?? null, e.evt.clientX, e.evt.clientY)
       }}
-      onMouseLeave={() => {
+      onMouseLeave={(e) => {
         setHovered(false)
-        showTooltip(undefined)
+        showTooltip(null, e.evt.clientX, e.evt.clientY)
       }}
       onPointerDown={(e: KonvaEventObject<PointerEvent>) => {
         e.cancelBubble = true

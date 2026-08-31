@@ -239,6 +239,38 @@ function scopeRoot(data: Workspace, focusPath: string): FsDir {
 }
 
 /**
+ * The smallest focus path that puts `target` in scope (tic-1d9a): for a
+ * directory, the directory itself (it becomes the scoped root and its chip is
+ * in the scene); for a file, its parent directory (the file is then a direct
+ * child, guaranteed visible once the scope auto-expands).  The root (empty
+ * string) for a top-level file.  Returns null when the target is not in the
+ * tree at all -- excluded or filtered out -- in which case there is nothing to
+ * travel to.  A goto handler that resolves nothing in the current scene can
+ * use this to pop the focus out just far enough, then travel.
+ */
+export function minimalScopeForTarget(root: FsDir, target: string): string | null {
+  if (target === '') return ''
+  let dir = root
+  const segments = target.split('/')
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i]
+    const child = dir.children.find(
+      (c): c is FsDir => c.type === 'dir' && c.name === segment,
+    )
+    if (child) {
+      dir = child
+      continue
+    }
+    // The final segment is a file (a non-final segment that is neither a dir
+    // nor a file means the target does not exist in this tree).
+    const file = dir.children.find((c) => c.type === 'file' && c.name === segment)
+    if (file && i === segments.length - 1) return dir.path
+    return null
+  }
+  return dir.path
+}
+
+/**
  * The goto index (tic-bee0): map every user-facing target -- a directory path
  * or a file path -- to the scene element that represents it, or its nearest
  * visible ancestor when the element itself is hidden (a directory closed on

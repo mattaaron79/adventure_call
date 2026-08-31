@@ -7,6 +7,7 @@ import { Workspace } from './canvas/Workspace'
 import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
+import { minimalScopeForTarget } from './modes/fsTree'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
 import { Inspector } from './ui/Inspector'
@@ -119,6 +120,13 @@ export function App() {
     [layout],
   )
 
+  // A goto target that is not in the current focus scope (tic-1d9a): resolve
+  // the smallest scope that contains it so the canvas can pop out and travel.
+  const resolveGotoScope = useCallback(
+    (target: string): string | null => (workspace ? minimalScopeForTarget(workspace.tree, target) : null),
+    [workspace],
+  )
+
   // A preset's filters were captured as the effective list, so restoring them
   // means: use them verbatim, with the noise toggle folded in (on).
   const applyPresetFilters = useCallback((filters: string[]) => {
@@ -181,7 +189,13 @@ export function App() {
         onFilterVisibleChange={(next) => useWorkspace.getState().setFilterVisible(next)}
       />
       <div className="stage-host">
-        <Workspace scene={scene} output={layout} onActivate={onActivate} expandable={layout?.expandable} />
+        <Workspace
+          scene={scene}
+          output={layout}
+          onActivate={onActivate}
+          expandable={layout?.expandable}
+          resolveGotoScope={resolveGotoScope}
+        />
         {workspace === null && status.phase !== 'error' && (
           <div className="placeholder">
             <strong>Reading /out…</strong>

@@ -10,7 +10,7 @@ import type {
   SymbolKind,
   SymbolRegistry,
 } from '../data/types'
-import { fileRows, fsTreeMode, layoutContainer } from './fsTree'
+import { fileRows, fsTreeMode, layoutContainer, minimalScopeForTarget } from './fsTree'
 import { renderMode, resolveGoto } from './types'
 
 /**
@@ -587,5 +587,29 @@ describe('fsTreeMode, external imports (tic-314c)', () => {
   it('starts on codebase_graph.json alone: no registry, no external rows', () => {
     const layout = render({ 'src/app/loop.py': true })
     expect(layout.scene.nodes.map((n) => n.id)).not.toContain('row:src/app/loop.py:ext:typing')
+  })
+})
+
+describe('minimalScopeForTarget (tic-1d9a)', () => {
+  const tree = WORKSPACE.tree
+
+  it('is the parent directory for a file', () => {
+    expect(minimalScopeForTarget(tree, 'src/app/loop.py')).toBe('src/app')
+    expect(minimalScopeForTarget(tree, 'src/app/cli/main.py')).toBe('src/app/cli')
+  })
+
+  it('is the directory itself for a directory target', () => {
+    expect(minimalScopeForTarget(tree, 'src/app')).toBe('src/app')
+    expect(minimalScopeForTarget(tree, 'src')).toBe('src')
+  })
+
+  it('is the root for a top-level target and for the root itself', () => {
+    expect(minimalScopeForTarget(tree, '')).toBe('')
+  })
+
+  it('returns null when the target is not in the tree', () => {
+    expect(minimalScopeForTarget(tree, 'src/app/nope.py')).toBeNull()
+    expect(minimalScopeForTarget(tree, 'lib/other.py')).toBeNull()
+    expect(minimalScopeForTarget(tree, 'src/nope.py')).toBeNull()
   })
 })
