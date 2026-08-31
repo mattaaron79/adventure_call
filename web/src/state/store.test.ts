@@ -75,9 +75,11 @@ describe('inspector collapse (tic-88ac)', () => {
     flushWorkspaceState()
     const mode = JSON.parse(localStorage.getItem(storageKey(DEFAULT_MODE_ID))!)
     expect(mode).not.toHaveProperty('inspectorCollapsed')
-    // The standalone UI pref is written to its own key.
+    // The standalone UI pref is written to its own key.  The animate-all flag
+    // rides along in the same chrome prefs object (tic-5196).
     expect(JSON.parse(localStorage.getItem('adventure-call:ui')!)).toEqual({
       inspectorCollapsed: false,
+      animateAllEdges: false,
     })
   })
 

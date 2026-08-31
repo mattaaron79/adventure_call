@@ -499,6 +499,10 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
         to: anchorId(edge.target, edge.symbolIds, expanded, importedBy),
         kind: 'import',
         route: 'center',
+        // Imports flow from importer to imported; the canvas marches ants on
+        // highlighted directional edges to show which way the line points
+        // (tic-2b2b).
+        directional: true,
       })
     }
   }

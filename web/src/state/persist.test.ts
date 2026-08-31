@@ -142,25 +142,27 @@ describe('mode state', () => {
 
 describe('ui preferences (tic-88ac)', () => {
   it('round trips the inspector collapse flag under its own key', () => {
-    writeUiPrefs({ inspectorCollapsed: true })
-    expect(readUiPrefs()).toEqual({ inspectorCollapsed: true })
-    expect(localStorage.getItem(UI_STORAGE_KEY)).toBe(JSON.stringify({ inspectorCollapsed: true }))
+    writeUiPrefs({ inspectorCollapsed: true, animateAllEdges: false })
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: true, animateAllEdges: false })
+    expect(localStorage.getItem(UI_STORAGE_KEY)).toBe(
+      JSON.stringify({ inspectorCollapsed: true, animateAllEdges: false }),
+    )
   })
 
   it('defaults to expanded when nothing is stored', () => {
-    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false, animateAllEdges: false })
   })
 
   it('degrades to the default on junk left by a hand edit or older build', () => {
     localStorage.setItem(UI_STORAGE_KEY, 'not json')
-    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false, animateAllEdges: false })
 
     localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ inspectorCollapsed: 'yes' }))
-    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false, animateAllEdges: false })
   })
 
   it('lives apart from mode state, so a saved preset never captures it', () => {
-    writeUiPrefs({ inspectorCollapsed: true })
+    writeUiPrefs({ inspectorCollapsed: true, animateAllEdges: false })
     writeModeState('fs-tree', STATE)
     // The collapse flag is under its own key; the mode slice has no such field.
     expect(readModeState('fs-tree')).toEqual(STATE)
@@ -171,8 +173,8 @@ describe('ui preferences (tic-88ac)', () => {
 
   it('is a no-op when storage is unavailable', () => {
     vi.stubGlobal('localStorage', undefined)
-    expect(() => writeUiPrefs({ inspectorCollapsed: true })).not.toThrow()
-    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false })
+    expect(() => writeUiPrefs({ inspectorCollapsed: true, animateAllEdges: false })).not.toThrow()
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false, animateAllEdges: false })
   })
 })
 

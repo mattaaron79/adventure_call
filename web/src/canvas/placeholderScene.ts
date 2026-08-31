@@ -125,6 +125,9 @@ export function placeholderScene(workspace: Workspace | null): Scene {
       strokeWidth: 1,
       opacity: 0.5,
       kind: 'import',
+      // Imports flow importer -> imported; the canvas animates highlighted
+      // directional edges (tic-2b2b).
+      directional: true,
     })
   }
 

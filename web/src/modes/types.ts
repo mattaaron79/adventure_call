@@ -89,6 +89,12 @@ export interface SpecEdge {
    * (tic-1d7c).  Defaults to 'center'; the fs-tree's nesting lines elbow.
    */
   route?: EdgeRoute
+  /**
+   * Whether the connection carries a direction worth showing (tic-2b2b): set
+   * on edges whose flow means something (today only 'import', where `from`
+   * imports `to`).  The canvas animates highlighted directional edges.
+   */
+  directional?: boolean
 }
 
 /** Which nodes, groups and edges exist -- no geometry, no styling. */
@@ -273,6 +279,9 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         id: node.id,
         label: node.label,
         sublabel: node.sublabel,
+        // Carried so the canvas can tell file workspace items from rows and
+        // directory chips (tic-2996).
+        role: node.role,
         fill: s?.fill ?? TRANSPARENT,
         stroke: s?.stroke ?? TRANSPARENT,
         accent: s?.accent,
@@ -332,6 +341,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
       to: edge.to,
       route: edge.route,
       kind: edge.kind,
+      directional: edge.directional,
       // Carried so the canvas reproject (tic-1d7c) re-routes a dragged edge
       // with the same wrapped gap pipe and in the same orientation.
       pipe: positioned.edgePipes?.get(edge.id),

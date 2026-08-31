@@ -39,9 +39,12 @@ import { CanvasIconButton } from './IconButton'
 import { shouldShowGoIn } from './iconButtonLogic'
 import { lodOf } from './lod'
 import {
+  ANTS_DASH,
+  antsDashOffset,
   cullScene,
   highlightedEdgesLast,
   importEdgesIncidentTo,
+  isAntsEdge,
   nodesInRect,
   placedRects,
   reproject,
@@ -153,6 +156,8 @@ export function Workspace({
   const overrides = useWorkspace(selectOverrides)
   const selection = useWorkspace((s) => s.selection)
   const hovered = useWorkspace((s) => s.hovered)
+  // Exploratory marching-ants on every edge (tic-5196), persisted as a UI pref.
+  const animateAllEdges = useWorkspace((s) => s.animateAllEdges)
   const focusPath = useWorkspace(selectFocusPath)
 
   const expanded = useWorkspace(selectExpanded)
@@ -408,6 +413,41 @@ export function Workspace({
   const registerGroup = useCallback((id: string, shapes: GroupShapes | null) => {
     if (shapes) groupShapes.current.set(id, shapes)
     else groupShapes.current.delete(id)
+  }, [])
+
+  // Marching ants (tic-2b2b): highlighted directional edges get a moving dash
+  // to show which way the line flows.  EdgeLines register themselves while lit;
+  // one Konva.Animation drives every registered line, started only while at
+  // least one is active so the idle scene never pays for a running loop.  The
+  // line is looked up by id each frame, so an edge re-created on a re-layout
+  // (or drag re-route) is picked up automatically.
+  const antsIds = useRef(new Set<string>())
+  const antsAnim = useRef<Konva.Animation | null>(null)
+
+  const registerAnts = useCallback((id: string, active: boolean) => {
+    if (active) {
+      antsIds.current.add(id)
+    } else {
+      antsIds.current.delete(id)
+      // Reset the offset when the line unlights, so a non-highlighted edge
+      // never keeps a stale shift (a directional edge with its own base dash
+      // would otherwise render offset from where the mode put it).
+      edgeShapes.current.get(id)?.dashOffset(0)
+    }
+    if (antsIds.current.size === 0) {
+      antsAnim.current?.stop()
+      antsAnim.current = null
+      return
+    }
+    if (antsAnim.current) return
+    antsAnim.current = new Konva.Animation((frame) => {
+      const offset = antsDashOffset(frame?.time ?? 0)
+      for (const antsId of antsIds.current) {
+        edgeShapes.current.get(antsId)?.dashOffset(offset)
+      }
+      edgeLayer.current?.batchDraw()
+    })
+    antsAnim.current.start()
   }, [])
 
   /** Drill the scene into a directory path (tic-e7d2); see the store action. */
@@ -676,7 +716,9 @@ export function Workspace({
                 key={edge.id}
                 edge={edge}
                 highlighted={highlightIds.has(edge.id)}
+                animateAll={animateAllEdges}
                 register={registerEdge}
+                registerAnts={registerAnts}
               />
             ))}
           </Layer>
@@ -788,6 +830,14 @@ export function Workspace({
           {scene.nodes.length.toLocaleString()} nodes · {scene.edges.length.toLocaleString()} edges
         </span>
         {selection.size > 0 && <span className="hud-stat">{selection.size} selected</span>}
+        <label className="hud-toggle" title="Animate every edge (not only highlighted imports)">
+          <input
+            type="checkbox"
+            checked={animateAllEdges}
+            onChange={(event) => useWorkspace.getState().setAnimateAllEdges(event.target.checked)}
+          />
+          animate all
+        </label>
       </div>
     </div>
   )
@@ -852,21 +902,35 @@ const GroupBox = memo(function GroupBox({
 const EdgeLine = memo(function EdgeLine({
   edge,
   highlighted,
+  animateAll,
   register,
+  registerAnts,
 }: {
   edge: SceneEdge
   /** Whether the edge is incident to the selection/hover (tic-5393). */
   highlighted: boolean
+  /** Exploratory: march ants on every edge, highlighted or not (tic-5196). */
+  animateAll: boolean
   register: (id: string, line: Konva.Line | null) => void
+  /** Opt the edge's line into/out of the marching-ants animation. */
+  registerAnts: (id: string, active: boolean) => void
 }) {
   const width = edge.strokeWidth ?? 1
+  const ants = isAntsEdge(edge, highlighted, animateAll)
+  // Keep the animation registry in step with the highlight state: opt the line
+  // in while it is lit AND directional, out (and back to its base offset)
+  // otherwise.  Runs on mount too, so a line that starts lit starts marching.
+  useEffect(() => {
+    registerAnts(edge.id, ants)
+    return () => registerAnts(edge.id, false)
+  }, [registerAnts, edge.id, ants])
   return (
     <Line
       ref={(instance) => register(edge.id, instance)}
       points={edge.points}
       stroke={highlighted ? THEME.import : edge.stroke}
       strokeWidth={highlighted ? width * 2 : width}
-      dash={edge.dash}
+      dash={ants ? ANTS_DASH : edge.dash}
       opacity={highlighted ? 1 : edge.opacity ?? 1}
       listening={false}
       perfectDrawEnabled={false}
@@ -928,6 +992,14 @@ const NodeChip = memo(function NodeChip({
   const hasSource = sourceLinks.has(node.id)
   const labelInset = hasGoto ? (hasSource ? 64 : 40) : hasSource ? 40 : 20
   const sourceLink = sourceLinks.get(node.id)
+  // File workspace items (tic-2996): the goto-code affordance sits in the
+  // upper-right corner of the chip/container, and hovering the file name
+  // shows the global file location in a positioned tooltip.  A file item's
+  // element id is its root-relative path in the fs-tree mode, so the same
+  // value drives both the icon's source line and the tooltip text.
+  const isFile = node.role === 'file'
+  const sourceIconX = node.width - (hasGoto ? 50 : 26)
+  const sourceIconY = isFile ? 4 : node.height / 2 - 9
 
   // Position is owned imperatively, not through props: react-konva would
   // teleport the node on re-render, while a Konva tween glides it there
@@ -1001,7 +1073,22 @@ const NodeChip = memo(function NodeChip({
           fontFamily={FONT}
           fontSize={12}
           fill={THEME.text}
-          listening={false}
+          // A file item's name is hoverable (tic-2996): hovering it surfaces
+          // the global file location in the positioned canvas tooltip, the
+          // same affordance the file tree's row title gives.  The label must
+          // listen to receive the events; rows and other items stay inert so
+          // they cost nothing to hit-test.
+          listening={isFile}
+          onMouseEnter={
+            isFile
+              ? (e) => onTooltip(node.id, e.evt.clientX, e.evt.clientY)
+              : undefined
+          }
+          onMouseLeave={
+            isFile
+              ? (e) => onTooltip(null, e.evt.clientX, e.evt.clientY)
+              : undefined
+          }
           perfectDrawEnabled={false}
           ellipsis
           wrap="none"
@@ -1034,13 +1121,15 @@ const NodeChip = memo(function NodeChip({
           onClick={() => onGoIn(node.focusTo!)}
         />
       )}
-      {/* Source-line affordance (tic-468e): opens the item's source line in VS
-          Code, the same deep link the inspector shows.  Sits to the left of
-          the goto button when both are present. */}
+      {/* Goto-code affordance (tic-468e / tic-2996): opens the item's source
+          line in VS Code, the same deep link the inspector shows.  On a file
+          workspace item it sits in the upper right corner; rows keep the
+          vertically centred slot, left of the goto button when both are
+          present. */}
       {showGoIn && sourceLink !== undefined && (
         <CanvasIconButton
-          x={node.width - (hasGoto ? 50 : 26)}
-          y={node.height / 2 - 9}
+          x={sourceIconX}
+          y={sourceIconY}
           paths={FILE_SYMLINK_ICON_PATHS}
           tooltip="Open in VS Code"
           onTooltip={onTooltip}

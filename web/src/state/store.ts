@@ -44,6 +44,8 @@ export interface WorkspaceState {
   hovered: string | null
   /** Whether the inspector card is collapsed to its identifying bar (tic-88ac). */
   inspectorCollapsed: boolean
+  /** Exploratory marching-ants on every edge (tic-5196), not just lit imports. */
+  animateAllEdges: boolean
 
   setMode: (modeId: string) => void
   /** Replace the active mode's params (a preset load, a picker toggle). */
@@ -79,6 +81,8 @@ export interface WorkspaceState {
   setFilterVisible: (visible: boolean) => void
   /** Whether the inspector card is collapsed to its identifying bar (tic-88ac). */
   setInspectorCollapsed: (collapsed: boolean) => void
+  /** Toggle marching-ants on every edge (tic-5196); persisted as a UI pref. */
+  setAnimateAllEdges: (animate: boolean) => void
 
   select: (ids: readonly string[], additive?: boolean) => void
   toggleSelected: (id: string) => void
@@ -107,6 +111,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     selection: EMPTY_SELECTION,
     hovered: null,
     inspectorCollapsed: readUiPrefs().inspectorCollapsed,
+    animateAllEdges: readUiPrefs().animateAllEdges,
 
     setMode: (modeId) =>
       set((state) => {
@@ -222,6 +227,9 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         state.inspectorCollapsed === collapsed ? state : { inspectorCollapsed: collapsed },
       ),
 
+    setAnimateAllEdges: (animate) =>
+      set((state) => (state.animateAllEdges === animate ? state : { animateAllEdges: animate })),
+
     select: (ids, additive = false) =>
       set((state) => {
         const next = new Set(additive ? state.selection : undefined)
@@ -291,8 +299,11 @@ useWorkspace.subscribe((state, previous) => {
 // The inspector's collapse is a standalone UI preference (tic-88ac): written to
 // its own key, never into a mode slice, so a saved preset cannot capture it.
 useWorkspace.subscribe((state, previous) => {
-  if (state.inspectorCollapsed === previous.inspectorCollapsed) return
-  writeUiPrefs({ inspectorCollapsed: state.inspectorCollapsed })
+  if (state.inspectorCollapsed === previous.inspectorCollapsed && state.animateAllEdges === previous.animateAllEdges)
+    return
+  // Write both chrome prefs from live state, so changing either one never
+  // clobbers the other (tic-5196).
+  writeUiPrefs({ inspectorCollapsed: state.inspectorCollapsed, animateAllEdges: state.animateAllEdges })
 })
 
 /** Write the pending state out now, rather than when the debounce expires. */

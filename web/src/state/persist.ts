@@ -159,10 +159,17 @@ export const UI_STORAGE_KEY = 'adventure-call:ui'
 export interface UiPrefs {
   /** The inspector card is collapsed to its compact identifying bar. */
   inspectorCollapsed: boolean
+  /**
+   * Exploratory Marching-ants toggle (tic-5196): when true the canvas runs the
+   * moving-dash animation on every edge, not only highlighted directional
+   * (import) lines.  Stored as chrome state, not per-mode, because it is a
+   * display preference rather than what is being visualised.
+   */
+  animateAllEdges: boolean
 }
 
 export function emptyUiPrefs(): UiPrefs {
-  return { inspectorCollapsed: false }
+  return { inspectorCollapsed: false, animateAllEdges: false }
 }
 
 export function readUiPrefs(): UiPrefs {
@@ -179,6 +186,7 @@ export function readUiPrefs(): UiPrefs {
     const record = parsed as Record<string, unknown>
     return {
       inspectorCollapsed: record.inspectorCollapsed === true,
+      animateAllEdges: record.animateAllEdges === true,
     }
   } catch {
     return emptyUiPrefs()

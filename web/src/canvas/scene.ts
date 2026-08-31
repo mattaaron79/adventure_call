@@ -24,6 +24,14 @@ export interface SceneNode extends Rect {
   label: string
   /** Optional second line, e.g. a symbol count. Dropped when it will not fit. */
   sublabel?: string
+  /**
+   * The mode's role for this element ('file' | 'dir' | 'row' | 'section' |
+   * 'stub'), carried through from the spec so the canvas can tell file
+   * workspace items apart from rows and directory chips (tic-2996).  Absent
+   * on nodes assembled before roles existed; the canvas treats a missing role
+   * as 'not a file item'.
+   */
+  role?: string
   fill: string
   stroke: string
   /** Accent bar down the left edge; the kind colour in the fs-tree mode. */
@@ -94,6 +102,14 @@ export interface SceneEdge {
    * highlighting (tic-5393).  Absent on edges that never had a kind.
    */
   kind?: string
+  /**
+   * Whether the edge carries a direction worth showing (tic-2b2b).  The mode
+   * sets it on lines whose flow matters -- today only import edges, whose
+   * `from` is the importer and `to` the imported -- and the canvas renders a
+   * subtle marching-ants animation on it while the edge is highlighted.
+   * Absent/undefined means not directional.
+   */
+  directional?: boolean
   /**
    * The pipe override used to route a wrapped elbow (see tidyTree.elbow),
    * carried from the layout as a fixed offset from the child's leading edge
@@ -374,4 +390,44 @@ export function highlightedEdgesLast(
     else plain.push(edge)
   }
   return [...plain, ...lit]
+}
+
+// -- marching ants (tic-2b2b) -------------------------------------------------
+
+/**
+ * The dash pattern a directional line wears while its ants are marching.
+ * Short dashes with a matching gap read as a steady flow of ticks -- subtle at
+ * rest, unmistakable once the offset is in motion.
+ */
+export const ANTS_DASH: number[] = [6, 6]
+
+/**
+ * How fast the ants travel along the line, in world pixels per second.  Slow
+ * enough to feel directional without demanding attention.
+ */
+export const ANTS_SPEED_PX_PER_SEC = 60
+
+/**
+ * The dash offset at a given animation time (ms).  The offset decreases with
+ * time, so the dashes travel from the first point of the polyline (the edge's
+ * `from` end) to the last (its `to` end) -- the direction the edge means.
+ */
+export function antsDashOffset(timeMs: number): number {
+  return -(timeMs / 1000) * ANTS_SPEED_PX_PER_SEC
+}
+
+/**
+ * Whether an edge shows the marching-ants animation.
+ *
+ * By default (tic-2b2b) it must carry a direction AND be highlighted (coloured,
+ * drawn on top) -- a grey, unselected line never animates, because the flow is
+ * a property of the lit connection, not of the idle scene.  The 'animate all'
+ * toggle (tic-5196) broadens that to every import line, regardless of
+ * highlight, so a viewer can watch the whole import flow at once.  Either way
+ * only import lines animate: the folder/nesting elbows carry no direction to
+ * show, and animating them would just add noise (tic-1ea2).
+ */
+export function isAntsEdge(edge: SceneEdge, highlighted: boolean, animateAll: boolean): boolean {
+  if (animateAll) return edge.kind === 'import'
+  return highlighted && edge.directional === true
 }

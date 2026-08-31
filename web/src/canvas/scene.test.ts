@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { elbow } from '../layout/tidyTree'
 import {
+  ANTS_DASH,
+  ANTS_SPEED_PX_PER_SEC,
+  antsDashOffset,
   highlightedEdgesLast,
   importEdgesIncidentTo,
+  isAntsEdge,
   nodesInRect,
   placedRect,
   placedRects,
   reproject,
   sceneBounds,
   type Scene,
+  type SceneEdge,
 } from './scene'
 
 function node(id: string, x: number, y: number, draggable = true) {
@@ -312,5 +317,60 @@ describe('highlightedEdgesLast', () => {
   it('leaves already-last highlights in place', () => {
     const ordered = highlightedEdgesLast(HIGHLIGHT.edges, new Set(['no-kind']))
     expect(ordered.map((e) => e.id)).toEqual(['imp:a->b', 'imp:b->row', 'nest:a->b', 'no-kind'])
+  })
+})
+
+// -- marching ants (tic-2b2b) ------------------------------------------------
+
+describe('isAntsEdge', () => {
+  const importEdge: SceneEdge = {
+    id: 'imp',
+    points: [0, 0, 100, 0],
+    stroke: '#222',
+    kind: 'import',
+    directional: true,
+  }
+  const nesting: SceneEdge = { id: 'nest', points: [0, 0, 100, 0], stroke: '#222', kind: 'nesting' }
+  const unkinded: SceneEdge = { id: 'p', points: [0, 0, 100, 0], stroke: '#222' }
+
+  it('animates a highlighted directional import edge', () => {
+    expect(isAntsEdge(importEdge, true, false)).toBe(true)
+  })
+
+  it('never animates an import edge that is not highlighted', () => {
+    expect(isAntsEdge(importEdge, false, false)).toBe(false)
+  })
+
+  it('never animates a non-import edge, highlighted or not', () => {
+    expect(isAntsEdge(nesting, true, false)).toBe(false)
+    expect(isAntsEdge(nesting, false, false)).toBe(false)
+  })
+
+  it('animate-all marches every import edge, regardless of highlight (tic-5196)', () => {
+    expect(isAntsEdge(importEdge, false, true)).toBe(true)
+    expect(isAntsEdge(importEdge, true, true)).toBe(true)
+  })
+
+  it('animate-all never animates folder/nesting or unkinded edges (tic-1ea2)', () => {
+    expect(isAntsEdge(nesting, true, true)).toBe(false)
+    expect(isAntsEdge(nesting, false, true)).toBe(false)
+    expect(isAntsEdge(unkinded, true, true)).toBe(false)
+  })
+})
+
+describe('antsDashOffset', () => {
+  it('starts at zero and walks the dashes toward the path end over time', () => {
+    expect(antsDashOffset(0)).toBeCloseTo(0)
+    const at500 = antsDashOffset(500)
+    const at1000 = antsDashOffset(1000)
+    // Decreasing offset moves the pattern toward the polyline's end (from ->
+    // to); the magnitude follows the configured speed.
+    expect(at1000).toBeLessThan(at500)
+    expect(at500).toBeCloseTo(-0.5 * ANTS_SPEED_PX_PER_SEC)
+    expect(at1000).toBeCloseTo(-1 * ANTS_SPEED_PX_PER_SEC)
+  })
+
+  it('uses a short, subtle repeating dash pattern', () => {
+    expect(ANTS_DASH).toEqual([6, 6])
   })
 })

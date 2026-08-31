@@ -485,6 +485,26 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* The 'animate all' marching-ants toggle (tic-5196): a small inline checkbox
+   flush with the hud stats, so it reads as part of the chrome, not a control
+   fighting for attention. */
+.hud-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 6px;
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.hud-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* The on-workspace breadcrumb toolbar (tic-b1ab): floats above the focused
    folder's group box in world space.  It is an HTML overlay positioned from
    the viewport transform, so its text stays at a readable size at any zoom --

@@ -221,6 +221,18 @@ describe('fsTreeMode, everything collapsed', () => {
     expect(scene.nodes.every((n) => !n.id.startsWith('row:'))).toBe(true)
   })
 
+  it('labels file chips with role file so the canvas can show their goto-code affordance (tic-2996)', () => {
+    const loop = scene.nodes.find((n) => n.id === 'src/app/loop.py')!
+    const errors = scene.nodes.find((n) => n.id === 'src/app/errors.py')!
+    expect(loop.role).toBe('file')
+    expect(errors.role).toBe('file')
+    // Directories and the file tree root keep distinct roles; only file items
+    // get the upper-right goto-code icon and the file-name path tooltip.
+    const dir = scene.nodes.find((n) => n.id === 'dir:src/app')!
+    expect(dir.role).toBe('dir')
+    expect(scene.nodes.find((n) => n.id === 'dir:')!.role).toBe('dir')
+  })
+
   it('writes a rect for every chip and group box, and marks dirs and files expandable', () => {
     // The positioned output covers nodes plus the group boxes behind them.
     expect(rects.size).toBe(scene.nodes.length + scene.groups.length)
