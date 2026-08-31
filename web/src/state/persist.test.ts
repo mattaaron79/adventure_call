@@ -24,6 +24,7 @@ const STATE = {
   expanded: { 'src/a.py': true },
   params: { showImports: false },
   filterVisible: true,
+  focusPath: 'src/app',
 }
 
 describe('mode state', () => {
@@ -65,6 +66,7 @@ describe('mode state', () => {
       expanded: { yes: true },
       params: {},
       filterVisible: false,
+      focusPath: '',
     })
   })
 
@@ -80,6 +82,25 @@ describe('mode state', () => {
       JSON.stringify({ filterVisible: 'yes' }),
     )
     expect(readModeState('fs-tree')?.filterVisible).toBe(false)
+  })
+
+  it('round trips focusPath and defaults it to the root when absent or junk (tic-e7d2)', () => {
+    writeModeState('fs-tree', STATE)
+    expect(readModeState('fs-tree')?.focusPath).toBe('src/app')
+
+    // An older build (or a hand edit) with no focusPath is still readable; it
+    // just sits at the root.
+    localStorage.setItem(
+      storageKey('fs-tree'),
+      JSON.stringify({ viewport: { x: 0, y: 0, scale: 1 }, overrides: {}, expanded: {} }),
+    )
+    expect(readModeState('fs-tree')?.focusPath).toBe('')
+
+    localStorage.setItem(
+      storageKey('fs-tree'),
+      JSON.stringify({ focusPath: 7 }),
+    )
+    expect(readModeState('fs-tree')?.focusPath).toBe('')
   })
 
   it('keeps only JSON-safe scalar params', () => {

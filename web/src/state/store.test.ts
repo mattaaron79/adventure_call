@@ -8,7 +8,7 @@ import { storageKey } from './persist'
  * of the imports below.
  */
 const SAVED = vi.hoisted(() => {
-  const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {}, params: {}, filterVisible: false }
+  const saved = { viewport: { x: -300, y: 120, scale: 2 }, overrides: { 'a.py': { x: 5, y: 6 } }, expanded: {}, params: {}, filterVisible: false, focusPath: '' }
   const map = new Map<string, string>([
     ['adventure-call:workspace:fs-tree', JSON.stringify(saved)],
   ])
@@ -141,6 +141,43 @@ describe('position overrides', () => {
 
     relayout()
     expect(selectOverrides(useWorkspace.getState())).toEqual({})
+  })
+})
+
+describe('focus scope (tic-e7d2)', () => {
+  it('sets the active mode focus path and drops stale drag overrides', () => {
+    useWorkspace.getState().moveNodes({ 'b.py': { x: 1, y: 2 } })
+    useWorkspace.getState().setFocusPath('src/app')
+    const state = useWorkspace.getState()
+    expect(activeMode(state).focusPath).toBe('src/app')
+    // Entering a scope must not inherit drags from the wider view.
+    expect(selectOverrides(state)).toEqual({})
+  })
+
+  it('keeps the same state when the focus path does not change', () => {
+    const before = useWorkspace.getState().modes[DEFAULT_MODE_ID]
+    useWorkspace.getState().setFocusPath('')
+    expect(useWorkspace.getState().modes[DEFAULT_MODE_ID]).toBe(before)
+  })
+
+  it('persists the focus path with the mode state', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    flushWorkspaceState()
+    const stored = JSON.parse(localStorage.getItem(storageKey(DEFAULT_MODE_ID))!)
+    expect(stored.focusPath).toBe('src/app')
+  })
+
+  it('keeps each mode its own focus path', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    useWorkspace.getState().setMode('call-graph')
+    expect(activeMode(useWorkspace.getState()).focusPath).toBe('')
+
+    // fs-tree's own slice still holds its focus while another mode is active.
+    expect(useWorkspace.getState().modes[DEFAULT_MODE_ID].focusPath).toBe('src/app')
+
+    // Settle the writes queued by the mode switches above.
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey('call-graph'))
   })
 })
 

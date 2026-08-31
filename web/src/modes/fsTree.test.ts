@@ -15,13 +15,16 @@ import { renderMode, resolveGoto } from './types'
 
 /**
  * Render the mode the way the app does: only through the VizMode interface.
+ * `focusPath` (tic-e7d2) is the directory the scene is drilled into; the
+ * empty string is the whole graph.
  */
 const render = (
   expanded: Record<string, boolean> = {},
   params = { ...fsTreeMode.defaultParams },
   lod = 0,
   workspace = WORKSPACE,
-) => renderMode(fsTreeMode, workspace, params, { expanded, lod })
+  focusPath = '',
+) => renderMode(fsTreeMode, workspace, params, { expanded, lod, focusPath })
 
 /**
  * A miniature corpus with everything the mode has to render: a nested
@@ -388,6 +391,68 @@ describe('fileRows and layoutContainer', () => {
     expect(layout.width).toBeGreaterThan(300)
     expect(layout.height).toBeGreaterThan(36 + 12 + 2 * 24)
     expect(layout.rows[0].y).toBeLessThan(layout.rows[1].y)
+  })
+})
+
+describe('fsTreeMode focus scope (tic-e7d2)', () => {
+  it('scopes the scene to the focused directory, everything outside absent', () => {
+    const layout = render({}, undefined, 0, WORKSPACE, 'src/app')
+    const ids = layout.scene.nodes.map((n) => n.id)
+    expect(ids).toContain('dir:src/app') // the focused dir is now the tree root
+    expect(ids).toContain('src/app/loop.py')
+    expect(ids).toContain('src/app/errors.py')
+    expect(ids).toContain('dir:src/app/cli')
+    expect(ids).toContain('src/app/cli/main.py')
+    // Outside the scope is absent, not dimmed: the parent and the root are
+    // simply not in the scene.
+    expect(ids).not.toContain('dir:src')
+    expect(ids).not.toContain('dir:')
+  })
+
+  it('keeps import lines that are internal to the scope and drops the rest', () => {
+    const scoped = render({}, undefined, 0, WORKSPACE, 'src/app')
+    // loop.py imports errors.py; both are inside the scope, so the edge stays.
+    expect(scoped.scene.edges.some((e) => e.id === 'imp:src/app/loop.py->src/app/errors.py')).toBe(
+      true,
+    )
+
+    const deep = render({}, undefined, 0, WORKSPACE, 'src/app/cli')
+    // main.py imports nothing and loop.py's import is outside the scope, so
+    // no import lines at all.
+    expect(deep.scene.edges.filter((e) => e.id.startsWith('imp:'))).toEqual([])
+  })
+
+  it('makes the focused directory the laid-out root and carries its path as focusTo', () => {
+    const scoped = render({}, undefined, 0, WORKSPACE, 'src/app')
+    const root = scoped.scene.nodes.find((n) => n.id === 'dir:src/app')!
+    expect(root.focusTo).toBe('src/app')
+    // Every directory chip advertises its own drill-in target.
+    const atRoot = render()
+    expect(atRoot.scene.nodes.find((n) => n.id === 'dir:')!.focusTo).toBe('')
+    expect(atRoot.scene.nodes.find((n) => n.id === 'dir:src/app')!.focusTo).toBe('src/app')
+  })
+
+  it('falls back to the whole graph when the focus path no longer exists', () => {
+    const layout = render({}, undefined, 0, WORKSPACE, 'src/gone')
+    const ids = layout.scene.nodes.map((n) => n.id)
+    expect(ids).toContain('dir:src')
+    expect(ids).toContain('src/app/loop.py')
+  })
+
+  it('still honours expand state inside the scope', () => {
+    const scoped = render({ 'src/app/loop.py': true }, undefined, 0, WORKSPACE, 'src/app')
+    const ids = scoped.scene.nodes.map((n) => n.id)
+    expect(ids).toContain('row:src/app/loop.py:section:Classes')
+    expect(ids).not.toContain('dir:src')
+  })
+
+  it('resolves goto targets inside the scope and nothing outside it', () => {
+    const scoped = render({}, undefined, 0, WORKSPACE, 'src/app')
+    const file = resolveGoto(scoped, 'src/app/loop.py')
+    expect(file!.elementId).toBe('src/app/loop.py')
+    expect(resolveGoto(scoped, 'src/app/cli/main.py')!.elementId).toBe('src/app/cli/main.py')
+    // A path outside the scope is absent from the scene and resolves to null.
+    expect(resolveGoto(scoped, 'src/not/here.py')).toBeNull()
   })
 })
 

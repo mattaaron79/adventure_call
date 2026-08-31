@@ -20,7 +20,13 @@ import type { KonvaEventObject } from 'konva/lib/Node'
 import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import { onGoto } from '../data/goto'
 import { resolveGoto, type ModeOutput } from '../modes/types'
-import { relayout, selectOverrides, selectViewport, useWorkspace } from '../state/store'
+import {
+  relayout,
+  selectFocusPath,
+  selectOverrides,
+  selectViewport,
+  useWorkspace,
+} from '../state/store'
 import { Grid } from './Grid'
 import { lodOf } from './lod'
 import {
@@ -42,6 +48,13 @@ import { useViewport } from './useViewport'
 import { centerOn, type Point, type Rect as WorldRect } from './viewport'
 
 const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif'
+
+/** The parent directory of a focus path, or the empty string at the root
+ *  (tic-e7d2).  The '..' HUD button walks up one level with this. */
+function parentPath(path: string): string {
+  const slash = path.lastIndexOf('/')
+  return slash === -1 ? '' : path.slice(0, slash)
+}
 
 /** Nothing selected and nothing hovered: the highlight set stays this stable
  *  reference so the idle scene (and every pan/zoom frame) re-renders for free
@@ -104,6 +117,7 @@ export function Workspace({
   const overrides = useWorkspace(selectOverrides)
   const selection = useWorkspace((s) => s.selection)
   const hovered = useWorkspace((s) => s.hovered)
+  const focusPath = useWorkspace(selectFocusPath)
 
   // Edges incident to the selection or hover light up in the import colour
   // (tic-5393).  Incidence runs off the scene's edge anchors, which the mode
@@ -229,6 +243,18 @@ export function Workspace({
     if (!restored) fit()
   }, [scene, size, restored, fit])
 
+  // Focus-scope navigation (tic-e7d2): entering a scope ('go into', '..' or
+  // '/') re-frames the camera on the new subtree.  The store already cleared
+  // drag overrides for the change, so the fit lands on the laid-out scene,
+  // not stale drags from the wider view.  Skipped on mount (prev === current),
+  // so a restored scoped view keeps its saved camera.
+  const prevFocusPath = useRef(focusPath)
+  useEffect(() => {
+    if (prevFocusPath.current === focusPath) return
+    prevFocusPath.current = focusPath
+    fit()
+  }, [focusPath, fit])
+
   const register = useCallback((id: string, node: Konva.Group | null) => {
     if (node) konvaNodes.current.set(id, node)
     else konvaNodes.current.delete(id)
@@ -242,6 +268,11 @@ export function Workspace({
   const registerGroup = useCallback((id: string, shapes: GroupShapes | null) => {
     if (shapes) groupShapes.current.set(id, shapes)
     else groupShapes.current.delete(id)
+  }, [])
+
+  /** Drill the scene into a directory path (tic-e7d2); see the store action. */
+  const onGoIn = useCallback((target: string) => {
+    useWorkspace.getState().setFocusPath(target)
   }, [])
 
   const handlers = useMemo<NodeHandlers>(() => {
@@ -455,8 +486,10 @@ export function Workspace({
                   hovered={hovered === node.id}
                   showLabel={lod < 2}
                   showSublabel={lod === 0}
+                  showGoIn={lod < 2}
                   handlers={handlers}
                   register={register}
+                  onGoIn={onGoIn}
                 />
               )
             })}
@@ -481,6 +514,25 @@ export function Workspace({
       )}
 
       <div className="hud">
+        {focusPath !== '' && (
+          <>
+            <button
+              type="button"
+              onClick={() => useWorkspace.getState().setFocusPath('')}
+              title="Back to the whole graph"
+            >
+              /
+            </button>
+            <button
+              type="button"
+              onClick={() => useWorkspace.getState().setFocusPath(parentPath(focusPath))}
+              title={`Up to ${parentPath(focusPath) || '/'}`}
+            >
+              ..
+            </button>
+            <span className="hud-divider" aria-hidden="true" />
+          </>
+        )}
         <button type="button" onClick={fit} title="Frame everything">
           Fit
         </button>
@@ -593,8 +645,12 @@ interface ChipProps {
   /** Zoom LOD (tic-fa56): text thins out as the camera pulls back. */
   showLabel: boolean
   showSublabel: boolean
+  /** Zoom LOD for the 'go into' affordance (tic-e7d2): dropped when labels
+   *  go, since at that zoom a tiny icon is neither legible nor clickable. */
+  showGoIn: boolean
   handlers: NodeHandlers
   register: (id: string, node: Konva.Group | null) => void
+  onGoIn: (target: string) => void
 }
 
 const NodeChip = memo(function NodeChip({
@@ -605,8 +661,10 @@ const NodeChip = memo(function NodeChip({
   hovered,
   showLabel,
   showSublabel,
+  showGoIn,
   handlers,
   register,
+  onGoIn,
 }: ChipProps) {
   const stroke = selected ? THEME.selected : hovered ? THEME.hovered : node.stroke
   const labelY = node.sublabel === undefined ? node.height / 2 - 7 : 8
@@ -698,6 +756,81 @@ const NodeChip = memo(function NodeChip({
           wrap="none"
         />
       )}
+      {showGoIn && node.focusTo !== undefined && (
+        <GoInChip x={node.width - 26} y={node.height / 2 - 9} hovered={hovered} target={node.focusTo} onGoIn={onGoIn} />
+      )}
+    </Group>
+  )
+})
+
+/**
+ * The 'go into' affordance on a directory chip (tic-e7d2): a distinct hit
+ * target on the right edge that drills the scene into `target`.  It sits
+ * inside the chip's group so it travels with the chip, but stops the pointer
+ * events from reaching the chip body -- a click here must neither toggle
+ * expand nor arm the chip's Konva drag.  preventDefault on pointerdown
+ * suppresses the browser's compat mouse events, which are what the draggable
+ * parent listens on to start a drag.
+ */
+const GoInChip = memo(function GoInChip({
+  x,
+  y,
+  hovered,
+  target,
+  onGoIn,
+}: {
+  x: number
+  y: number
+  hovered: boolean
+  target: string
+  onGoIn: (target: string) => void
+}) {
+  const press = useRef<{ x: number; y: number } | null>(null)
+  const color = hovered ? THEME.accent : THEME.textDim
+  return (
+    <Group
+      x={x}
+      y={y}
+      onPointerDown={(e) => {
+        e.cancelBubble = true
+        e.evt.preventDefault()
+        press.current = { x: e.evt.clientX, y: e.evt.clientY }
+      }}
+      onPointerUp={(e) => {
+        e.cancelBubble = true
+        const down = press.current
+        press.current = null
+        if (!down) return
+        const dx = e.evt.clientX - down.x
+        const dy = e.evt.clientY - down.y
+        if (dx * dx + dy * dy > 25) return // dragged, not clicked
+        onGoIn(target)
+      }}
+    >
+      <Rect
+        width={18}
+        height={18}
+        cornerRadius={4}
+        fill={hovered ? THEME.surface2 : 'rgba(0,0,0,0)'}
+        stroke={hovered ? THEME.accent : 'rgba(0,0,0,0)'}
+        strokeWidth={1}
+        perfectDrawEnabled={false}
+        shadowForStrokeEnabled={false}
+      />
+      <Text
+        x={2}
+        y={1}
+        width={14}
+        height={16}
+        text="→"
+        fontFamily={FONT}
+        fontSize={14}
+        fill={color}
+        align="center"
+        verticalAlign="middle"
+        listening={false}
+        perfectDrawEnabled={false}
+      />
     </Group>
   )
 })

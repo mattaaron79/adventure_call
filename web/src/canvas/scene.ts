@@ -30,6 +30,12 @@ export interface SceneNode extends Rect {
   accent?: string
   /** False pins the node in place, e.g. a header row inside a container. */
   draggable?: boolean
+  /**
+   * A focus-scope target (tic-e7d2): when set, the canvas renders a 'go into'
+   * affordance on the node that drills the scene into this path.  Absent
+   * means no affordance.  Set by the mode, rendered generically.
+   */
+  focusTo?: string
 }
 
 /** How an edge's polyline is derived from its endpoint rects. */

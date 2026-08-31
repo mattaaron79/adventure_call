@@ -1,7 +1,7 @@
 ---
 id: tic-e7d2
 title: 'Focus scope: drill into a folder, with root and up buttons in the HUD'
-status: open
+status: closed
 type: feature
 tier: high
 domain: ui
@@ -12,13 +12,13 @@ tags:
 - scope
 - hud
 - mode
-assignee: null
+assignee: code
 depends_on:
 - tic-bee0
 blocked_by: null
 created: '2026-08-30T18:45:40'
-updated: '2026-08-30T18:46:42'
-closed: null
+updated: '2026-08-30T20:23:45'
+closed: '2026-08-30T20:23:45'
 ---
 
 ## Description
@@ -35,3 +35,4 @@ WORK
 EXIT: clicking go-into on a folder shows only that subtree; '..' walks up one level; '/' returns to the whole graph; the scope survives a reload and rides along in a saved preset.
 
 ## Notes
+- 2026-08-30T20:23:26 code: Implemented focus-scope drill-down: per-mode focusPath in store/persist/presets; scene scoped to the focused dir in fsTree select (outside absent, not dimmed); re-fit on entry with overrides cleared; go-into icon on canvas dir chips (LOD-thinned) + sidebar GoInIcon; '/' and '..' HUD buttons left of Fit/Relayout with divider, hidden at root. Tests (216) and build pass.

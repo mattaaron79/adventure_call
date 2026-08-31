@@ -27,6 +27,12 @@ export interface UiState {
    * chips; it changes only when a threshold is crossed, never per frame.
    */
   lod?: number
+  /**
+   * The directory path the scene is drilled into (tic-e7d2); the empty
+   * string is the whole graph.  The mode's select phase scopes its scene to
+   * this subtree and leaves everything outside it absent.
+   */
+  focusPath?: string
 }
 
 /** An element the mode wants drawn; geometry and styling come later. */
@@ -41,6 +47,12 @@ export interface SpecNode {
   symbolId: string | null
   /** Whether a plain click on the element toggles expand/collapse. */
   expandable: boolean
+  /**
+   * When set, the element carries a focus-scope target (tic-e7d2): the canvas
+   * renders a 'go into' affordance that drills the scene into this path.  The
+   * fs-tree sets it on directory chips; the framework renders it generically.
+   */
+  focusTo?: string
   /** Elements visually contained by this one, e.g. rows in a container. */
   children: readonly SpecNode[]
   /** Mode-private payload for the later phases; opaque to the framework. */
@@ -228,6 +240,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         stroke: s?.stroke ?? TRANSPARENT,
         accent: s?.accent,
         draggable: s?.draggable,
+        focusTo: node.focusTo,
       })
     }
     if (node.symbolId !== null) symbolOf.set(node.id, node.symbolId)

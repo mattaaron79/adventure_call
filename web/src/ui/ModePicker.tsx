@@ -30,6 +30,7 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
   const modeId = useWorkspace((s) => s.modeId)
   const savedParams = useWorkspace((s) => activeMode(s).params)
   const expanded = useWorkspace((s) => activeMode(s).expanded)
+  const focusPath = useWorkspace((s) => activeMode(s).focusPath)
 
   const mode = modeById(modeId)
   // Stored params are a sparse overlay on the mode's defaults.
@@ -54,6 +55,7 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
           params: { ...params },
           filters: [...filters],
           expandState: { ...expanded },
+          focusPath,
         },
         presets,
       ),
@@ -66,6 +68,9 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
     store.setMode(preset.modeId)
     store.setParams(preset.params)
     store.setExpanded(preset.expandState)
+    // A preset's focus rides along (tic-e7d2), so loading it reproduces the
+    // exact scoped view it was saved from.
+    store.setFocusPath(preset.focusPath)
     onApplyFilters(preset.filters)
   }
 

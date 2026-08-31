@@ -209,15 +209,36 @@ export function layoutContainer(rows: Row[]): ContainerLayout {
 const dirId = (path: string): string => `dir:${path}`
 
 /**
+ * The directory the scene is scoped to (tic-e7d2): the `focusPath`'s FsDir
+ * when set, else the workspace root.  When focused, that directory becomes
+ * the laid-out tree root and everything outside it is absent -- scoping in
+ * the select phase, so it flows through the VizMode interface with no
+ * special-casing.  A focusPath that no longer exists (a `/out` refetch or a
+ * filter change removed it) falls back to the whole graph rather than drawing
+ * nothing.
+ */
+function scopeRoot(data: Workspace, focusPath: string): FsDir {
+  if (focusPath === '') return data.tree
+  let dir = data.tree
+  for (const segment of focusPath.split('/')) {
+    const next = dir.children.find((c) => c.type === 'dir' && c.name === segment)
+    if (!next || next.type !== 'dir') return data.tree
+    dir = next
+  }
+  return dir
+}
+
+/**
  * The goto index (tic-bee0): map every user-facing target -- a directory path
  * or a file path -- to the scene element that represents it, or its nearest
  * visible ancestor when the element itself is hidden (a directory closed on
  * the canvas, or a file inside one).  A directory's chip exists in the scene
  * once its ancestors are open; a file's chip exists once its parent chain is
  * open.  Targets the workspace excludes entirely are absent and resolve to
- * nothing, which is correct -- there is nothing to centre on.
+ * nothing, which is correct -- there is nothing to centre on.  `root` is the
+ * scoped tree root (tic-e7d2), so a focused view resolves only what it shows.
  */
-function buildGotoIndex(data: Workspace, expanded: Readonly<Record<string, boolean>>): Map<string, string> {
+function buildGotoIndex(root: FsDir, expanded: Readonly<Record<string, boolean>>): Map<string, string> {
   const goto = new Map<string, string>()
   const dirOpen = (dir: FsDir): boolean => expanded[dirId(dir.path)] ?? true
 
@@ -241,7 +262,7 @@ function buildGotoIndex(data: Workspace, expanded: Readonly<Record<string, boole
       else goto.set(child.path, childInScene ? child.path : childNearest)
     }
   }
-  visit(data.tree, true, dirId(''))
+  visit(root, true, dirId(root.path))
   return goto
 }
 
@@ -341,11 +362,16 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
       sublabel: `${node.fileCount} file${node.fileCount === 1 ? '' : 's'}`,
       symbolId: null,
       expandable: true,
+      // The 'go into' affordance (tic-e7d2): a directory chip drills the
+      // scene into this path, so the canvas needs no knowledge of the id
+      // scheme -- the target rides on the element.
+      focusTo: node.path,
       children,
     }
   }
 
-  const root = visit(data.tree)
+  const scope = scopeRoot(data, ui.focusPath ?? '')
+  const root = visit(scope)
 
   // Import lines are visual noise once labels are gone (lod >= 2): hundreds
   // of hairlines between chips nobody can read.
@@ -362,7 +388,7 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
     }
   }
 
-  return { root, groups, edges, goto: buildGotoIndex(data, expanded) }
+  return { root, groups, edges, goto: buildGotoIndex(scope, expanded) }
 }
 
 // -- measure ------------------------------------------------------------------

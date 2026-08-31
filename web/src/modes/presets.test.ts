@@ -24,6 +24,7 @@ const preset = (name: string, overrides: Partial<Preset> = {}): Preset => ({
   params: { showImports: true },
   filters: ['src/**'],
   expandState: { 'src/app/loop.py': true },
+  focusPath: '',
   ...overrides,
 })
 
@@ -80,6 +81,23 @@ describe('presets', () => {
     const presets = savePreset(preset('src only', { expandState: { 'src/a.py': true } }), [])
     const parsed: unknown = JSON.parse(exportPresets(presets))
     expect(parsed).toEqual({ schema_version: 1, presets })
+  })
+
+  it('rides the focus path along in a saved preset (tic-e7d2)', () => {
+    const saved = savePreset(preset('scoped', { focusPath: 'src/app' }), [])
+    writePresets(saved)
+    expect(readPresets()).toEqual(saved)
+    expect(readPresets()[0].focusPath).toBe('src/app')
+
+    // A preset with a non-string focusPath is junk, not a scope.
+    localStorage.setItem(
+      PRESETS_STORAGE_KEY,
+      JSON.stringify([
+        { ...preset('scoped'), focusPath: 7 },
+        preset('root'),
+      ]),
+    )
+    expect(readPresets()).toEqual([preset('root')])
   })
 
   it('is a no-op when storage is unavailable', () => {

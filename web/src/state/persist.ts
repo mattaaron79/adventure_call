@@ -28,6 +28,12 @@ export interface ModeState {
    * (tic-9098).  Default false: the query prunes the sidebar tree only.
    */
   filterVisible: boolean
+  /**
+   * The directory path the mode's scene is currently drilled into (tic-e7d2);
+   * the empty string means the whole graph.  The mode's select phase scopes
+   * its scene to this subtree, so it has to survive reloads like the camera.
+   */
+  focusPath: string
 }
 
 export const STORAGE_PREFIX = 'adventure-call:workspace:'
@@ -41,6 +47,7 @@ export function emptyModeState(): ModeState {
     expanded: {},
     params: {},
     filterVisible: false,
+    focusPath: '',
   }
 }
 
@@ -112,6 +119,7 @@ export function readModeState(modeId: string): ModeState | null {
       expanded: parseFlags(record.expanded),
       params: parseParams(record.params),
       filterVisible: record.filterVisible === true,
+      focusPath: typeof record.focusPath === 'string' ? record.focusPath : '',
     }
   } catch {
     return null

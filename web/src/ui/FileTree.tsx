@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FsDir, FsFile, FsNode } from '../data/derive'
+import { GoInIcon } from './GoInIcon'
 import { GotoIcon } from './GotoIcon'
 
 /**
@@ -92,6 +93,7 @@ function TreeNode({ node, depth, overrides, setOverrides }: NodeProps) {
           <span className="tree-count">{node.fileCount}</span>
         </button>
         <GotoIcon target={node.path} label={`Go to ${node.path}`} />
+        <GoInIcon target={node.path} label={`Go into ${node.path}`} />
       </div>
       {open && (
         <ul>

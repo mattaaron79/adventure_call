@@ -22,6 +22,8 @@ export interface Preset {
   filters: string[]
   /** Node id -> expanded, handed to the mode's `UiState` on load. */
   expandState: Record<string, boolean>
+  /** The focused directory path (tic-e7d2); the empty string is the root. */
+  focusPath: string
 }
 
 function storage(): Storage | null {
@@ -47,7 +49,8 @@ function isPreset(value: unknown): value is Preset {
     Array.isArray(value.filters) &&
     value.filters.every((f) => typeof f === 'string') &&
     isRecord(value.expandState) &&
-    Object.values(value.expandState).every((v) => typeof v === 'boolean')
+    Object.values(value.expandState).every((v) => typeof v === 'boolean') &&
+    typeof value.focusPath === 'string'
   )
 }
 
@@ -69,6 +72,7 @@ export function readPresets(): Preset[] {
       params: { ...preset.params },
       filters: [...preset.filters],
       expandState: { ...preset.expandState },
+      focusPath: preset.focusPath,
     }))
   } catch {
     return []
@@ -86,7 +90,13 @@ export function writePresets(presets: readonly Preset[]): void {
 /** Upsert by name; later saves with the same name replace the earlier one. */
 export function savePreset(preset: Preset, presets: readonly Preset[]): Preset[] {
   const next = presets.filter((p) => p.name !== preset.name)
-  next.push({ ...preset, params: { ...preset.params }, filters: [...preset.filters], expandState: { ...preset.expandState } })
+  next.push({
+    ...preset,
+    params: { ...preset.params },
+    filters: [...preset.filters],
+    expandState: { ...preset.expandState },
+    focusPath: preset.focusPath,
+  })
   return next
 }
 

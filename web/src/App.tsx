@@ -83,6 +83,7 @@ export function App() {
   const modeId = useWorkspace((s) => s.modeId)
   const savedParams = useWorkspace((s) => activeMode(s).params)
   const expanded = useWorkspace(selectExpanded)
+  const focusPath = useWorkspace((s) => activeMode(s).focusPath)
   const mode = modeById(modeId)
   const params = useMemo(
     () => ({ ...mode.defaultParams, ...savedParams }),
@@ -92,8 +93,8 @@ export function App() {
   // threshold is crossed, never per pan/zoom frame (tic-fa56).
   const lod = useWorkspace((s) => lodOf(activeMode(s).viewport.scale))
   const layout = useMemo(
-    () => (workspace ? renderMode(mode, workspace, params, { expanded, lod }) : null),
-    [mode, params, workspace, expanded, lod],
+    () => (workspace ? renderMode(mode, workspace, params, { expanded, lod, focusPath }) : null),
+    [mode, params, workspace, expanded, lod, focusPath],
   )
   const scene = layout?.scene ?? EMPTY_SCENE
 

@@ -46,6 +46,13 @@ export interface WorkspaceState {
   setParams: (params: Record<string, unknown>) => void
   /** Replace the active mode's expand state (a preset load). */
   setExpanded: (expanded: Record<string, boolean>) => void
+  /**
+   * Drill the active mode's scene into a directory path (tic-e7d2); the empty
+   * string is the whole graph.  Changing the scope also drops stale drag
+   * overrides, since dragged positions only mean anything for the view they
+   * were made in.
+   */
+  setFocusPath: (path: string) => void
   setViewport: (viewport: Viewport) => void
   zoomAtPointer: (pointer: Point, factor: number) => void
   panBy: (dx: number, dy: number) => void
@@ -133,6 +140,15 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         return viewport === mode.viewport ? null : { ...mode, viewport }
       }),
 
+    setFocusPath: (path) =>
+      patchMode((mode) => {
+        if (mode.focusPath === path) return null
+        // Entering a scope must not inherit drag overrides from the wider
+        // view: a chip dragged around the whole graph has no meaningful
+        // position inside the focused subtree.
+        return { ...mode, focusPath: path, overrides: {} }
+      }),
+
     moveNodes: (positions) =>
       patchMode((mode) => ({ ...mode, overrides: { ...mode.overrides, ...positions } })),
 
@@ -194,6 +210,7 @@ export const selectViewport = (state: WorkspaceState) => activeMode(state).viewp
 export const selectOverrides = (state: WorkspaceState) => activeMode(state).overrides
 export const selectExpanded = (state: WorkspaceState) => activeMode(state).expanded
 export const selectFilterVisible = (state: WorkspaceState) => activeMode(state).filterVisible
+export const selectFocusPath = (state: WorkspaceState) => activeMode(state).focusPath
 
 /** Forget the drags for the active mode; the debounced writer persists it. */
 export function relayout(): void {
