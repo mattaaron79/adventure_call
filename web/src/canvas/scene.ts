@@ -63,6 +63,19 @@ export interface SceneNode extends Rect {
    */
   gotoTo?: string
   /**
+   * A cross-mode target (tic-e738): when set, the canvas renders an
+   * affordance that switches to `modeId` and opens it focused on `target`.
+   * Structurally the same shape the modes layer declares (its `OpenInTarget`),
+   * restated here because the canvas does not depend on the modes layer --
+   * `icon` is widened to a plain string for the same reason `focusIcon` is.
+   */
+  openIn?: {
+    modeId: string
+    target: string
+    icon?: string
+    label?: string
+  }
+  /**
    * The id of the node this one is visually contained by -- a row's container,
    * a container's directory chip (tic-2697).  Set during assembly from the
    * spec's children tree, so `reproject` can translate a node by the

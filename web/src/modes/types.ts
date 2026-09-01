@@ -28,11 +28,51 @@ export interface UiState {
    */
   lod?: number
   /**
-   * The directory path the scene is drilled into (tic-e7d2); the empty
-   * string is the whole graph.  The mode's select phase scopes its scene to
-   * this subtree and leaves everything outside it absent.
+   * The scope the scene is drilled into (tic-e7d2); the empty string is the
+   * whole graph.  The mode's select phase scopes its scene to this and
+   * leaves everything outside it absent.
+   *
+   * What the string NAMES is the mode's own business: a directory in the
+   * fs-tree, a file in the import graph's Local View (tic-d7d7), a symbol id
+   * in a call-flow mode.  Two consequences, both load-bearing:
+   *
+   * 1. Nothing outside a mode may construct a focus path for it except
+   *    through that mode's own vocabulary.  App.tsx's `resolveGotoScope`
+   *    guards this for goto; {@link SpecNode.openIn} is the sanctioned way
+   *    to hand one mode a focus meant for another (tic-e738).
+   * 2. A mode MUST treat a focus path it cannot resolve as the unfocused
+   *    state, and draw the whole graph rather than nothing.  Both shipping
+   *    modes already did (fsTree's `scopeRoot` walks back to the root, the
+   *    import graph's `centre` falls back to ''), but it is stated here
+   *    because cross-mode navigation makes a stale or foreign path an
+   *    ordinary occurrence rather than an accident: a seeded focus can name
+   *    something the excludes, the file query or a `/out` refetch has since
+   *    removed.  Falling back is the contract, not each mode's private
+   *    politeness.
    */
   focusPath?: string
+}
+
+/**
+ * "Open this somewhere else" (tic-e738): a mode id plus the focus that mode
+ * should open at.
+ *
+ * `target` is written in the DESTINATION mode's focus vocabulary, not the
+ * source's -- a file path for the import graph's Local View, a directory for
+ * the fs-tree, a symbol id for a call-flow mode -- so the mode declaring it
+ * is responsible for speaking the destination's language.  See
+ * {@link UiState.focusPath}; a destination that cannot resolve the target
+ * opens unfocused rather than empty.
+ */
+export interface OpenInTarget {
+  /** Registered mode id to switch to; unknown ids resolve to the default. */
+  modeId: string
+  /** The focus to seed, in the destination mode's own vocabulary. */
+  target: string
+  /** Glyph the affordance wears, as {@link SpecNode.focusIcon}. */
+  icon?: 'go-in' | 'local-view'
+  /** Tooltip; absent falls back to a generic wording naming the mode. */
+  label?: string
 }
 
 /** An element the mode wants drawn; geometry and styling come later. */
@@ -72,6 +112,18 @@ export interface SpecNode {
    * generically.
    */
   gotoTo?: string
+  /**
+   * A cross-mode target (tic-e738): the canvas renders an affordance that
+   * switches to another mode and opens it at this focus.
+   *
+   * Deliberately NOT folded into {@link SpecNode.focusTo}.  "Go into this,
+   * here" and "go look at this elsewhere" are different gestures, and one
+   * field carrying both would leave the canvas guessing which it is holding
+   * -- and every future mode inheriting that guess.  Same division of labour
+   * as tic-d7d7: the mode names a destination, an icon and a wording; the
+   * framework owns the button and the transition.
+   */
+  openIn?: OpenInTarget
   /** Elements visually contained by this one, e.g. rows in a container. */
   children: readonly SpecNode[]
   /** Mode-private payload for the later phases; opaque to the framework. */
@@ -319,6 +371,9 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         focusIcon: node.focusIcon,
         focusLabel: node.focusLabel,
         gotoTo: node.gotoTo,
+        // Cross-mode navigation (tic-e738), carried like every other
+        // affordance: the mode declares it, the canvas draws it.
+        openIn: node.openIn,
         // Containment (tic-2697): the spec node this one lives inside, so
         // reproject can translate it by its ancestors' drag offsets.
         parent: parentId,

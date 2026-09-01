@@ -12,6 +12,7 @@ import type {
 } from '../data/types'
 import { fileRows, layoutContainer } from './fileDetail'
 import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './fsTree'
+import { IMPORT_GRAPH_MODE_ID } from './ids'
 import { renderMode, resolveGoto } from './types'
 
 /**
@@ -771,5 +772,58 @@ describe('fileOnlyDirIds (tic-2356)', () => {
       ],
     }
     expect(fileOnlyDirIds(mixed)).toEqual(new Set(['dir:sub']))
+  })
+})
+
+
+describe('fsTreeMode cross-mode navigation (tic-e738)', () => {
+  const { scene } = render()
+  const file = scene.nodes.find((n) => n.id === 'src/app/loop.py')!
+
+  it('offers to open a file in the import graph, focused on that file', () => {
+    expect(file.openIn).toMatchObject({
+      modeId: IMPORT_GRAPH_MODE_ID,
+      target: 'src/app/loop.py',
+    })
+  })
+
+  it('speaks the DESTINATION focus vocabulary, not its own', () => {
+    // fs-tree focuses on directories; the import graph's Local View focuses
+    // on a FILE.  The target has to be what the destination understands, or
+    // the destination silently falls back to unfocused.
+    expect(file.openIn!.target).toBe('src/app/loop.py')
+    expect(file.openIn!.target).not.toBe('src/app')
+  })
+
+  it('names its own glyph and wording, leaving the canvas generic', () => {
+    expect(file.openIn!.icon).toBe('local-view')
+    expect(file.openIn!.label).toContain('loop.py')
+  })
+
+  it('puts it on files only -- a directory has no import neighbourhood', () => {
+    const dir = scene.nodes.find((n) => n.id === 'dir:src/app')!
+    expect(dir.openIn).toBeUndefined()
+    // ...and the directory keeps its own within-mode focus affordance.
+    expect(dir.focusTo).toBe('src/app')
+  })
+})
+
+describe('fsTreeMode with an unresolvable focus (tic-e738)', () => {
+  it('draws the whole tree rather than nothing', () => {
+    // The contract stated on UiState.focusPath: cross-mode navigation makes a
+    // stale or foreign focus an ordinary occurrence, not an accident, so a
+    // mode must degrade to unfocused instead of rendering an empty canvas.
+    const { scene } = render({}, { ...fsTreeMode.defaultParams }, 0, WORKSPACE, 'no/such/dir')
+    const ids = scene.nodes.map((n) => n.id)
+    expect(ids).toContain('src/app/loop.py')
+    expect(ids).toContain('dir:src/app')
+  })
+
+  it('degrades the same way for a FILE path, which is another mode vocabulary', () => {
+    // Exactly what a careless openIn would seed: the import graph's focus
+    // vocabulary handed to the fs-tree.
+    const { scene } = render({}, { ...fsTreeMode.defaultParams }, 0, WORKSPACE, 'src/app/loop.py')
+    expect(scene.nodes.length).toBeGreaterThan(0)
+    expect(scene.nodes.map((n) => n.id)).toContain('src/app/loop.py')
   })
 })

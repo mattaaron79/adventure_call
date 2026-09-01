@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAX_SCALE } from '../canvas/viewport'
 import { GOTO_ZOOM_FACTOR } from '../settings'
+import { modeById } from '../modes/registry'
 import { storageKey } from './persist'
 
 /**
@@ -435,5 +436,122 @@ describe('modes', () => {
     state.panBy(7, 7)
     useWorkspace.getState().setMode(DEFAULT_MODE_ID)
     expect(selectViewport(useWorkspace.getState())).toEqual(SAVED.viewport)
+  })
+})
+
+describe('cross-mode navigation (tic-e738)', () => {
+  const OTHER = 'import-graph'
+
+  afterEach(() => {
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey(OTHER))
+  })
+
+  it('switches mode and seeds that mode focus in one go', () => {
+    useWorkspace.getState().openInMode(OTHER, 'src/app/loop.py')
+    const state = useWorkspace.getState()
+    expect(state.modeId).toBe(OTHER)
+    expect(activeMode(state).focusPath).toBe('src/app/loop.py')
+  })
+
+  it('never lets the new mode render against the old focus', () => {
+    // The reason this is one action and not setMode + setFocusPath: with two
+    // calls the store would briefly hold the destination mode with whatever
+    // focus it had before, and the canvas would lay out and frame a scene
+    // nobody asked for. Every state React can observe must already agree.
+    useWorkspace.getState().setMode(OTHER)
+    useWorkspace.getState().setFocusPath('stale/path')
+    useWorkspace.getState().setMode(DEFAULT_MODE_ID)
+
+    const seen: { modeId: string; focusPath: string }[] = []
+    const stop = useWorkspace.subscribe((state) =>
+      seen.push({ modeId: state.modeId, focusPath: activeMode(state).focusPath }),
+    )
+    useWorkspace.getState().openInMode(OTHER, 'src/app/loop.py')
+    stop()
+
+    expect(seen.length).toBeGreaterThan(0)
+    for (const step of seen) {
+      if (step.modeId === OTHER) expect(step.focusPath).toBe('src/app/loop.py')
+    }
+  })
+
+  it('leaves the mode being left completely untouched', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    useWorkspace.getState().moveNodes({ 'b.py': { x: 1, y: 2 } })
+    const before = useWorkspace.getState().modes[DEFAULT_MODE_ID]
+
+    useWorkspace.getState().openInMode(OTHER, 'src/app/loop.py')
+
+    // Same object, not merely an equal one: nothing rewrote the source mode.
+    expect(useWorkspace.getState().modes[DEFAULT_MODE_ID]).toBe(before)
+    expect(before.focusPath).toBe('src/app')
+  })
+
+  it('drops the destination stale drag overrides', () => {
+    useWorkspace.getState().setMode(OTHER)
+    useWorkspace.getState().moveNodes({ 'x.py': { x: 9, y: 9 } })
+    useWorkspace.getState().setMode(DEFAULT_MODE_ID)
+
+    useWorkspace.getState().openInMode(OTHER, 'src/app/loop.py')
+    expect(selectOverrides(useWorkspace.getState())).toEqual({})
+  })
+
+  it('clears a selection and hover that belonged to the mode being left', () => {
+    useWorkspace.getState().select(['a.py'])
+    useWorkspace.getState().setHovered('a.py')
+    useWorkspace.getState().openInMode(OTHER, 'src/app/loop.py')
+    expect(useWorkspace.getState().selection.size).toBe(0)
+    expect(useWorkspace.getState().hovered).toBeNull()
+  })
+
+  it('re-focuses the active mode when it is already the destination', () => {
+    // Not a no-op, and not a mode switch either: the selection survives,
+    // because nothing was left.
+    useWorkspace.getState().select(['a.py'])
+    useWorkspace.getState().openInMode(DEFAULT_MODE_ID, 'src/app')
+    const state = useWorkspace.getState()
+    expect(state.modeId).toBe(DEFAULT_MODE_ID)
+    expect(activeMode(state).focusPath).toBe('src/app')
+    expect(state.selection.size).toBe(1)
+  })
+
+  it('keeps the same state when the destination is already focused there', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    const before = useWorkspace.getState().modes[DEFAULT_MODE_ID]
+    useWorkspace.getState().openInMode(DEFAULT_MODE_ID, 'src/app')
+    expect(useWorkspace.getState().modes[DEFAULT_MODE_ID]).toBe(before)
+  })
+
+  it('auto-expands the seeded folder, like entering a scope does', () => {
+    useWorkspace.getState().openInMode(OTHER, 'src/app')
+    expect(selectExpanded(useWorkspace.getState())['dir:src/app']).toBe(true)
+  })
+
+  it('persists the destination seeded focus', () => {
+    useWorkspace.getState().openInMode(OTHER, 'src/app/loop.py')
+    flushWorkspaceState()
+    const stored = JSON.parse(localStorage.getItem(storageKey(OTHER))!)
+    expect(stored.focusPath).toBe('src/app/loop.py')
+  })
+
+  it('takes an unknown mode id at face value, and the registry falls back', () => {
+    // The store does not know which modes exist -- the registry is the only
+    // thing that does. So a bad id is stored as given and resolves to the
+    // default mode at render, rather than being silently swallowed here.
+    useWorkspace.getState().openInMode('no-such-mode', 'whatever')
+    expect(useWorkspace.getState().modeId).toBe('no-such-mode')
+    expect(modeById('no-such-mode').id).toBe(DEFAULT_MODE_ID)
+
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey('no-such-mode'))
+  })
+
+  it('seeds a target the destination cannot resolve, and leaves it to the mode', () => {
+    // The store cannot know whether a focus is renderable -- it has no graph.
+    // The mode contract (modes/types.ts UiState.focusPath) is that an
+    // unresolvable focus draws the whole graph, so seeding one is safe.
+    useWorkspace.getState().openInMode(OTHER, 'gone/missing.py')
+    expect(activeMode(useWorkspace.getState()).focusPath).toBe('gone/missing.py')
   })
 })

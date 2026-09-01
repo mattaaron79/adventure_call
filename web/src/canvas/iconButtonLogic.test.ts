@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { iconGlyphGeometry, iconSlots, isIconClick, shouldShowGoIn } from './iconButtonLogic'
+import {
+  actionAffordance,
+  iconGlyphGeometry,
+  iconSlots,
+  isIconClick,
+  shouldShowGoIn,
+} from './iconButtonLogic'
 
 describe('isIconClick (tic-4d7c)', () => {
   it('counts a still press as a click', () => {
@@ -99,5 +105,39 @@ describe('iconSlots (tic-ea7b)', () => {
     // carries both buttons, and a label inset measured for one ran under them.
     const both = iconSlots(CHIP.width, CHIP.height, true, true)
     expect(CHIP.width - both.labelInset).toBeLessThanOrEqual(both.action)
+  })
+})
+
+
+describe('actionAffordance (tic-e738)', () => {
+  const OPEN_IN = { modeId: 'import-graph', target: 'src/a.py' }
+
+  it('gives the slot to a focus target', () => {
+    expect(actionAffordance({ focusTo: 'src/app' }, '')).toBe('focus')
+  })
+
+  it('gives the slot to a goto target', () => {
+    expect(actionAffordance({ gotoTo: 'src/a.py' }, '')).toBe('goto')
+  })
+
+  it('gives the slot to a cross-mode target', () => {
+    expect(actionAffordance({ openIn: OPEN_IN }, '')).toBe('open-in')
+  })
+
+  it('is null when the node wants nothing', () => {
+    expect(actionAffordance({}, '')).toBeNull()
+  })
+
+  it('prefers focus over both, since only focus navigates within the view', () => {
+    expect(actionAffordance({ focusTo: 'src/app', gotoTo: 'x', openIn: OPEN_IN }, '')).toBe('focus')
+  })
+
+  it('prefers goto over a cross-mode jump, which the inspector also offers', () => {
+    expect(actionAffordance({ gotoTo: 'x', openIn: OPEN_IN }, '')).toBe('goto')
+  })
+
+  it('falls through to the cross-mode jump on the folder already focused', () => {
+    // A folder hides its own 'go into' (tic-4d7c), which frees the slot.
+    expect(actionAffordance({ focusTo: 'src/app', openIn: OPEN_IN }, 'src/app')).toBe('open-in')
   })
 })

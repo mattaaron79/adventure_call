@@ -50,6 +50,7 @@ import type {
   ElkGraphResult,
 } from '../layout/elkTypes'
 import { CONTAINER, fileRows, layoutContainer, rowId, type Row } from './fileDetail'
+import { IMPORT_GRAPH_MODE_ID } from './ids'
 import { notifyLayoutReady } from './asyncLayout'
 import type {
   EdgeStyle,
@@ -665,7 +666,7 @@ function style(spec: SceneSpec, _params: ImportGraphParams): StyleMap {
 // -- the mode ---------------------------------------------------------------
 
 export const importGraphMode: VizMode<ImportGraphParams> = {
-  id: 'import-graph',
+  id: IMPORT_GRAPH_MODE_ID,
   label: 'Import graph',
   defaultParams: { mergeLines: false },
   // Rendered as a checkbox by ModePicker's generic paramToggles handling

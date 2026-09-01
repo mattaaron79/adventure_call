@@ -800,6 +800,10 @@ describe('importGraphMode.select with a Local View', () => {
     // A `/out` refetch or a filter change can drop the focused file, exactly
     // as it can drop fsTree.scopeRoot's directory: draw everything, not
     // nothing.  A directory path lands here too -- this mode scopes to files.
+    // Since tic-e738 this is a stated contract rather than this mode's own
+    // politeness (see UiState.focusPath): cross-mode navigation can seed a
+    // focus written in another mode's vocabulary, so degrading to unfocused
+    // is required of every mode, not just kind of it.
     for (const stale of [path('gone'), 'src/pkg', 'nonsense']) {
       expect(localSpec(stale).root.children).toHaveLength(7)
     }

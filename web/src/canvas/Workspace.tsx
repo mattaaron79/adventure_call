@@ -43,7 +43,7 @@ import { launchVscodeLink } from '../ui/Inspector'
 import { BreadcrumbToolbar } from './BreadcrumbToolbar'
 import { Grid } from './Grid'
 import { CanvasIconButton } from './IconButton'
-import { iconSlots, shouldShowGoIn } from './iconButtonLogic'
+import { actionAffordance, iconSlots } from './iconButtonLogic'
 import { lodOf } from './lod'
 import {
   ANTS_DASH,
@@ -524,6 +524,13 @@ export function Workspace({
     useWorkspace.getState().setFocusPath(target)
   }, [])
 
+  /** Switch mode and open it at a focus (tic-e738).  One store action rather
+   *  than setMode + setFocusPath, so the intermediate "new mode, old focus"
+   *  state never renders. */
+  const onOpenIn = useCallback((modeId: string, target: string) => {
+    useWorkspace.getState().openInMode(modeId, target)
+  }, [])
+
   /** Fly the camera to a file/dir path (tic-bee0): the button just emits the
    *  goto event; the onGoto subscription above owns the resolution and the
    *  flight, so the import-row goto reuses the existing camera logic. */
@@ -961,6 +968,7 @@ export function Workspace({
                   register={register}
                   onGoIn={onGoIn}
                   onGoto={onGotoButton}
+                  onOpenIn={onOpenIn}
                 />
               )
             })}
@@ -1214,6 +1222,7 @@ interface ChipProps {
   register: (id: string, node: Konva.Group | null) => void
   onGoIn: (target: string) => void
   onGoto: (target: string) => void
+  onOpenIn: (modeId: string, target: string) => void
 }
 
 const NodeChip = memo(function NodeChip({
@@ -1233,6 +1242,7 @@ const NodeChip = memo(function NodeChip({
   register,
   onGoIn,
   onGoto,
+  onOpenIn,
 }: ChipProps) {
   // Border precedence (tic-ece1): selection is the loudest statement, then the
   // pointer, then "you are at the end of a lit line", and only then the mode's
@@ -1255,12 +1265,14 @@ const NodeChip = memo(function NodeChip({
   // Where this node's icon buttons sit and how much of its right edge they
   // cost the label (tic-4d7c / tic-468e / tic-ea7b); the rule itself is pure
   // and lives in ./iconButtonLogic.
-  const hasGoto = node.gotoTo !== undefined
   const hasSource = sourceLinks.has(node.id)
-  // The action slot is the focus affordance's or the goto button's: rows carry
-  // a goto target, chips carry a focus target, and nothing carries both.
-  const hasFocus = shouldShowGoIn(node.focusTo, focusPath)
-  const slots = iconSlots(node.width, node.height, hasSource, hasGoto || hasFocus)
+  // One action slot, three candidates; ./iconButtonLogic owns the precedence
+  // so it is pure and tested rather than implied by JSX order (tic-e738).
+  const action = actionAffordance(node, focusPath)
+  const hasFocus = action === 'focus'
+  const hasGoto = action === 'goto'
+  const hasOpenIn = action === 'open-in'
+  const slots = iconSlots(node.width, node.height, hasSource, action !== null)
   const sourceLink = sourceLinks.get(node.id)
   // File workspace items (tic-2996): hovering the file name shows the global
   // file location in a positioned tooltip.  A file item's element id is its
@@ -1393,6 +1405,23 @@ const NodeChip = memo(function NodeChip({
           onClick={() => onGoIn(node.focusTo!)}
         />
       )}
+      {/* Cross-mode navigation (tic-e738): open this element in another mode,
+          focused on it.  The mode names the destination, the glyph and the
+          wording; the canvas owns the button and knows nothing about what any
+          particular mode's focus means. */}
+      {showGoIn && hasOpenIn && (
+        <CanvasIconButton
+          x={slots.action}
+          y={slots.y}
+          paths={
+            (node.openIn!.icon !== undefined ? FOCUS_ICON_PATHS[node.openIn!.icon] : undefined) ??
+            GO_IN_ICON_PATHS
+          }
+          tooltip={node.openIn!.label ?? `Open in ${node.openIn!.modeId}`}
+          onTooltip={onTooltip}
+          onClick={() => onOpenIn(node.openIn!.modeId, node.openIn!.target)}
+        />
+      )}
       {/* Goto-code affordance (tic-468e / tic-2996): opens the item's source
           line in VS Code, the same deep link the inspector shows.  It owns the
           outer slot on every item that has one (tic-ea7b), with the action
@@ -1409,7 +1438,7 @@ const NodeChip = memo(function NodeChip({
       )}
       {/* Camera-goto affordance on import rows (tic-4d7c): flies the camera to
           the imported file via the existing goto event. */}
-      {showGoIn && node.gotoTo !== undefined && (
+      {showGoIn && hasGoto && (
         <CanvasIconButton
           x={slots.action}
           y={slots.y}

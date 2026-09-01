@@ -59,6 +59,25 @@ export interface WorkspaceState {
    * were made in.
    */
   setFocusPath: (path: string) => void
+  /**
+   * Switch to another mode AND open it at a focus, in one transition
+   * (tic-e738).
+   *
+   * `setMode` deliberately preserves whatever the target mode last had, and
+   * `setFocusPath` only ever touches the ACTIVE mode, so before this there
+   * was no way to say "go look at this over there".  Doing it as two calls
+   * would not be equivalent: the intermediate state -- new mode, old focus --
+   * would render, so the canvas would lay out and frame a scene nobody asked
+   * for before the focus landed.  One `set` means that state never exists.
+   *
+   * `target` is in the DESTINATION mode's focus vocabulary (see
+   * modes/types.ts `UiState.focusPath`); a destination that cannot resolve it
+   * opens unfocused rather than empty, which is that file's stated contract
+   * rather than anything this action enforces.  Switching to the mode already
+   * active is not a no-op -- it re-focuses it, exactly as `setFocusPath`
+   * would.
+   */
+  openInMode: (modeId: string, target: string) => void
   setViewport: (viewport: Viewport) => void
   zoomAtPointer: (pointer: Point, factor: number) => void
   panBy: (dx: number, dy: number) => void
@@ -91,6 +110,36 @@ export interface WorkspaceState {
 }
 
 const EMPTY_SELECTION: ReadonlySet<string> = new Set()
+
+/**
+ * One mode's state, focused on `path`; null when nothing would change.
+ *
+ * Shared by `setFocusPath` (focus the active mode) and `openInMode` (focus a
+ * mode while switching to it, tic-e738) so the two can never disagree about
+ * what entering a scope means -- which they would, since only one of them is
+ * exercised by everyday clicking.
+ */
+function enterFocus(mode: ModeState, path: string): ModeState | null {
+  // Entering a scope auto-expands the focused folder (tic-b1ab): a folder the
+  // user had collapsed would otherwise open to an empty scope.  The `dir:` key
+  // is the fs-tree mode's directory expand-key convention; the add is
+  // additive, so nothing the user already has open is collapsed.  The root
+  // (empty path) has no folder to expand.
+  const expanded =
+    path !== '' && mode.expanded[`dir:${path}`] !== true
+      ? { ...mode.expanded, [`dir:${path}`]: true }
+      : mode.expanded
+  if (mode.focusPath === path) {
+    // Re-entering the current scope (e.g. its own breadcrumb) re-opens a
+    // folder the user had collapsed from inside it.
+    if (expanded === mode.expanded) return null
+    return { ...mode, expanded }
+  }
+  // Entering a scope must not inherit drag overrides from the wider view: a
+  // chip dragged around the whole graph has no meaningful position inside the
+  // focused subtree.
+  return { ...mode, focusPath: path, overrides: {}, expanded }
+}
 
 export const useWorkspace = create<WorkspaceState>((set, get) => {
   const initial = readModeState(DEFAULT_MODE_ID)
@@ -160,27 +209,31 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         return viewport === mode.viewport ? null : { ...mode, viewport }
       }),
 
-    setFocusPath: (path) =>
-      patchMode((mode) => {
-        // Entering a scope auto-expands the focused folder (tic-b1ab): a
-        // folder the user had collapsed would otherwise open to an empty
-        // scope.  The `dir:` key is the fs-tree mode's directory expand-key
-        // convention; the add is additive, so nothing the user already has
-        // open is collapsed.  The root (empty path) has no folder to expand.
-        const expanded =
-          path !== '' && mode.expanded[`dir:${path}`] !== true
-            ? { ...mode.expanded, [`dir:${path}`]: true }
-            : mode.expanded
-        if (mode.focusPath === path) {
-          // Re-entering the current scope (e.g. its own breadcrumb) re-opens
-          // a folder the user had collapsed from inside it.
-          if (expanded === mode.expanded) return null
-          return { ...mode, expanded }
+    setFocusPath: (path) => patchMode((mode) => enterFocus(mode, path)),
+
+    openInMode: (modeId, target) =>
+      set((state) => {
+        const known = state.modes[modeId]
+        const saved = known ? null : readModeState(modeId)
+        const current = known ?? saved ?? emptyModeState()
+        const focused = enterFocus(current, target) ?? current
+        const modes = { ...state.modes, [modeId]: focused }
+
+        if (state.modeId === modeId) {
+          // Same mode: this is a re-focus, and the selection/hover reset a
+          // mode SWITCH performs would be gratuitous.
+          return focused === current ? { modes: state.modes } : { modes }
         }
-        // Entering a scope must not inherit drag overrides from the wider
-        // view: a chip dragged around the whole graph has no meaningful
-        // position inside the focused subtree.
-        return { ...mode, focusPath: path, overrides: {}, expanded }
+        return {
+          modeId,
+          modes,
+          restored: known ? true : saved !== null,
+          // Cleared for the same reason `setMode` clears them: a selection
+          // and a hover are ids in the mode being left, and mean nothing in
+          // the one being entered.
+          selection: EMPTY_SELECTION,
+          hovered: null,
+        }
       }),
 
     moveNodes: (positions) =>

@@ -26,6 +26,7 @@ import type { FsDir, FsFile, FsNode, Workspace } from '../data/derive'
 import type { SymbolKind } from '../data/types'
 import { KIND_COLOR, THEME } from '../canvas/theme'
 import { CONTAINER, fileRows, layoutContainer, rowId, type Row } from './fileDetail'
+import { FS_TREE_MODE_ID, IMPORT_GRAPH_MODE_ID } from './ids'
 import {
   elbow,
   elbowConnectors,
@@ -255,6 +256,17 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
       sublabel: `${symbols} symbol${symbols === 1 ? '' : 's'}`,
       symbolId: null,
       expandable: true,
+      // Cross-mode navigation (tic-e738): jump from a file on disk to its
+      // import neighbourhood.  The target is a FILE PATH because that is the
+      // import graph's focus vocabulary (tic-d7d7's Local View), not the
+      // directory this mode's own focusTo speaks -- a mode declaring an
+      // openIn speaks the destination's language, not its own.
+      openIn: {
+        modeId: IMPORT_GRAPH_MODE_ID,
+        target: file.path,
+        icon: 'local-view',
+        label: `Local View of ${file.name} in the import graph`,
+      },
       children: [],
     }
     if (fileOpen(file)) {
@@ -562,7 +574,7 @@ function style(spec: SceneSpec, _params: FsTreeParams): StyleMap {
  * only for the app's goto/HUD wiring and the mode's own tests.
  */
 export const fsTreeMode: VizMode<FsTreeParams> = {
-  id: 'fs-tree',
+  id: FS_TREE_MODE_ID,
   label: 'Files & symbols',
   defaultParams: { showImports: true, orientation: 'lr', wrap: 0 },
   paramToggles: [{ key: 'showImports', label: 'Import lines' }],

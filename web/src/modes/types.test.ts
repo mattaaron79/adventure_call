@@ -34,6 +34,20 @@ const NODES: SpecNode[] = [
     focusIcon: 'local-view',
     focusLabel: 'Local View',
   },
+  {
+    id: 'elsewhere',
+    role: 'file',
+    label: 'elsewhere',
+    symbolId: null,
+    expandable: false,
+    children: [],
+    openIn: {
+      modeId: 'import-graph',
+      target: 'src/b.py',
+      icon: 'local-view',
+      label: 'Local View of b.py',
+    },
+  },
 ]
 
 const stubMode: VizMode<Record<string, never>> = {
@@ -80,5 +94,34 @@ describe('renderMode carries the focus affordance onto the scene', () => {
     expect(plain.focusTo).toBe('src')
     expect(plain.focusIcon).toBeUndefined()
     expect(plain.focusLabel).toBeUndefined()
+  })
+})
+
+
+describe('renderMode carries a cross-mode target onto the scene (tic-e738)', () => {
+  const scene = renderMode(stubMode, NO_DATA, {}, EMPTY_UI).scene
+  const byId = new Map(scene.nodes.map((n) => [n.id, n]))
+
+  it('copies the whole target through assembly', () => {
+    // A field assembly forgets is a mode feature that silently does nothing,
+    // which is exactly how a cross-mode jump would fail: the button simply
+    // never appears, with no error anywhere.
+    expect(byId.get('elsewhere')?.openIn).toEqual({
+      modeId: 'import-graph',
+      target: 'src/b.py',
+      icon: 'local-view',
+      label: 'Local View of b.py',
+    })
+  })
+
+  it('leaves it absent on an element that declares none', () => {
+    expect(byId.get('plain')?.openIn).toBeUndefined()
+  })
+
+  it('keeps it independent of the focus affordance', () => {
+    // The two are different gestures on purpose (tic-e738): an element may
+    // carry either, and neither implies the other.
+    expect(byId.get('fancy')?.openIn).toBeUndefined()
+    expect(byId.get('elsewhere')?.focusTo).toBeUndefined()
   })
 })

@@ -38,6 +38,36 @@ export function shouldShowGoIn(focusTo: string | undefined, focusPath: string): 
   return focusTo !== undefined && focusTo !== focusPath
 }
 
+/** Which affordance owns a node's single action slot, if any. */
+export type ActionAffordance = 'focus' | 'goto' | 'open-in'
+
+/**
+ * Which of the competing affordances a node's one action slot shows
+ * (tic-e738).
+ *
+ * Three things can want it: a focus target on a directory chip (tic-e7d2), a
+ * camera goto on an import row (tic-4d7c), and a cross-mode open on a file
+ * chip (tic-e738).  No element carries more than one today, which is why one
+ * slot is enough -- but "no element does" is not "no element ever will", so
+ * the precedence is written down and tested rather than left to whichever
+ * JSX branch happens to come first.  A node that genuinely needs two wants a
+ * third slot in {@link iconSlots}, not a fight over this one.
+ *
+ * Focus wins because it is the only one that navigates WITHIN the current
+ * view, so losing it would strand the user; goto next, being a camera move
+ * rather than a state change; the cross-mode jump last, since it is always
+ * reachable from the inspector as well.
+ */
+export function actionAffordance(
+  node: { focusTo?: string; gotoTo?: string; openIn?: unknown },
+  focusPath: string,
+): ActionAffordance | null {
+  if (shouldShowGoIn(node.focusTo, focusPath)) return 'focus'
+  if (node.gotoTo !== undefined) return 'goto'
+  if (node.openIn !== undefined) return 'open-in'
+  return null
+}
+
 /** Hit-target size of an on-canvas icon button, and the pitch between two of
  *  them: 18 units of button plus 6 of gap. */
 const ICON_SIZE = 18
