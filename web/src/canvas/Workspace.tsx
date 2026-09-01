@@ -42,6 +42,7 @@ import {
   ANTS_DASH,
   antsDashOffset,
   cullScene,
+  endpointNodesOf,
   highlightedEdgesLast,
   importEdgesIncidentTo,
   isAntsEdge,
@@ -65,9 +66,11 @@ const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-ser
  *  which is what expands/contracts a workspace object (tic-3430). */
 const DBLCLICK_MS = 350
 
-/** Nothing selected and nothing hovered: the highlight set stays this stable
- *  reference so the idle scene (and every pan/zoom frame) re-renders for free
- *  (tic-5393). */
+/** Nothing selected and nothing hovered: the lit-edge set and the connected-
+ *  node set both stay this one stable reference so the idle scene (and every
+ *  pan/zoom frame) re-renders for free (tic-5393, tic-ece1).  Two empty sets
+ *  would render identically but break the memo identity that makes the idle
+ *  case cost nothing, so both memos return this. */
 const NO_HIGHLIGHT: ReadonlySet<string> = new Set()
 
 interface NodeHandlers {
@@ -221,6 +224,17 @@ export function Workspace({
     if (ids.size === 0) return NO_HIGHLIGHT
     return importEdgesIncidentTo(scene, ids)
   }, [scene, selection, hovered])
+
+  // The nodes those lit lines land on borrow the hover border (tic-ece1), so a
+  // connection reads as a whole -- line plus the things at both ends -- rather
+  // than as a line that trails off into anonymous grey chips.  Derived from
+  // `highlightIds` rather than from the hover/selection directly, so it follows
+  // the same edge anchors and needs no second notion of "connected"; keyed on
+  // the same two stable inputs, so a pan or zoom still pays nothing.
+  const connectedIds = useMemo(() => {
+    if (highlightIds.size === 0) return NO_HIGHLIGHT
+    return endpointNodesOf(scene, highlightIds)
+  }, [scene, highlightIds])
 
   // Pointer handlers run outside React's render, so they reach the live scene
   // and overrides through refs rather than through a stale closure.
@@ -734,6 +748,7 @@ export function Workspace({
                   y={at ? at.y : node.y}
                   selected={selection.has(node.id)}
                   hovered={hovered === node.id}
+                  connected={connectedIds.has(node.id)}
                   showLabel={lod < 2}
                   showSublabel={lod === 0}
                   showGoIn={lod < 2}
@@ -945,6 +960,11 @@ interface ChipProps {
   y: number
   selected: boolean
   hovered: boolean
+  /** At one end of a currently lit import line (tic-ece1).  A plain scalar,
+   *  not a set or an object: NodeChip is memoised, so a boolean the parent
+   *  already computed keeps the idle re-render free, while handing the chip a
+   *  fresh object per frame would defeat the memo entirely. */
+  connected: boolean
   /** Zoom LOD (tic-fa56): text thins out as the camera pulls back. */
   showLabel: boolean
   showSublabel: boolean
@@ -971,6 +991,7 @@ const NodeChip = memo(function NodeChip({
   y,
   selected,
   hovered,
+  connected,
   showLabel,
   showSublabel,
   showGoIn,
@@ -982,7 +1003,23 @@ const NodeChip = memo(function NodeChip({
   onGoIn,
   onGoto,
 }: ChipProps) {
-  const stroke = selected ? THEME.selected : hovered ? THEME.hovered : node.stroke
+  // Border precedence (tic-ece1): selection is the loudest statement, then the
+  // pointer, then "you are at the end of a lit line", and only then the mode's
+  // own stroke -- which is where a cyclic file's pink (tic-56b2) lives, so it
+  // shows whenever the node is neither hovered nor connected and comes back
+  // the moment the hover clears.  `connected` paints the same grey as
+  // `hovered` on purpose: a borrowed border should read as the hover reaching
+  // across the line, not as a third state.  The branches stay separate anyway
+  // so the precedence is legible if the two colours ever diverge.  The hovered
+  // node is its own neighbour (it anchors the very edges it lit), but `hovered`
+  // outranks `connected` here, so it never changes appearance because of that.
+  const stroke = selected
+    ? THEME.selected
+    : hovered
+      ? THEME.hovered
+      : connected
+        ? THEME.hovered
+        : node.stroke
   const labelY = node.sublabel === undefined ? node.height / 2 - 7 : 8
   // Icon buttons reserve the right edge so they never cover the label
   // (tic-4d7c / tic-468e): a source link and a goto button together need room

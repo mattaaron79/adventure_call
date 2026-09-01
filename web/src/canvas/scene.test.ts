@@ -4,6 +4,7 @@ import {
   ANTS_DASH,
   ANTS_SPEED_PX_PER_SEC,
   antsDashOffset,
+  endpointNodesOf,
   highlightedEdgesLast,
   importEdgesIncidentTo,
   isAntsEdge,
@@ -300,6 +301,74 @@ describe('importEdgesIncidentTo', () => {
     expect(importEdgesIncidentTo({ groups: [], nodes: [], edges: [] }, new Set(['a']))).toEqual(
       new Set(),
     )
+  })
+})
+
+// -- connected endpoints (tic-ece1) -------------------------------------------
+
+/** An import line anchored to a row inside an expanded container inside a
+ *  directory chip, so the ancestor walk has two levels to climb; plus an
+ *  import edge that never carried endpoints. */
+const NESTED: Scene = {
+  groups: [],
+  nodes: [
+    node('dir', 0, 0),
+    { ...node('file', 12, 40), parent: 'dir' },
+    { ...node('row', 24, 80), parent: 'file' },
+    node('far', 400, 0),
+  ],
+  edges: [
+    { id: 'imp:row->far', points: [24, 80, 400, 0], stroke: '#45475a', kind: 'import', from: 'row', to: 'far' },
+    { id: 'imp:loose', points: [0, 0, 10, 10], stroke: '#45475a', kind: 'import' },
+  ],
+}
+
+/** A malformed scene whose parent chain loops, to pin the walk's termination. */
+const CYCLIC_PARENTS: Scene = {
+  groups: [],
+  nodes: [
+    { ...node('p', 0, 0), parent: 'q' },
+    { ...node('q', 200, 0), parent: 'p' },
+  ],
+  edges: [
+    { id: 'imp:p->q', points: [0, 0, 200, 0], stroke: '#45475a', kind: 'import', from: 'p', to: 'q' },
+  ],
+}
+
+describe('endpointNodesOf', () => {
+  it('returns the nodes at both ends of a lit edge', () => {
+    expect(endpointNodesOf(HIGHLIGHT, new Set(['imp:a->b']))).toEqual(new Set(['a', 'b']))
+    expect(endpointNodesOf(HIGHLIGHT, new Set(['imp:b->row']))).toEqual(new Set(['b', 'row']))
+  })
+
+  it('unions the endpoints across every named edge', () => {
+    expect(endpointNodesOf(HIGHLIGHT, new Set(['imp:a->b', 'imp:b->row']))).toEqual(
+      new Set(['a', 'b', 'row']),
+    )
+  })
+
+  it('includes the container ancestors of each endpoint', () => {
+    // The line lands on 'row', but what a viewer sees at that end is the file
+    // container and the directory chip it sits in, so both light up too.
+    expect(endpointNodesOf(NESTED, new Set(['imp:row->far']))).toEqual(
+      new Set(['row', 'file', 'dir', 'far']),
+    )
+  })
+
+  it('ignores edges with no endpoints and ids naming no edge', () => {
+    expect(endpointNodesOf(NESTED, new Set(['imp:loose']))).toEqual(new Set())
+    expect(endpointNodesOf(NESTED, new Set(['nope']))).toEqual(new Set())
+  })
+
+  it('is empty for an empty edge set or a scene with no edges', () => {
+    expect(endpointNodesOf(NESTED, new Set())).toEqual(new Set())
+    expect(endpointNodesOf({ groups: [], nodes: [], edges: [] }, new Set(['imp:a->b']))).toEqual(
+      new Set(),
+    )
+  })
+
+  it('terminates on a looping parent chain', () => {
+    expect(endpointNodesOf(CYCLIC_PARENTS, new Set(['imp:p->q']))).toEqual(new Set(['p', 'q']))
   })
 })
 
