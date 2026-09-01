@@ -179,11 +179,14 @@ export function App() {
   }, [selection, workspace, layout])
 
   // The first thing that actually wants import detail triggers the registry:
-  // an expanded fs-tree file container, or a selection feeding the inspector.
+  // any expanded file container, or a selection feeding the inspector.
   // loadRegistry is memoised, so many triggers still mean one request.
+  // Not gated on the mode any more (tic-ea9d): the import-graph containers
+  // show the same external-import rows, and gating on fs-tree left them
+  // permanently empty there.
   const wantsRegistry = useMemo(
-    () => selection.size > 0 || (modeId === 'fs-tree' && Object.values(expanded).some(Boolean)),
-    [selection, modeId, expanded],
+    () => selection.size > 0 || Object.values(expanded).some(Boolean),
+    [selection, expanded],
   )
   useEffect(() => {
     if (!wantsRegistry) return

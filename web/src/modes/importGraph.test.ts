@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { deriveWorkspace } from '../data/derive'
 import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind } from '../data/types'
-import { cacheKeyOf, flattenJunctions, importGraphMode, toElkGraphInput } from './importGraph'
+import {
+  cacheKeyOf,
+  finalisePositioned,
+  flattenJunctions,
+  importGraphMode,
+  toElkGraphInput,
+} from './importGraph'
 import type { SceneSpec } from './types'
 
 function node(id: string, kind: SymbolKind, file_path: string, module: string): GraphNode {
@@ -91,12 +97,14 @@ describe('importGraphMode.select', () => {
     expanded: {},
   })
 
-  it('emits one file-role node per file, none expandable', () => {
+  it('emits one file-role node per file, expandable but collapsed', () => {
     const ids = spec.root.children.map((n) => n.id).sort()
     expect(ids).toEqual(['src/pkg/a.py', 'src/pkg/b.py', 'src/pkg/c.py'])
     for (const n of spec.root.children) {
       expect(n.role).toBe('file')
-      expect(n.expandable).toBe(false)
+      // Every file offers the double-click expansion (tic-ea9d), but nothing
+      // is open until the expand state says so.
+      expect(n.expandable).toBe(true)
       expect(n.children).toEqual([])
     }
   })
@@ -450,5 +458,180 @@ describe('importGraphMode cycle highlighting', () => {
     // So cross-mode machinery keyed on kind (selection highlighting, marching
     // ants) still treats every import edge, cyclic or not, as an import.
     for (const edge of spec.edges) expect(edge.kind).toBe('import')
+  })
+})
+
+// -- expansion (tic-ea9d) -----------------------------------------------------
+
+/** `src/pkg/a.py` open: it is imported by both other files, so it exercises
+ *  the "Imported By" section and the target-side anchoring at once. */
+const A_OPEN = { expanded: { 'src/pkg/a.py': true } }
+/** `src/pkg/b.py` open: it imports a, so it exercises the source side. */
+const B_OPEN = { expanded: { 'src/pkg/b.py': true } }
+
+describe('importGraphMode.select with an expanded file', () => {
+  const spec = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, A_OPEN)
+  const container = spec.root.children.find((n) => n.id === 'src/pkg/a.py')!
+  const sections = container.children.filter((n) => n.role === 'section').map((n) => n.label)
+
+  it('expands only the file the expand state names', () => {
+    expect(container.children.length).toBeGreaterThan(0)
+    for (const other of spec.root.children) {
+      if (other.id !== 'src/pkg/a.py') expect(other.children).toEqual([])
+    }
+  })
+
+  it('puts Imported By above the other sections', () => {
+    expect(sections[0]).toBe('Imported By')
+    // a.py imports nothing, so Imports is absent here; Classes still follows.
+    expect(sections).toContain('Classes')
+  })
+
+  it('emits one Imported By row per importing file, each with a goto target', () => {
+    const rows = container.children.filter((n) => n.id.includes(':impby:'))
+    expect(rows.map((n) => n.gotoTo).sort()).toEqual(['src/pkg/b.py', 'src/pkg/c.py'])
+  })
+
+  it('carries the symbol id on member rows so source links and the inspector resolve', () => {
+    const member = container.children.find((n) => n.label === 'Thing')
+    expect(member?.symbolId).toBe('pkg.a.Thing')
+  })
+
+  it('anchors the imported end of a line onto that file Imported By row', () => {
+    const edge = spec.edges.find((e) => e.id === 'imp:src/pkg/b.py->src/pkg/a.py')!
+    expect(edge.to).toBe('row:src/pkg/a.py:impby:src/pkg/b.py')
+    // The importer is still collapsed, so its end stays on the chip.
+    expect(edge.from).toBe('src/pkg/b.py')
+  })
+
+  it('keeps the file-level ends on the edge payload for elk to route with', () => {
+    const elk = toElkGraphInput(spec, importGraphMode.measure(spec, A_OPEN))
+    const elkEdge = elk.edges.find((e) => e.id === 'imp:src/pkg/b.py->src/pkg/a.py')!
+    expect(elkEdge.source).toBe('src/pkg/b.py')
+    expect(elkEdge.target).toBe('src/pkg/a.py')
+    // Every elk endpoint must name a declared elk node, never a row.
+    const declared = new Set(elk.nodes.map((n) => n.id))
+    for (const e of elk.edges) {
+      expect(declared.has(e.source)).toBe(true)
+      expect(declared.has(e.target)).toBe(true)
+    }
+  })
+
+  it('anchors the importing end onto that file Imports row', () => {
+    const bSpec = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, B_OPEN)
+    const edge = bSpec.edges.find((e) => e.id === 'imp:src/pkg/b.py->src/pkg/a.py')!
+    expect(edge.from).toBe('row:src/pkg/b.py:imp:pkg.a.Thing')
+    expect(edge.to).toBe('src/pkg/a.py')
+  })
+
+  it('leaves both ends on the files when the lines are merged', () => {
+    const merged = importGraphMode.select(WORKSPACE, { mergeLines: true }, A_OPEN)
+    const edge = merged.edges.find((e) => e.id === 'imp:src/pkg/b.py->src/pkg/a.py')!
+    expect(edge.from).toBe('src/pkg/b.py')
+    expect(edge.to).toBe('src/pkg/a.py')
+    // The container itself still expands; only the anchoring opts out.
+    const box = merged.root.children.find((n) => n.id === 'src/pkg/a.py')!
+    expect(box.children.length).toBeGreaterThan(0)
+  })
+
+  it('collapses the container back to a chip at the furthest zoom-out', () => {
+    const far = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, {
+      ...A_OPEN,
+      lod: 3,
+    })
+    expect(far.root.children.find((n) => n.id === 'src/pkg/a.py')!.children).toEqual([])
+  })
+})
+
+describe('importGraphMode.measure with an expanded file', () => {
+  const spec = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, A_OPEN)
+  const sizes = importGraphMode.measure(spec, A_OPEN)
+
+  it('sizes the container to its rows, bigger than a collapsed chip', () => {
+    const open = sizes.get('src/pkg/a.py')!
+    const chip = sizes.get('src/pkg/b.py')!
+    expect(open.height).toBeGreaterThan(chip.height)
+    expect(open.width).toBeGreaterThan(chip.width)
+  })
+
+  it('changes the cache key, so the expansion re-runs elk instead of reusing the layout', () => {
+    const collapsed = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, {
+      expanded: {},
+    })
+    const collapsedKey = cacheKeyOf(
+      collapsed,
+      importGraphMode.measure(collapsed, { expanded: {} }),
+      importGraphMode.defaultParams,
+    )
+    expect(cacheKeyOf(spec, sizes, importGraphMode.defaultParams)).not.toBe(collapsedKey)
+  })
+})
+
+describe('finalisePositioned', () => {
+  const spec = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, A_OPEN)
+  const sizes = importGraphMode.measure(spec, A_OPEN)
+  /** A stand-in elk result: the container at a known origin, the two other
+   *  files elsewhere, and one routed line per edge between them. */
+  const elkResult = {
+    rects: new Map([
+      ['src/pkg/a.py', { x: 100, y: 400, ...sizes.get('src/pkg/a.py')! }],
+      ['src/pkg/b.py', { x: 0, y: 0, ...sizes.get('src/pkg/b.py')! }],
+      ['src/pkg/c.py', { x: 300, y: 0, ...sizes.get('src/pkg/c.py')! }],
+    ]),
+    edgePoints: new Map([
+      ['imp:src/pkg/b.py->src/pkg/a.py', [10, 20, 50, 200, 90, 380]],
+      ['imp:src/pkg/c.py->src/pkg/a.py', [310, 20, 350, 380]],
+    ]),
+    junctionPoints: new Map<string, { x: number; y: number }[]>(),
+  }
+  const positioned = finalisePositioned(spec, elkResult)
+
+  it('places every row inside its container rect', () => {
+    const box = positioned.rects.get('src/pkg/a.py')!
+    const rowRects = [...positioned.rects.entries()].filter(([id]) => id.startsWith('row:'))
+    expect(rowRects.length).toBeGreaterThan(0)
+    for (const [, rect] of rowRects) {
+      expect(rect.x).toBeGreaterThanOrEqual(box.x)
+      expect(rect.y).toBeGreaterThanOrEqual(box.y)
+      expect(rect.x + rect.width).toBeLessThanOrEqual(box.x + box.width)
+      expect(rect.y + rect.height).toBeLessThanOrEqual(box.y + box.height)
+    }
+  })
+
+  it('re-points the anchored end onto the row centre, keeping elk bends', () => {
+    const points = [...positioned.edgePoints.get('imp:src/pkg/b.py->src/pkg/a.py')!]
+    const row = positioned.rects.get('row:src/pkg/a.py:impby:src/pkg/b.py')!
+    // The unanchored start and the middle bend are exactly as elk routed them.
+    expect(points.slice(0, 4)).toEqual([10, 20, 50, 200])
+    expect(points.slice(-2)).toEqual([row.x + row.width / 2, row.y + row.height / 2])
+  })
+
+  it('leaves an edge with no anchored end exactly as elk routed it', () => {
+    const collapsed = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, {
+      expanded: {},
+    })
+    const asIs = finalisePositioned(collapsed, elkResult)
+    const points = [...asIs.edgePoints.get('imp:src/pkg/c.py->src/pkg/a.py')!]
+    expect(points).toEqual([310, 20, 350, 380])
+  })
+})
+
+describe('importGraphMode.style with an expanded file', () => {
+  const spec = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, A_OPEN)
+  const styles = importGraphMode.style(spec, importGraphMode.defaultParams)
+  const container = spec.root.children.find((n) => n.id === 'src/pkg/a.py')!
+
+  it('styles every row and pins it against dragging', () => {
+    for (const row of container.children) {
+      const style = styles.nodes.get(row.id)
+      expect(style).toBeDefined()
+      expect(style!.draggable).toBe(false)
+    }
+  })
+
+  it('gives the expanded container the container fill, not the chip fill', () => {
+    const open = styles.nodes.get('src/pkg/a.py')!
+    const chip = styles.nodes.get('src/pkg/b.py')!
+    expect(open.fill).not.toBe(chip.fill)
   })
 })

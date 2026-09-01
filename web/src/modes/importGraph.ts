@@ -21,18 +21,27 @@
  * to draw yet; its resolution notifies the app to re-render, and the second
  * `layout()` call -- for the same graph, so the same cache key -- returns
  * the real result synchronously.
+ *
+ * A file expands into its detail container on a double-click (tic-ea9d),
+ * showing the same rows an fs-tree container does -- with "Imported By"
+ * added above Imports, because in a mode about import topology the incoming
+ * edges are half the story.  The row vocabulary itself lives in
+ * ./fileDetail.ts, shared with fs-tree rather than reimplemented here.
  */
-import type { Workspace } from '../data/derive'
+import type { FsFile, Workspace } from '../data/derive'
 import { walkFiles } from '../data/derive'
+import type { SymbolKind } from '../data/types'
 import { KIND_COLOR, THEME } from '../canvas/theme'
-import type { Point, Size } from '../canvas/viewport'
+import type { Point, Rect, Size } from '../canvas/viewport'
 import { layoutGraph } from '../layout/elkGraph'
 import type {
   ElkGraphEdgeInput,
   ElkGraphInput,
   ElkGraphNodeInput,
   ElkGraphPoint,
+  ElkGraphResult,
 } from '../layout/elkTypes'
+import { CONTAINER, fileRows, layoutContainer, rowId, type Row } from './fileDetail'
 import { notifyLayoutReady } from './asyncLayout'
 import type {
   EdgeStyle,
@@ -76,6 +85,26 @@ function isInCycle(carrier: { data?: unknown }): boolean {
   return (carrier.data as CycleFlag | undefined)?.inCycle ?? false
 }
 
+/**
+ * Where an import edge really runs from and to, in FILES (tic-ea9d).
+ *
+ * `SpecEdge.from`/`to` may name a row inside an expanded container -- that is
+ * what makes hovering one import light exactly the line it belongs to -- but
+ * elk lays out files and knows nothing about rows, so handing it a row id
+ * would fail with an unresolved shape reference (the same class of crash a
+ * filtered-out file caused in tic-56b2).  The file-level ends therefore ride
+ * along here, on the mode-private payload the framework never inspects:
+ * `toElkGraphInput` routes with these, and `finalisePositioned` re-points the
+ * polyline's ends onto the rows afterwards.
+ */
+interface ImportEdgeData extends CycleFlag {
+  source: string
+  target: string
+}
+
+/** An expanded file's rows, read back off the spec nodes `select` built. */
+const rowsOf = (node: SpecNode): Row[] => node.children.map((child) => child.data as Row)
+
 const FILE_CHIP_HEIGHT = 40
 const FILE_CHIP_MIN_WIDTH = 120
 const FILE_CHIP_MAX_WIDTH = 260
@@ -85,9 +114,38 @@ const CHIP_PAD = 24
 
 const EMPTY_POSITIONED: Positioned = { rects: new Map(), edgePoints: new Map() }
 
+/** Section headers carry their text on the canvas, not a box (tic-ea9d). */
+const TRANSPARENT = 'rgba(0,0,0,0)'
+
 // -- select -------------------------------------------------------------------
 
-function select(data: Workspace, _params: ImportGraphParams, _ui: UiState): SceneSpec {
+/**
+ * The spec nodes of an expanded file's rows (tic-ea9d).
+ *
+ * The rows themselves come from the shared detail vocabulary in
+ * ./fileDetail.ts -- the same one fs-tree containers use, so the two modes
+ * cannot drift -- with "Imported By" turned on, which is the one section
+ * this mode wants and fs-tree does not.  Each row carries its own symbol id
+ * (so the inspector and the VS Code source-link button find it with no
+ * further wiring) and its goto target (so the canvas draws the fly-to
+ * button generically).
+ */
+function rowNodes(data: Workspace, file: FsFile): SpecNode[] {
+  return fileRows(data, file, { importedBy: true }).map((row) => ({
+    id: row.id,
+    role: row.kind === 'section' ? 'section' : 'row',
+    label: row.label,
+    symbolId: row.symbolId,
+    expandable: false,
+    children: [],
+    data: row,
+    gotoTo: row.gotoTo,
+  }))
+}
+
+function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneSpec {
+  const expanded = ui.expanded
+  const lod = ui.lod ?? 0
   const { componentOf, cyclic } = data.importCycles
   const fileInCycle = (path: string): boolean => {
     const id = componentOf.get(path)
@@ -101,22 +159,44 @@ function select(data: Workspace, _params: ImportGraphParams, _ui: UiState): Scen
     return a !== undefined && a === componentOf.get(target) && cyclic.has(a)
   }
 
+  // At the furthest zoom-out an expanded container collapses back to its
+  // chip, as fs-tree's does (tic-fa56): a container a few pixels tall can
+  // show no rows, so drawing them is cost with nothing to read.
+  const fileOpen = (file: FsFile): boolean => lod < 3 && (expanded[file.path] ?? false)
+
   const children: SpecNode[] = []
   const goto = new Map<string, string>()
   const visibleFiles = new Set<string>()
+  /** Files drawn as containers right now, so the edge anchoring below knows
+   *  which ends actually have rows to land on. */
+  const openFiles = new Set<string>()
   for (const file of walkFiles(data.tree)) {
     visibleFiles.add(file.path)
+    const open = fileOpen(file)
+    if (open) openFiles.add(file.path)
     children.push({
       id: file.path,
       role: 'file',
       label: file.name,
       symbolId: null,
-      expandable: false,
-      children: [],
+      // Double-click expands (tic-ea9d); the canvas reads this through
+      // ModeOutput.expandable and the store persists it per mode.
+      expandable: true,
+      children: open ? rowNodes(data, file) : [],
       data: { inCycle: fileInCycle(file.path) } satisfies CycleFlag,
     })
     goto.set(file.path, file.path)
   }
+
+  // Anchoring (tic-ea9d).  While both ends are collapsed an import runs chip
+  // to chip, exactly as it always has.  Once an end is expanded the line
+  // anchors to the row that end contributes -- the importer's Imports row,
+  // the imported file's "Imported By" row -- so hovering one row lights
+  // precisely its own line instead of every line the file owns.  Merged mode
+  // opts out entirely: the lines have been fused into shared trunks, a trunk
+  // cannot lead to one row, and the aggregate is the intended read there
+  // (decided with the user 2026-08-31).
+  const anchored = (path: string): boolean => !params.mergeLines && openFiles.has(path)
 
   // `Workspace.fileImports` can name a file the current exclude/file-query
   // scope has dropped from `data.tree` (deriveWorkspace keeps every module
@@ -126,16 +206,32 @@ function select(data: Workspace, _params: ImportGraphParams, _ui: UiState): Scen
   // unresolved shape reference. fs-tree's select() guards the same way.
   const edges: SpecEdge[] = data.fileImports
     .filter((edge) => visibleFiles.has(edge.source) && visibleFiles.has(edge.target))
-    .map((edge) => ({
-      id: `imp:${edge.source}->${edge.target}`,
-      from: edge.source,
-      to: edge.target,
-      kind: 'import',
-      // Imports flow from importer to imported (tic-5f52); the canvas marches
-      // ants on highlighted directional edges to show which way the line points.
-      directional: true,
-      data: { inCycle: edgeInCycle(edge.source, edge.target) } satisfies CycleFlag,
-    }))
+    .map((edge) => {
+      // The importer's Imports section has one row per imported symbol; any
+      // of them belongs to this edge, so the first is as good an anchor as
+      // the rest.  The imported file's "Imported By" section has exactly one
+      // row for this importer, which is the anchor at the other end.
+      const symbolId = edge.symbolIds[0]
+      return {
+        id: `imp:${edge.source}->${edge.target}`,
+        from:
+          anchored(edge.source) && symbolId !== undefined
+            ? rowId(edge.source, `imp:${symbolId}`)
+            : edge.source,
+        to: anchored(edge.target)
+          ? rowId(edge.target, `impby:${edge.source}`)
+          : edge.target,
+        kind: 'import',
+        // Imports flow from importer to imported (tic-5f52); the canvas marches
+        // ants on highlighted directional edges to show which way the line points.
+        directional: true,
+        data: {
+          inCycle: edgeInCycle(edge.source, edge.target),
+          source: edge.source,
+          target: edge.target,
+        } satisfies ImportEdgeData,
+      }
+    })
 
   const root: SpecNode = {
     id: 'root',
@@ -154,6 +250,17 @@ function select(data: Workspace, _params: ImportGraphParams, _ui: UiState): Scen
 function measure(spec: SceneSpec, _ui: UiState): SizeMap {
   const sizes = new Map<string, Size>()
   for (const node of spec.root.children) {
+    // An expanded file is as big as the rows it holds (tic-ea9d), measured by
+    // the same layoutContainer the layout phase places them with, so the two
+    // can never disagree about how tall the box is.
+    if (node.children.length > 0) {
+      const container = layoutContainer(rowsOf(node))
+      sizes.set(node.id, { width: container.width, height: container.height })
+      // Rows are placed inside their container by `layout`, never by elk, so
+      // their entries exist only for completeness.
+      for (const child of node.children) sizes.set(child.id, { width: 0, height: CONTAINER.row })
+      continue
+    }
     const width = Math.min(
       FILE_CHIP_MAX_WIDTH,
       Math.max(FILE_CHIP_MIN_WIDTH, Math.ceil(CHIP_PAD + node.label.length * CHAR_W)),
@@ -242,12 +349,80 @@ export function toElkGraphInput(spec: SceneSpec, sizes: SizeMap): ElkGraphInput 
     const size = sizes.get(node.id) ?? { width: FILE_CHIP_MIN_WIDTH, height: FILE_CHIP_HEIGHT }
     return { id: node.id, width: size.width, height: size.height }
   })
-  const edges: ElkGraphEdgeInput[] = spec.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.from,
-    target: edge.to,
-  }))
+  // Always the FILE ends, never the row an expanded end is anchored to
+  // (tic-ea9d): elk lays out the file nodes this function declares above, and
+  // a row id would name a shape it was never given.
+  const edges: ElkGraphEdgeInput[] = spec.edges.map((edge) => {
+    const ends = edge.data as ImportEdgeData | undefined
+    return {
+      id: edge.id,
+      source: ends?.source ?? edge.from,
+      target: ends?.target ?? edge.to,
+    }
+  })
   return { id: 'root', nodes, edges }
+}
+
+/**
+ * Turn elk's file-level result into this mode's full geometry (tic-ea9d):
+ * rows placed inside their containers, and every anchored import line
+ * re-pointed onto the row it belongs to.
+ *
+ * Both steps happen here, after the worker has answered, rather than inside
+ * elk, because elk only ever saw files.  Rows hang off their container's
+ * rect at offsets `layoutContainer` computed -- the same call `measure` used
+ * to size the box, so a row can never land outside it.  The polyline patch
+ * keeps every bend elk routed and moves only the end that is anchored: the
+ * line still takes elk's path through the layout and simply finishes on the
+ * row instead of the container's centre.
+ *
+ * Pure, and exported for its tests: `layout` runs it once per resolved elk
+ * result and caches what comes back, so a re-render pays nothing for it.
+ */
+export function finalisePositioned(spec: SceneSpec, result: ElkGraphResult): Positioned {
+  const rects = new Map<string, Rect>(result.rects)
+  for (const node of spec.root.children) {
+    if (node.children.length === 0) continue
+    const at = rects.get(node.id)
+    if (!at) continue
+    for (const placed of layoutContainer(rowsOf(node)).rows) {
+      rects.set(placed.row.id, {
+        x: at.x + placed.x,
+        y: at.y + placed.y,
+        width: placed.width,
+        height: placed.height,
+      })
+    }
+  }
+
+  const edgePoints = new Map<string, readonly number[]>(result.edgePoints)
+  for (const edge of spec.edges) {
+    const ends = edge.data as ImportEdgeData | undefined
+    if (ends === undefined) continue
+    // An end is anchored exactly when the spec's endpoint id is no longer the
+    // file's own id; anything else is already where elk put it.
+    const from = edge.from === ends.source ? undefined : rects.get(edge.from)
+    const to = edge.to === ends.target ? undefined : rects.get(edge.to)
+    if (from === undefined && to === undefined) continue
+    const points = edgePoints.get(edge.id)
+    if (points === undefined || points.length < 4) continue
+    const patched = [...points]
+    if (from !== undefined) {
+      patched[0] = from.x + from.width / 2
+      patched[1] = from.y + from.height / 2
+    }
+    if (to !== undefined) {
+      patched[patched.length - 2] = to.x + to.width / 2
+      patched[patched.length - 1] = to.y + to.height / 2
+    }
+    edgePoints.set(edge.id, patched)
+  }
+
+  // Junctions are omitted rather than stored empty when nothing merged, so
+  // `Positioned.junctions` stays absent on the ordinary layout and the canvas
+  // cull skips the point filter entirely (tic-531b).
+  const junctions = flattenJunctions(result.junctionPoints)
+  return { rects, edgePoints, ...(junctions.length > 0 ? { junctions } : {}) }
 }
 
 interface LayoutCache {
@@ -271,18 +446,10 @@ function layout(spec: SceneSpec, sizes: SizeMap, params: ImportGraphParams): Pos
     inFlightKey = key
     layoutGraph(toElkGraphInput(spec, sizes), { mergeEdges: params.mergeLines })
       .then((result) => {
-        // Junctions are omitted rather than stored empty when nothing merged,
-        // so `Positioned.junctions` stays absent on the ordinary layout and
-        // the canvas cull skips the point filter entirely (tic-531b).
-        const junctions = flattenJunctions(result.junctionPoints)
-        cache = {
-          key,
-          positioned: {
-            rects: result.rects,
-            edgePoints: result.edgePoints,
-            ...(junctions.length > 0 ? { junctions } : {}),
-          },
-        }
+        // The spec captured here is the one this key was computed from, so
+        // the rows and anchors finalisePositioned reads always match the
+        // layout that just came back (tic-ea9d).
+        cache = { key, positioned: finalisePositioned(spec, result) }
         if (inFlightKey === key) inFlightKey = null
         notifyLayoutReady()
       })
@@ -300,15 +467,49 @@ function layout(spec: SceneSpec, sizes: SizeMap, params: ImportGraphParams): Pos
 
 // -- style ----------------------------------------------------------------
 
+/**
+ * A row or section header inside an expanded container (tic-ea9d), styled as
+ * fs-tree styles its own so the two containers read identically.  Every row
+ * is pinned: a row has no meaning away from the file it describes, and
+ * dragging one out of its box would only break the container it belongs to.
+ */
+function rowStyle(row: Row, role: string): NodeStyle {
+  if (role === 'section') {
+    return { fill: TRANSPARENT, stroke: TRANSPARENT, draggable: false }
+  }
+  // An external import resolves to nothing and links nowhere (tic-314c), so
+  // it reads muted against the rows that do.
+  if (row.external === true) {
+    return {
+      fill: THEME.surface2,
+      stroke: THEME.textFaint,
+      accent: THEME.textFaint,
+      draggable: false,
+    }
+  }
+  return {
+    fill: THEME.surface2,
+    stroke: THEME.line,
+    // Sections are handled above, so the kind is a symbol kind.
+    accent: KIND_COLOR[row.kind as SymbolKind],
+    draggable: false,
+  }
+}
+
 function style(spec: SceneSpec, _params: ImportGraphParams): StyleMap {
   const nodes = new Map<string, NodeStyle>()
   for (const node of spec.root.children) {
-    nodes.set(
-      node.id,
-      isInCycle(node)
-        ? { fill: THEME.surface, stroke: THEME.cycle, accent: THEME.cycle }
-        : { fill: THEME.surface, stroke: THEME.line, accent: KIND_COLOR.module },
-    )
+    const cycle = isInCycle(node)
+    nodes.set(node.id, {
+      // An expanded container reads as a surface holding rows, a collapsed
+      // file as a chip on the grid -- the same two fills fs-tree uses.
+      fill: node.children.length > 0 ? THEME.surface2 : THEME.surface,
+      stroke: cycle ? THEME.cycle : THEME.line,
+      accent: cycle ? THEME.cycle : KIND_COLOR.module,
+    })
+    for (const child of node.children) {
+      nodes.set(child.id, rowStyle(child.data as Row, child.role))
+    }
   }
 
   const edges = new Map<string, EdgeStyle>()

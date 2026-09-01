@@ -1,7 +1,7 @@
 ---
 id: tic-ea9d
 title: 'Import graph: double-click expands a file node into its detail container'
-status: open
+status: closed
 type: feature
 tier: frontier
 domain: ui
@@ -12,14 +12,14 @@ tags:
 - expansion
 - rows
 - imported-by
-assignee: null
+assignee: claude.opus.004
 depends_on:
 - tic-531b
 - tic-0680
 blocked_by: null
 created: '2026-08-31T20:28:35'
-updated: '2026-08-31T20:28:35'
-closed: null
+updated: '2026-08-31T22:07:04'
+closed: '2026-08-31T22:07:04'
 ---
 
 ## Description
@@ -42,3 +42,4 @@ WORK outside the mode
 Verification: cd web && npm run test -- extend modes/importGraph.test.ts: expanded spec shape, Imported By emitted above Imports, edges anchored to rows when expanded and to files when collapsed, anchoring skipped under mergeLines, container sizing, cache key changes when an expansion changes sizes. npm run build. npm run dev: double-click a file in Import graph, confirm the container shows Imported By then Imports then the symbol sections, that the VS Code and goto buttons work on rows, that hovering one import row lights exactly one line while hovering the container lights all of them, and that the mergeLines checkbox still behaves. Re-check Files and symbols for regressions.
 
 ## Notes
+- 2026-08-31T22:07:03 claude.opus.004: Implemented and verified against the real export. select(): every file node is now expandable, and an open file (expanded[path] and lod < 3, matching fs-tree's extreme-zoom-out collapse) carries the shared detail rows from tic-0680's modes/fileDetail.ts with importedBy: true, so the container reads Imported By, Imports, Classes, Functions, Variables. Rows carry symbolId and gotoTo, so the VS Code source-link button, the inspector selection and the camera-goto button all work with no wiring in this mode -- they were already generic. Edge anchoring mirrors fsTree.anchorId but goes one better in both directions: the importer end anchors to its Imports row (row:SRC:imp:SYMBOL) and the imported end to the target's Imported By row (row:TGT:impby:SRC), which fs-tree cannot do because it has no Imported By section. Hovering one row therefore lights exactly its own line. KEY DESIGN POINT: elk must never see a row id (it lays out files only; a row endpoint is the 'Referenced shape does not exist' crash tic-56b2 hit with a filtered-out file), so the file-level ends ride on the mode-private SpecEdge.data as ImportEdgeData {inCycle, source, target}; toElkGraphInput routes with those, and the new exported-and-tested finalisePositioned(spec, result) does the rest after the worker answers -- places rows at layoutContainer offsets inside the container rect, and re-points only the anchored end of each polyline onto its row centre, keeping every bend elk routed. Merged mode (tic-531b) opts out of anchoring entirely per the user's decision: trunks cannot lead to one row. measure() sizes an open file with the same layoutContainer call layout uses, so box and rows cannot disagree; that size change flows into tic-531b's generalised cacheKeyOf, so expanding correctly misses the elk cache. App.tsx wantsRegistry was gated on modeId === 'fs-tree', which would have left external-import rows permanently empty here -- now any open expansion triggers it. VERIFICATION: 405 -> 421 tests (16 new, 24 files), tsc -b and production build clean. One pre-existing test asserted 'none expandable' and was updated -- that is the behaviour this ticket changes, not a regression. No headless browser here, so instead of eyeballing a canvas I wrote a throwaway vitest that drove the REAL ../out export (189 files, 235 edges) through select/measure/toElkGraphInput and the real elk.bundled layered algorithm, then finalisePositioned: zero elk endpoints naming an undeclared node, every one of the 121 rows of the widest hub inside its container rect, and all 48 anchored line ends landing exactly on their Imported By row centres. That file was deleted and is not in the commit; the permanent tests stay pure and worker-free. HUD note: Collapse All already folds these containers (collapseTargets accepts any non-dir: expanded id) and Expand All stays inert here (expandTargets is dir:-only), which is the sensible split -- Expand All opening every file at once would be unusable. OBSERVATION for whoever picks up tic-d7d7: that hub expands to 121 rows because 48 files import it, which is a very tall box at whole-graph zoom. It is honest and it is what was asked for, but it is also the strongest argument for the Local View scope -- and possibly for capping or scrolling a long Imported By section later.
