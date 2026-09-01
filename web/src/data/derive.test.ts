@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildFsTree,
+  deriveCallGraph,
   deriveExternalImports,
   deriveFileImporters,
   deriveFileImports,
@@ -8,6 +9,7 @@ import {
   deriveWorkspace,
   indexSymbols,
   walkFiles,
+  type CallGraph,
   type FileImportEdge,
   type FsDir,
 } from './derive'
@@ -653,5 +655,247 @@ describe('deriveFileImporters', () => {
     expect(workspace.fileImporters.get('src/app/errors.py')?.[0].source).toBe(
       'src/app/loop.py',
     )
+  })
+})
+
+// -- call graph (tic-a8a6) ----------------------------------------------------
+
+const fn = (id: string): GraphNode => node(id, 'function', 'm.py', 'm')
+const meth = (id: string, parent: string): GraphNode => node(id, 'method', 'm.py', 'm', parent)
+const cls = (id: string): GraphNode => node(id, 'class', 'm.py', 'm')
+
+function callGraphOf(nodes: GraphNode[], edges: GraphEdge[]): CallGraph {
+  return deriveCallGraph(edges, indexSymbols(nodes))
+}
+
+/**
+ * Assert the condensation really is a DAG, by the strongest check available:
+ * every cross-component edge must run from a higher component id to a lower
+ * one.  A graph whose edges only ever descend cannot contain a cycle, so this
+ * proves acyclicity and the documented reverse-topological ordering at once.
+ */
+function expectCondensationIsADag(graph: CallGraph): void {
+  for (const [from, targets] of graph.condensed) {
+    for (const to of targets) expect(to).toBeLessThan(from)
+  }
+}
+
+describe('deriveCallGraph', () => {
+  it('builds both directions of a straight chain', () => {
+    const graph = callGraphOf(
+      [fn('a'), fn('b'), fn('c')],
+      [calls('a', 'b'), calls('b', 'c')],
+    )
+    expect(graph.callees.get('a')?.map((e) => e.target)).toEqual(['b'])
+    expect(graph.callees.get('b')?.map((e) => e.target)).toEqual(['c'])
+    expect(graph.callers.get('c')?.map((e) => e.source)).toEqual(['b'])
+    expect(graph.callees.has('c')).toBe(false)
+    expect(graph.callers.has('a')).toBe(false)
+    expect(graph.cyclic.size).toBe(0)
+    expect(graph.recursive.size).toBe(0)
+    expectCondensationIsADag(graph)
+  })
+
+  it('carries count, lines, confidence and call types onto the edge', () => {
+    const edge: GraphEdge = {
+      ...calls('a', 'b'),
+      count: 3,
+      lines: [4, 9],
+      confidence: 'heuristic',
+      call_types: ['method'],
+    }
+    const graph = callGraphOf([fn('a'), fn('b')], [edge])
+    expect(graph.callees.get('a')?.[0]).toMatchObject({
+      source: 'a',
+      target: 'b',
+      count: 3,
+      lines: [4, 9],
+      confidence: 'heuristic',
+      callTypes: ['method'],
+    })
+  })
+
+  it('flags direct self-recursion, which is NOT a cyclic component', () => {
+    const graph = callGraphOf([fn('a')], [calls('a', 'a')])
+    expect(graph.recursive.has('a')).toBe(true)
+    // Tarjan's leaves a self-loop in a component of one, so `cyclic` -- which
+    // means mutual recursion -- must stay empty here.  The two facts are
+    // deliberately separate.
+    expect(graph.cyclic.size).toBe(0)
+    expect(graph.members.get(graph.componentOf.get('a')!)).toEqual(['a'])
+    expectCondensationIsADag(graph)
+  })
+
+  it('collapses a two-function mutual recursion into one component', () => {
+    const graph = callGraphOf([fn('a'), fn('b')], [calls('a', 'b'), calls('b', 'a')])
+    const id = graph.componentOf.get('a')!
+    expect(graph.componentOf.get('b')).toBe(id)
+    expect(graph.cyclic.has(id)).toBe(true)
+    expect(graph.members.get(id)).toEqual(['a', 'b'])
+    // Mutual recursion is not self-recursion: neither function calls itself.
+    expect(graph.recursive.size).toBe(0)
+    expectCondensationIsADag(graph)
+  })
+
+  it('collapses a three-function cycle into one component', () => {
+    const graph = callGraphOf(
+      [fn('a'), fn('b'), fn('c')],
+      [calls('a', 'b'), calls('b', 'c'), calls('c', 'a')],
+    )
+    const id = graph.componentOf.get('a')!
+    expect(graph.componentOf.get('b')).toBe(id)
+    expect(graph.componentOf.get('c')).toBe(id)
+    expect(graph.cyclic.has(id)).toBe(true)
+    expect(graph.condensed.get(id)).toEqual([])
+    expectCondensationIsADag(graph)
+  })
+
+  it('does not absorb a function that only feeds a cycle from outside', () => {
+    // entry -> a -> b -> a, plus the cycle calling out to a leaf.
+    const graph = callGraphOf(
+      [fn('entry'), fn('a'), fn('b'), fn('leaf')],
+      [calls('entry', 'a'), calls('a', 'b'), calls('b', 'a'), calls('b', 'leaf')],
+    )
+    const cycle = graph.componentOf.get('a')!
+    expect(graph.componentOf.get('b')).toBe(cycle)
+    expect(graph.cyclic.has(cycle)).toBe(true)
+
+    const entry = graph.componentOf.get('entry')!
+    const leaf = graph.componentOf.get('leaf')!
+    expect(entry).not.toBe(cycle)
+    expect(leaf).not.toBe(cycle)
+    expect(graph.cyclic.has(entry)).toBe(false)
+
+    // The condensation is the point: entry -> {cycle} -> {leaf}.
+    expect(graph.condensed.get(entry)).toEqual([cycle])
+    expect(graph.condensed.get(cycle)).toEqual([leaf])
+    expect(graph.condensed.get(leaf)).toEqual([])
+    expectCondensationIsADag(graph)
+  })
+
+  it('keeps two disjoint cycles as separate components', () => {
+    const graph = callGraphOf(
+      [fn('a'), fn('b'), fn('x'), fn('y')],
+      [calls('a', 'b'), calls('b', 'a'), calls('x', 'y'), calls('y', 'x')],
+    )
+    const ab = graph.componentOf.get('a')!
+    const xy = graph.componentOf.get('x')!
+    expect(ab).not.toBe(xy)
+    expect(graph.cyclic.has(ab)).toBe(true)
+    expect(graph.cyclic.has(xy)).toBe(true)
+    expectCondensationIsADag(graph)
+  })
+
+  it('numbers components in reverse topological order, so callees come first', () => {
+    // The property tic-1ecc leans on: iterating components from 0 upwards
+    // visits everything a component calls before the component itself.
+    const graph = callGraphOf(
+      [fn('top'), fn('mid'), fn('bottom')],
+      [calls('top', 'mid'), calls('mid', 'bottom')],
+    )
+    const top = graph.componentOf.get('top')!
+    const mid = graph.componentOf.get('mid')!
+    const bottom = graph.componentOf.get('bottom')!
+    expect(bottom).toBeLessThan(mid)
+    expect(mid).toBeLessThan(top)
+  })
+
+  it('keeps a function nothing calls and that calls nothing', () => {
+    // An orphan is a finding for tic-22db, not something to drop silently.
+    const graph = callGraphOf([fn('a'), fn('b'), fn('lonely')], [calls('a', 'b')])
+    expect(graph.nodes).toContain('lonely')
+    expect(graph.componentOf.has('lonely')).toBe(true)
+    expect(graph.callees.has('lonely')).toBe(false)
+    expect(graph.callers.has('lonely')).toBe(false)
+  })
+
+  it('drops an edge whose endpoint the excludes or file query removed', () => {
+    // 'gone' is named by an edge but absent from the index; leaving the edge
+    // in would hand elk a dangling reference, which is what crashed the
+    // import graph in tic-56b2.
+    const graph = callGraphOf([fn('a')], [calls('a', 'gone'), calls('gone', 'a')])
+    expect(graph.nodes).toEqual(['a'])
+    expect(graph.callees.has('a')).toBe(false)
+    expect(graph.callers.has('a')).toBe(false)
+  })
+
+  it('ignores IMPORTS edges', () => {
+    const graph = callGraphOf([fn('a'), fn('b')], [imports('a', 'b')])
+    expect(graph.callees.has('a')).toBe(false)
+  })
+
+  // -- classes ---------------------------------------------------------------
+
+  it('keeps a constructor call, whose target is the class itself', () => {
+    // 18% of the real export's CALLS edges point at a class; restricting the
+    // node set to function|method would delete every one of them.
+    const graph = callGraphOf([fn('caller'), cls('Foo')], [calls('caller', 'Foo')])
+    expect(graph.nodes).toContain('Foo')
+    expect(graph.callees.get('caller')?.map((e) => e.target)).toEqual(['Foo'])
+  })
+
+  it('carries flow through a constructed class into its __init__', () => {
+    const graph = callGraphOf(
+      [fn('caller'), cls('Foo'), meth('Foo.__init__', 'Foo'), fn('helper')],
+      [calls('caller', 'Foo'), calls('Foo.__init__', 'helper')],
+    )
+    const derived = graph.callees.get('Foo')
+    expect(derived?.map((e) => e.target)).toEqual(['Foo.__init__'])
+    expect(derived?.[0].implicit).toBe(true)
+    // No call site backs it, so it must not inflate any count or line list.
+    expect(derived?.[0].count).toBe(0)
+    expect(derived?.[0].lines).toEqual([])
+    // Without this edge __init__ would look like an entry point (tic-22db).
+    expect(graph.callers.has('Foo.__init__')).toBe(true)
+    expect(graph.condensed.get(graph.componentOf.get('caller')!)).toEqual([
+      graph.componentOf.get('Foo')!,
+    ])
+  })
+
+  it('leaves a constructed class with no in-project __init__ as a leaf', () => {
+    // A dataclass or a framework subclass genuinely has no __init__ here, and
+    // inventing an edge to one would be a lie.
+    const graph = callGraphOf([fn('caller'), cls('Bare')], [calls('caller', 'Bare')])
+    expect(graph.callees.has('Bare')).toBe(false)
+    expect(graph.nodes).toContain('Bare')
+  })
+
+  it('admits a class only when it takes part in a call', () => {
+    const graph = callGraphOf([fn('a'), cls('Unused'), meth('Unused.__init__', 'Unused')], [])
+    expect(graph.nodes).not.toContain('Unused')
+    // Its __init__ is still a callable, so it stays -- as an orphan.
+    expect(graph.nodes).toContain('Unused.__init__')
+  })
+
+  it('keeps a call made in a class body, where the class is the caller', () => {
+    const graph = callGraphOf([cls('Foo'), fn('field')], [calls('Foo', 'field')])
+    expect(graph.callees.get('Foo')?.map((e) => e.target)).toEqual(['field'])
+  })
+
+  // -- plumbing --------------------------------------------------------------
+
+  it('handles a long chain without a stack overflow', () => {
+    const nodes: GraphNode[] = []
+    const edges: GraphEdge[] = []
+    for (let i = 0; i < 2000; i++) {
+      nodes.push(fn(`f${i}`))
+      edges.push(calls(`f${i}`, `f${i + 1}`))
+    }
+    nodes.push(fn('f2000'))
+    expect(() => callGraphOf(nodes, edges)).not.toThrow()
+  })
+
+  it('memoises per (edges, index) pair', () => {
+    const nodes = [fn('a'), fn('b')]
+    const index = indexSymbols(nodes)
+    const edges = [calls('a', 'b')]
+    expect(deriveCallGraph(edges, index)).toBe(deriveCallGraph(edges, index))
+    expect(deriveCallGraph([calls('a', 'b')], index)).not.toBe(deriveCallGraph(edges, index))
+  })
+
+  it('is exposed on the workspace, derived from the same edges', () => {
+    const workspace = deriveWorkspace(GRAPH, [])
+    expect(workspace.callGraph).toBe(deriveCallGraph(GRAPH.edges, workspace.index))
+    expectCondensationIsADag(workspace.callGraph)
   })
 })

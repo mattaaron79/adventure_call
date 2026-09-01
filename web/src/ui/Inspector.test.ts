@@ -1,7 +1,14 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { deriveFileImporters, type FileImportEdge, type FsDir, type SymbolIndex, type Workspace } from '../data/derive'
+import {
+  deriveCallGraph,
+  deriveFileImporters,
+  type FileImportEdge,
+  type FsDir,
+  type SymbolIndex,
+  type Workspace,
+} from '../data/derive'
 import type { GraphNode, SymbolKind } from '../data/types'
 import {
   Inspector,
@@ -76,6 +83,9 @@ const WORKSPACE: Workspace = {
   // Kept in step with `fileImports` by the real derivation (tic-0680) rather
   // than hand-written, so the fixture cannot drift out of agreement with it.
   fileImporters: deriveFileImporters(FILE_IMPORTS),
+  // Likewise real rather than hand-written (tic-a8a6); this fixture carries no
+  // CALLS edges, so the derivation yields an empty graph over the index.
+  callGraph: deriveCallGraph([], index),
   externalImports: [
     { source: 'src/app/loop.py', target: 'collections.abc', count: 1 },
     { source: 'src/app/loop.py', target: 'typing', count: 2 },
