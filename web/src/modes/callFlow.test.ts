@@ -2,9 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { deriveCallMetrics } from '../data/callMetrics'
 import { deriveWorkspace, indexSymbols } from '../data/derive'
 import { deriveEntryPoints } from '../data/entryPoints'
-import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind, SymbolRegistry } from '../data/types'
+import type {
+  CodebaseGraph,
+  GraphEdge,
+  GraphNode,
+  GraphStats,
+  SymbolKind,
+  SymbolRegistry,
+} from '../data/types'
+import { COMPUTED_CALLEE_REASON } from '../data/callMetrics'
 import {
   cacheKeyOf,
+  callFlowCoverage,
   callFlowMode,
   callFlowRoot,
   callFlowSummary,
@@ -12,7 +21,9 @@ import {
   componentLabel,
   coneOf,
   EXTERNAL_PREFIX,
+  formatCoverageHud,
   frontierOf,
+  groupCoverage,
   moduleTail,
   rankedEntryComponents,
   rootedElementIds,
@@ -115,23 +126,41 @@ const GRAPH: CodebaseGraph = {
   edges: EDGES,
 }
 
-function registryWith(external: [caller: string, target: string][]): SymbolRegistry {
+function registryWith(
+  external: [caller: string, target: string][],
+  computed: [caller: string, times: number][] = [],
+): SymbolRegistry {
+  const unresolved_calls = external.map(([caller_id, target]) => ({
+    caller_id,
+    raw_name: 'x',
+    line: 1,
+    callee_id: null,
+    confidence: 'unresolved' as const,
+    call_type: 'call' as const,
+    reason: `external: ${target}`,
+    file_path: 'm.py',
+  }))
+  for (const [caller_id, times] of computed) {
+    for (let i = 0; i < times; i++) {
+      unresolved_calls.push({
+        caller_id,
+        raw_name: 'x',
+        line: 1,
+        callee_id: null,
+        confidence: 'unresolved' as const,
+        call_type: 'call' as const,
+        reason: COMPUTED_CALLEE_REASON,
+        file_path: 'm.py',
+      })
+    }
+  }
   return {
     // deriveWorkspace also runs the import-side derivations over this, so the
     // fixture has to be a plausible registry rather than only what this
     // mode reads.
     modules: {},
     bindings: {},
-    unresolved_calls: external.map(([caller_id, target]) => ({
-      caller_id,
-      raw_name: 'x',
-      line: 1,
-      callee_id: null,
-      confidence: 'unresolved' as const,
-      call_type: 'call' as const,
-      reason: `external: ${target}`,
-      file_path: 'm.py',
-    })),
+    unresolved_calls,
   } as unknown as SymbolRegistry
 }
 
@@ -679,6 +708,175 @@ describe('callFlowMode rooted view', () => {
     const spec = rooted('m.lonely')
     expect(spec.root.children.map((n) => n.id)).toEqual(['m.lonely'])
     expect(spec.edges).toEqual([])
+  })
+})
+
+// -- wearing the uncertainty (tic-171f) --------------------------------------
+
+/** A workspace WITH the registry, so coverage has filled in.  `m.wide` has 3
+ *  resolved sites plus one external call; `m.narrow` has 1 resolved site plus
+ *  2 computed callees. */
+const COVERAGE_REGISTRY = registryWith([['m.wide', 'json']], [['m.narrow', 2]])
+const REG_WORKSPACE = deriveWorkspace(GRAPH, [], '', COVERAGE_REGISTRY)
+const selectReg = (over = {}) =>
+  callFlowMode.select(REG_WORKSPACE, params(over), { expanded: {} })
+const rootedReg = (focusPath: string) =>
+  callFlowMode.select(REG_WORKSPACE, params(), { expanded: {}, focusPath })
+
+describe('per-node coverage on the chips (tic-171f)', () => {
+  it('says how many of its own call sites a function resolved', () => {
+    // A count, not a claim of completeness -- the vocabulary the ticket asks
+    // for: "3 resolved calls, 8 unresolved", never "calls X and nothing else".
+    const narrow = selectReg().root.children.find((n) => n.id === 'm.narrow')!
+    expect(narrow.sublabel).toContain('1/3 sites resolved')
+    expect(narrow.sublabel).toContain('2 computed')
+  })
+
+  it('counts an external call as unresolved, like any other site it could not place', () => {
+    const wide = selectReg().root.children.find((n) => n.id === 'm.wide')!
+    expect(wide.sublabel).toContain('3/4 sites resolved')
+  })
+
+  it('stays quiet about a function with no unresolved sites -- 1/1 needs no caveat', () => {
+    const shared = selectReg().root.children.find((n) => n.id === 'm.shared')!
+    expect(shared.sublabel).toContain('1/1 sites resolved')
+    expect(shared.sublabel).not.toContain('computed')
+  })
+
+  it('says nothing when the registry has not landed -- absence, not zero', () => {
+    // Without the registry nothing is known, so nothing may be claimed: "0/0
+    // resolved" would read as "this function calls nothing", which is a lie
+    // the registry simply has not corrected yet.
+    const narrow = select().root.children.find((n) => n.id === 'm.narrow')!
+    expect(narrow.sublabel).not.toContain('sites resolved')
+  })
+
+  it('says nothing about a function that genuinely makes no calls', () => {
+    // Orphans are left out of the overview, so the rooted view draws one.
+    const lonely = rootedReg('m.lonely').root.children.find((n) => n.id === 'm.lonely')!
+    expect(lonely.sublabel).not.toContain('sites resolved')
+  })
+
+  it('sums the coverage of a condensed cycle across its members', () => {
+    const cycle = selectReg({ entryLimit: 50, depth: 2 }).root.children.find((n) =>
+      n.label.includes('cycle'),
+    )!
+    expect(cycle.sublabel).toContain('2/2 sites resolved')
+  })
+
+  it('groupCoverage sums the members a chip stands for', () => {
+    const entryPoints = deriveEntryPoints(REG_WORKSPACE.callGraph, REG_WORKSPACE.index)
+    const metrics = deriveCallMetrics(
+      REG_WORKSPACE.callGraph,
+      REG_WORKSPACE.index,
+      entryPoints,
+      COVERAGE_REGISTRY,
+    )
+    expect(groupCoverage(['m.ping', 'm.pong'], metrics)).toEqual({
+      resolved: 2,
+      unresolved: 0,
+      total: 2,
+      dynamic: 0,
+    })
+    expect(groupCoverage(['m.narrow'], metrics)).toEqual({
+      resolved: 1,
+      unresolved: 2,
+      total: 3,
+      dynamic: 2,
+    })
+    expect(groupCoverage(['m.nobody'], metrics)).toBeNull()
+  })
+})
+
+describe('coverage on the rooted root chip (tic-171f)', () => {
+  it('wears the same honesty clause as every other chip', () => {
+    const root = rootedReg('m.narrow').root.children.find((n) => n.id === 'm.narrow')!
+    expect(root.sublabel).toContain('1/3 sites resolved')
+    expect(root.sublabel).toContain('2 computed')
+  })
+})
+
+describe('heuristic edges (tic-171f)', () => {
+  /** `m.wide -> m.loops` fully heuristic; a NEW heuristic `m.wide -> m.pong`
+   *  collapses onto the component chip that `m.wide -> m.ping` (exact)
+   *  already draws, so the pair is MIXED. */
+  const HEURISTIC_GRAPH: CodebaseGraph = {
+    ...GRAPH,
+    edges: [
+      ...EDGES.map((e) =>
+        e.source === 'm.wide' && e.target === 'm.loops'
+          ? { ...e, confidence: 'heuristic' as const }
+          : e,
+      ),
+      { ...calls('m.wide', 'm.pong'), confidence: 'heuristic' as const },
+    ],
+  }
+  const styleOf = (workspace: ReturnType<typeof deriveWorkspace>) => {
+    const spec = callFlowMode.select(workspace, params(), { expanded: {} })
+    return { spec, styles: callFlowMode.style(spec, params()) }
+  }
+
+  it('draws a heuristic edge differently from an exact one', () => {
+    const { styles } = styleOf(hWorkspaceOf(HEURISTIC_GRAPH))
+    const heuristic = styles.edges.get('call:m.wide->m.loops')!
+    const exact = styles.edges.get('call:m.wide->m.shared')!
+    expect(heuristic.dash).toBeDefined()
+    expect(exact.dash).toBeUndefined()
+    expect(heuristic.opacity!).toBeLessThan(exact.opacity!)
+  })
+
+  it('marks a mixed pair as heuristic: one guess among exact sites is still a guess', () => {
+    const { spec, styles } = styleOf(hWorkspaceOf(HEURISTIC_GRAPH))
+    // The pair collapsed to element `m.ping` carries one exact and one
+    // heuristic per-symbol edge; the line is partly conjecture either way.
+    const mixed = (spec.edges.find((e) => e.id === 'call:m.wide->m.ping')!.data ?? {}) as {
+      heuristic?: boolean
+    }
+    expect(mixed.heuristic).toBe(true)
+    expect(styles.edges.get('call:m.wide->m.ping')!.dash).toBeDefined()
+  })
+
+  it('leaves exact edges alone on the registry-less workspace too', () => {
+    const { styles } = styleOf(WORKSPACE)
+    expect(styles.edges.get('call:m.wide->m.shared')!.dash).toBeUndefined()
+  })
+
+  function hWorkspaceOf(graph: CodebaseGraph): ReturnType<typeof deriveWorkspace> {
+    return deriveWorkspace(graph, [])
+  }
+})
+
+describe('the global coverage figure (tic-171f)', () => {
+  const STATS: GraphStats = {
+    calls_resolved: 4201,
+    calls_heuristic: 725,
+    calls_unresolved: 6248,
+    calls_builtin: 1888,
+  } as GraphStats
+
+  it('reads every bucket live from the export, builtins kept apart', () => {
+    // Builtins are known calls to things with no map, not holes in the map,
+    // so the total counts them but they never masquerade as unresolved.
+    expect(callFlowCoverage(STATS, null)).toEqual({
+      exact: 4201,
+      heuristic: 725,
+      unresolved: 6248,
+      builtin: 1888,
+      computed: null,
+      total: 13062,
+    })
+  })
+
+  it('counts computed callees from the unresolved reasons in the registry', () => {
+    const registry = registryWith([], [['m.a', 2]])
+    expect(callFlowCoverage(STATS, registry).computed).toBe(2)
+  })
+
+  it('formats one always-visible line, and only promises computed figures it has', () => {
+    const line = formatCoverageHud(callFlowCoverage(STATS, registryWith([], [['m.a', 2]])))
+    expect(line).toContain('38% of call sites resolved (4201 exact + 725 heuristic of 13062)')
+    expect(line).toContain('2 computed callees leave the map')
+    expect(formatCoverageHud(callFlowCoverage(STATS, null))).not.toContain('computed')
   })
 })
 

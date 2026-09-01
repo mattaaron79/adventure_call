@@ -48,11 +48,17 @@
  * answer: see {@link coneOf} for what was measured and what it settled.
  */
 import type { CallGraph, ExternalCall, Workspace } from '../data/derive'
-import { deriveCallMetrics, type CallMetricsIndex } from '../data/callMetrics'
+import {
+  COMPUTED_CALLEE_REASON,
+  deriveCallMetrics,
+  type CallCoverage,
+  type CallMetricsIndex,
+} from '../data/callMetrics'
 import { deriveEntryPoints, type EntryPoints } from '../data/entryPoints'
 import { isTestPath } from '../data/roles'
 import { KIND_COLOR, THEME } from '../canvas/theme'
 import type { Point, Rect, Size } from '../canvas/viewport'
+import type { GraphStats, SymbolRegistry } from '../data/types'
 import { layoutGraph } from '../layout/elkGraph'
 import type { ElkGraphInput, ElkGraphResult } from '../layout/elkTypes'
 import { notifyLayoutReady } from './asyncLayout'
@@ -173,6 +179,14 @@ interface FlowNodeData {
 interface FlowEdgeData {
   /** An edge into an external sink rather than into project code. */
   external: boolean
+  /**
+   * At least one call site behind this line was resolved by a heuristic
+   * rather than exactly (tic-171f): the line is partly conjecture and is
+   * drawn so the reader can tell.  Collapsed element-to-element edges carry
+   * the worst confidence of anything they stand for -- an honest "some of
+   * this is a guess" beats a confident-looking line that is not.
+   */
+  heuristic: boolean
 }
 
 /** What a rooted scene records on its spec root for `layout` and `style`,
@@ -555,6 +569,7 @@ function drawComponent(
         role?.framework ?? null,
         metric?.reachDown ?? 0,
         recursive,
+        groupCoverage(group, metrics),
       ),
       symbolId: group.length === 1 ? group[0] : null,
       expandable: false,
@@ -596,13 +611,17 @@ function drawComponent(
  *
  * A self-edge is never drawn.  Direct recursion has nowhere to go on a chip,
  * and the recursion badge already says it.
+ *
+ * A collapsed edge keeps the WORST confidence of the per-symbol edges behind
+ * it (tic-171f): one heuristic call site among five exact ones still means
+ * the drawn line is partly a guess, and saying so costs a dash pattern
+ * rather than a reader's trust.
  */
 function callEdgesBetween(
   graph: CallGraph,
   elementOf: ReadonlyMap<string, string>,
 ): SpecEdge[] {
-  const edges: SpecEdge[] = []
-  const seen = new Set<string>()
+  const collapsed = new Map<string, { from: string; to: string; heuristic: boolean }>()
   for (const [source, outgoing] of graph.callees) {
     const from = elementOf.get(source)
     if (from === undefined) continue
@@ -610,26 +629,33 @@ function callEdgesBetween(
       const to = elementOf.get(edge.target)
       if (to === undefined || to === from) continue
       const id = `call:${from}->${to}`
-      if (seen.has(id)) continue
-      seen.add(id)
-      edges.push({
-        id,
-        from,
-        to,
-        kind: 'call',
-        route: 'center',
-        directional: true,
-        data: { external: false } satisfies FlowEdgeData,
-      })
+      const heuristic = !edge.implicit && edge.confidence === 'heuristic'
+      const known = collapsed.get(id)
+      if (known) {
+        if (heuristic) known.heuristic = true
+        continue
+      }
+      collapsed.set(id, { from, to, heuristic })
     }
   }
-  return edges
+  return [...collapsed].map(([id, edge]) => ({
+    id,
+    from: edge.from,
+    to: edge.to,
+    kind: 'call',
+    route: 'center',
+    directional: true,
+    data: { external: false, heuristic: edge.heuristic } satisfies FlowEdgeData,
+  }))
 }
 
 function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec {
   const graph = data.callGraph
   const entryPoints = deriveEntryPoints(graph, data.index)
-  const metrics = deriveCallMetrics(graph, data.index, entryPoints)
+  // The registry rides on the workspace (tic-171f), so coverage fills in the
+  // moment it has been fetched and is null -- visibly absent, never zero --
+  // before that.
+  const metrics = deriveCallMetrics(graph, data.index, entryPoints, data.registry)
 
   // The focus path names a SYMBOL here (see the module docstring).  One the
   // call graph does not hold -- a stale id, a directory from something that
@@ -745,6 +771,7 @@ function selectRooted(
       group.some((member) => graph.recursive.has(member)),
       cone.beyond,
       cone.truncated,
+      groupCoverage(group, metrics),
     )
   }
 
@@ -781,8 +808,56 @@ function selectRooted(
   return spec
 }
 
+/**
+ * Coverage summed over the members a chip stands for, or null when the
+ * registry has not landed (every member's own coverage is still null).
+ *
+ * A condensed cycle chip speaks for several functions, so its coverage is
+ * their SUM -- "these 2 functions resolved 3 of 9 call sites between them"
+ * is the true statement about the chip, and per-member figures would not be
+ * visible anywhere anyway until the knot is expanded.
+ */
+export function groupCoverage(
+  members: readonly string[],
+  metrics: CallMetricsIndex,
+): CallCoverage | null {
+  let resolved = 0
+  let unresolved = 0
+  let dynamic = 0
+  let any = false
+  for (const member of members) {
+    const coverage = metrics.metricOf.get(member)?.coverage
+    if (!coverage) continue
+    any = true
+    resolved += coverage.resolved
+    unresolved += coverage.unresolved
+    dynamic += coverage.dynamic
+  }
+  return any ? { resolved, unresolved, total: resolved + unresolved, dynamic } : null
+}
+
+/**
+ * The per-node honesty clause (tic-171f), appended to a chip's second row:
+ * how many of this function's call sites actually resolved, and how many
+ * were computed at runtime so flow provably leaves the map there.
+ *
+ * Wording is deliberately flat information rather than an apology or an
+ * error state -- partial resolution is the normal condition of static
+ * analysis on a dynamic language.  It never says "and nothing else"; it
+ * says what resolved and what did not.  Silent when the registry has not
+ * landed (nothing is known yet, so nothing is claimed) and when the
+ * function makes no calls at all (`reaches 0` already says that, and there
+ * are no sites to be honest about).
+ */
+function appendCoverage(parts: string[], coverage: CallCoverage | null): void {
+  if (!coverage || coverage.total === 0) return
+  parts.push(`${coverage.resolved}/${coverage.total} sites resolved`)
+  if (coverage.dynamic > 0) parts.push(`${coverage.dynamic} computed`)
+}
+
 /** The one-line second row: where a node lives, what it is, how far it
- *  reaches.  The module comes first because it is what disambiguates two
+ *  reaches, and how much of its own outgoing flow the export could follow
+ *  (tic-171f).  The module comes first because it is what disambiguates two
  *  same-named functions, which is the common case rather than the exotic
  *  one. */
 export function sublabelFor(
@@ -791,9 +866,11 @@ export function sublabelFor(
   framework: string | null,
   reachDown: number,
   recursive: boolean,
+  coverage: CallCoverage | null = null,
 ): string {
   const parts = identityParts(members, module, framework, recursive)
   parts.push(`reaches ${reachDown}`)
+  appendCoverage(parts, coverage)
   return parts.join(' · ')
 }
 
@@ -833,11 +910,17 @@ export function rootSublabelFor(
   recursive: boolean,
   beyond: number,
   truncated: boolean,
+  coverage: CallCoverage | null = null,
 ): string {
   const parts = identityParts(members, module, framework, recursive)
   if (beyond > 0) {
     parts.push(truncated ? `${beyond} not shown (depth capped)` : `${beyond} not shown`)
   }
+  // The root is a node like any other, so it wears the same honesty clause:
+  // a rooted view whose root reads "0/4 sites resolved" is telling the
+  // reader that the downstream cone it drew stands on heuristic-free ground
+  // -- or that it does not.
+  appendCoverage(parts, coverage)
   return parts.join(' · ')
 }
 
@@ -892,7 +975,10 @@ function appendExternalSinks(
       kind: 'call',
       route: 'center',
       directional: true,
-      data: { external: true } satisfies FlowEdgeData,
+      // External calls are unresolved by definition, not by conjecture, so
+      // they never wear the heuristic marking; their own faint dashed style
+      // already says what they are.
+      data: { external: true, heuristic: false } satisfies FlowEdgeData,
     })
   }
 }
@@ -1017,15 +1103,88 @@ function style(spec: SceneSpec): StyleMap {
   }
   const edges = new Map<string, EdgeStyle>()
   for (const edge of spec.edges) {
-    const external = (edge.data as FlowEdgeData | undefined)?.external ?? false
+    const data = edge.data as FlowEdgeData | undefined
+    const external = data?.external ?? false
+    // Three edge voices (tic-171f): solid for exact resolutions, finely
+    // dashed for lines standing partly on heuristic ones, and the faint
+    // coarse dash an external sink already had.  The heuristic voice is
+    // quieter but present -- an edge whose confidence is partial should
+    // look slightly less certain than one that is not, without demanding a
+    // legend to decode.
+    const heuristic = data?.heuristic ?? false
     edges.set(
       edge.id,
       external
         ? { stroke: THEME.textFaint, strokeWidth: 1, dash: [4, 4], opacity: 0.5 }
-        : { stroke: THEME.edge, strokeWidth: 1.4, opacity: 0.9 },
+        : heuristic
+          ? { stroke: THEME.edge, strokeWidth: 1.1, dash: [2, 4], opacity: 0.55 }
+          : { stroke: THEME.edge, strokeWidth: 1.4, opacity: 0.9 },
     )
   }
   return { nodes, groups: new Map(), edges }
+}
+
+/**
+ * The view-level coverage figure (tic-171f): how much of the export's call
+ * sites the resolver actually placed, read LIVE from the export's stats so
+ * the number moves as the exporter improves -- never a figure copied from a
+ * ticket at one point in time.
+ *
+ * `computed` needs the registry (only `unresolved_calls` carries reasons),
+ * so it is null until that has been fetched; the rest come from
+ * `codebase_graph.json`, which is always loaded.  Builtins are reported as
+ * their own bucket rather than folded into "unresolved": the writer counts
+ * them separately, and a call to `len()` is not a hole in the map, it is a
+ * call to a thing with no map.
+ */
+export interface FlowCoverage {
+  /** Sites resolved with certainty. */
+  exact: number
+  /** Sites resolved by a heuristic (unique-name matches and the like). */
+  heuristic: number
+  /** Sites the resolver could not place, builtins excluded. */
+  unresolved: number
+  /** Calls to builtins, which are known and simply not in the project. */
+  builtin: number
+  /**
+   * Unresolved sites whose callee was computed at runtime -- flow provably
+   * leaves the map there.  Null until the registry has been fetched.
+   */
+  computed: number | null
+  /** `exact + heuristic + unresolved + builtin` -- every call site there is. */
+  total: number
+}
+
+/** Read the coverage buckets out of the export (and the registry, if in). */
+export function callFlowCoverage(
+  stats: GraphStats,
+  registry: SymbolRegistry | null,
+): FlowCoverage {
+  const exact = stats.calls_resolved ?? 0
+  const heuristic = stats.calls_heuristic ?? 0
+  const unresolved = stats.calls_unresolved ?? 0
+  const builtin = stats.calls_builtin ?? 0
+  const computed = registry
+    ? registry.unresolved_calls.filter((call) => call.reason === COMPUTED_CALLEE_REASON).length
+    : null
+  return { exact, heuristic, unresolved, builtin, computed, total: exact + heuristic + unresolved + builtin }
+}
+
+/**
+ * The one always-visible line the mode wears while it is active (tic-171f).
+ * States proportions, never excuses: partial resolution is the normal
+ * condition of static analysis on a dynamic language, and the line reads as
+ * a fact about the data, not a fault in the tool.
+ */
+export function formatCoverageHud(coverage: FlowCoverage): string {
+  const pct = coverage.total > 0 ? Math.round(((coverage.exact + coverage.heuristic) / coverage.total) * 100) : 0
+  const parts = [
+    `${pct}% of call sites resolved (${coverage.exact} exact + ${coverage.heuristic} heuristic of ${coverage.total})`,
+    `${coverage.unresolved} unresolved`,
+    `${coverage.builtin} builtin`,
+  ]
+  if (coverage.computed !== null) parts.push(`${coverage.computed} computed callees leave the map`)
+  return parts.join(' · ')
 }
 
 export const callFlowMode: VizMode<CallFlowParams> = {

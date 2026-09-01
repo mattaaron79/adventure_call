@@ -422,6 +422,27 @@ html, body, #root {
   pointer-events: none;
   animation: fade 1.6s ease-out forwards;
 }
+
+/* The call-flow mode's always-visible coverage line (tic-171f): a fact about
+   the data, worn in the corner while the mode is active.  Same family as the
+   reload flash, but persistent and hoverable -- the title carries the legend
+   for the edge voices. */
+.coverage-hud {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  max-width: calc(100% - 24px);
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
+}
 @keyframes fade {
   0%, 55% { opacity: 1; }
   100% { opacity: 0; }

@@ -9,6 +9,8 @@ import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
 import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './modes/fsTree'
 import { getLayoutVersion, subscribeLayoutReady } from './modes/asyncLayout'
+import { CALL_FLOW_MODE_ID } from './modes/ids'
+import { callFlowCoverage, formatCoverageHud } from './modes/callFlow'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
 import { buildSourceLinks, Inspector } from './ui/Inspector'
@@ -196,10 +198,17 @@ export function App() {
   // loadRegistry is memoised, so many triggers still mean one request.
   // Not gated on the mode any more (tic-ea9d): the import-graph containers
   // show the same external-import rows, and gating on fs-tree left them
-  // permanently empty there.
+  // permanently empty there.  Call flow is a trigger of its own (tic-171f):
+  // its per-node coverage and dynamic-hole figures come from the registry's
+  // unresolved_calls, and a mode about honesty that opens without its
+  // honesty numbers would have to stay silent until the user happened to
+  // click something.
   const wantsRegistry = useMemo(
-    () => selection.size > 0 || Object.values(expanded).some(Boolean),
-    [selection, expanded],
+    () =>
+      selection.size > 0 ||
+      Object.values(expanded).some(Boolean) ||
+      modeId === CALL_FLOW_MODE_ID,
+    [selection, expanded, modeId],
   )
   useEffect(() => {
     if (!wantsRegistry) return
@@ -243,6 +252,19 @@ export function App() {
           fileOnlyDirs={fileOnlyDirs}
           resolveGotoScope={resolveGotoScope}
         />
+        {graph && modeId === CALL_FLOW_MODE_ID && (
+          // The mode's always-visible honesty line (tic-171f): how much of
+          // the export's call sites actually resolved, read live from the
+          // export every time it is rewritten.  A call-flow view silently
+          // dropping most of its edges would look authoritative while being
+          // anything but; this is the antidote, worn where the mode is.
+          <div
+            className="coverage-hud"
+            title="Solid edge = exact resolution · fine dash = heuristic (a name guess resolved it) · faint dash = external module. Coverage is read live from the export."
+          >
+            {formatCoverageHud(callFlowCoverage(graph.graph.stats, registry))}
+          </div>
+        )}
         {workspace === null && status.phase !== 'error' && (
           <div className="placeholder">
             <strong>Reading /out…</strong>

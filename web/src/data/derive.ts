@@ -866,6 +866,16 @@ export interface Workspace {
    *  Empty until the registry has been fetched, exactly like
    *  {@link Workspace.externalImports}. */
   externalCalls: ExternalCall[]
+  /**
+   * The registry this workspace was derived with (tic-171f), or null while
+   * the app is still on codebase_graph.json alone.  Carried so a mode can
+   * feed it to registry-hungry derivations -- call-flow's per-callable
+   * coverage -- rather than each mode growing its own channel for it.  The
+   * workspace cache already keys on registry identity (a new registry means
+   * a fresh Workspace), so consumers can memoise on this field like any
+   * other input.
+   */
+  registry: SymbolRegistry | null
   /** Module nodes the exclude list removed, for reporting in the UI. */
   excludedFiles: number
 }
@@ -936,6 +946,7 @@ export function deriveWorkspace(
     callGraph: deriveCallGraph(graph.edges, index),
     externalImports: registry ? deriveExternalImports(registry, index) : EMPTY_EXTERNAL_IMPORTS,
     externalCalls: registry ? deriveExternalCalls(registry, index) : EMPTY_EXTERNAL_CALLS,
+    registry,
     excludedFiles: totalFiles - modules.length,
   }
   perExcludes.set(key, { workspace, registry })

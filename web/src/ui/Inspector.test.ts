@@ -86,7 +86,10 @@ const WORKSPACE: Workspace = {
   // Likewise real rather than hand-written (tic-a8a6); this fixture carries no
   // CALLS edges, so the derivation yields an empty graph over the index.
   callGraph: deriveCallGraph([], index),
-  // No registry-derived call data in this fixture (tic-d8a8).
+  // No registry-derived call data in this fixture (tic-d8a8).  The registry
+  // itself rides on the workspace since tic-171f; null keeps this fixture on
+  // the codebase_graph.json-only footing it has always modelled.
+  registry: null,
   externalCalls: [],
   externalImports: [
     { source: 'src/app/loop.py', target: 'collections.abc', count: 1 },

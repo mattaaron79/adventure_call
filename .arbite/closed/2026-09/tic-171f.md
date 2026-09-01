@@ -1,7 +1,7 @@
 ---
 id: tic-171f
 title: 'Wear the call graph''s uncertainty: per-node and global resolution coverage'
-status: open
+status: closed
 type: feature
 tier: medium
 domain: ui
@@ -11,14 +11,14 @@ tags:
 - honesty
 - coverage
 - inspector
-assignee: null
+assignee: zai.glm-5.3-flash.001
 depends_on:
 - tic-1ecc
 - tic-d8a8
 blocked_by: null
 created: '2026-09-01T07:24:43'
-updated: '2026-09-01T07:24:43'
-closed: null
+updated: '2026-09-01T13:41:27'
+closed: '2026-09-01T13:41:27'
 ---
 
 ## Description
@@ -39,3 +39,6 @@ Note that tic-9ff4 and tic-97ce both raise these numbers; this ticket must read 
 Verification: browser-verify against ../carnot that the numbers shown match the registry's unresolved_calls for the same symbols -- spot-check three functions by hand. npm run test, tsc -b.
 
 ## Notes
+- 2026-09-01T13:40:25 zai.glm-5.3-flash.001: Implemented per-node coverage, heuristic edge styling, dynamic-hole counts, and the global HUD; verified against the live out/ (carnot) export. Details in close note.
+
+- 2026-09-01T13:41:22 zai.glm-5.3-flash.001: Implemented against the CURRENT ./out export (carnot, 182 files): stats now read 4201 exact + 725 heuristic + 6248 unresolved + 1888 builtin = 13062 sites = 38% resolved, 842 computed callees. Live-read from the export, never hardcoded.

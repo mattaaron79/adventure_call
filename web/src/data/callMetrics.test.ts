@@ -51,7 +51,10 @@ function calls(source: string, target: string, count = 1): GraphEdge {
   }
 }
 
-function registryWith(unresolved: [caller: string, times: number][]): SymbolRegistry {
+function registryWith(
+  unresolved: [caller: string, times: number][],
+  reason = 'unknown receiver',
+): SymbolRegistry {
   const unresolved_calls: UnresolvedCall[] = []
   for (const [caller_id, times] of unresolved) {
     for (let i = 0; i < times; i++) {
@@ -62,7 +65,7 @@ function registryWith(unresolved: [caller: string, times: number][]): SymbolRegi
         callee_id: null,
         confidence: 'unresolved',
         call_type: 'method',
-        reason: 'unknown receiver',
+        reason,
         file_path: 'src/app/thing.py',
       })
     }
@@ -271,19 +274,34 @@ describe('deriveCallMetrics: coverage', () => {
       [calls('a', 'b', 3)],
       registryWith([['a', 5]]),
     )
-    expect(metric(built, 'a').coverage).toEqual({ resolved: 3, unresolved: 5, total: 8 })
+    expect(metric(built, 'a').coverage).toEqual({
+      resolved: 3,
+      unresolved: 5,
+      total: 8,
+      dynamic: 0,
+    })
   })
 
   it('reports a function whose every call site failed to resolve', () => {
     // The shape that makes `leaf` a lie: it looks terminal but is only opaque.
     const built = build([fn('a')], [], registryWith([['a', 4]]))
     expect(metric(built, 'a').shape).toBe('leaf')
-    expect(metric(built, 'a').coverage).toEqual({ resolved: 0, unresolved: 4, total: 4 })
+    expect(metric(built, 'a').coverage).toEqual({
+      resolved: 0,
+      unresolved: 4,
+      total: 4,
+      dynamic: 0,
+    })
   })
 
   it('reports a genuinely call-free function as total 0', () => {
     const built = build([fn('a'), fn('b')], [calls('a', 'b')], registryWith([]))
-    expect(metric(built, 'b').coverage).toEqual({ resolved: 0, unresolved: 0, total: 0 })
+    expect(metric(built, 'b').coverage).toEqual({
+      resolved: 0,
+      unresolved: 0,
+      total: 0,
+      dynamic: 0,
+    })
   })
 
   it('does not count the derived class -> __init__ edge as a resolved call site', () => {
@@ -295,7 +313,29 @@ describe('deriveCallMetrics: coverage', () => {
       node('Foo.__init__', 'method', { parent: 'Foo', name: '__init__' }),
     ]
     const built = build(nodes, [calls('caller', 'Foo')], registryWith([]))
-    expect(metric(built, 'Foo').coverage).toEqual({ resolved: 0, unresolved: 0, total: 0 })
+    expect(metric(built, 'Foo').coverage).toEqual({
+      resolved: 0,
+      unresolved: 0,
+      total: 0,
+      dynamic: 0,
+    })
+  })
+
+  it('counts computed callees as the dynamic subset of unresolved (tic-171f)', () => {
+    // "Flow leaves the map here" is a different fact from "the resolver was
+    // not clever enough here", and the dynamic-hole badge needs it apart.
+    const built = build(
+      [fn('a'), fn('b')],
+      [calls('a', 'b', 2)],
+      registryWith([['a', 3]], 'computed callee'),
+    )
+    expect(metric(built, 'a').coverage).toEqual({
+      resolved: 2,
+      unresolved: 3,
+      total: 5,
+      dynamic: 3,
+    })
+    expect(metric(built, 'b').coverage!.dynamic).toBe(0)
   })
 })
 

@@ -47,14 +47,38 @@ import type { SymbolRegistry } from './types'
  */
 export type CallShape = 'leaf' | 'pipe' | 'hub' | 'facade' | 'orchestrator' | 'plain'
 
+/**
+ * The reason the resolver records when a call's callee is computed at
+ * runtime -- `x.handle()` where `x` arrived as a parameter, say.  These are
+ * the sites where flow genuinely leaves the map (tic-171f's dynamic holes),
+ * as opposed to the other unresolved reasons, which are ambiguities or
+ * out-of-project targets.  Mirrors the literal in adventure_call/resolver.py.
+ */
+export const COMPUTED_CALLEE_REASON = 'computed callee'
+
 /** How much of one function's outgoing flow the export actually resolved. */
 export interface CallCoverage {
   /** Call sites that resolved to an in-project symbol. */
   resolved: number
-  /** Call sites the resolver could not place, builtins included. */
+  /**
+   * Call sites the resolver could not place.  Builtins are NOT in here: the
+   * registry's `unresolved_calls` excludes them as noise (measured on the
+   * real export -- no `builtin` reason ever appears), and the export's
+   * `stats.calls_builtin` counts them separately.  `total` is therefore
+   * "call sites that could have been resolved", which is the denominator a
+   * coverage figure wants.
+   */
   unresolved: number
   /** `resolved + unresolved`; 0 means the function makes no calls at all. */
   total: number
+  /**
+   * The subset of `unresolved` whose callee was COMPUTED at runtime, so flow
+   * provably leaves the map there rather than merely not being followed
+   * (tic-171f's dynamic holes).  A UI shows this beside the coverage figure:
+   * "2/5 sites resolved · 3 computed" reads as information, while a bare
+   * "reaches 2" would read as the whole story.
+   */
+  dynamic: number
 }
 
 export interface CallMetrics {
@@ -311,15 +335,21 @@ function isTestOnly(callGraph: CallGraph, index: SymbolIndex, id: string): boole
  * skipped because no call site produced it.  Unresolved sites come from the
  * registry, one entry per site, keyed by `caller_id` -- verified against the
  * real export to match graph node ids exactly (1793 of 1793 distinct
- * caller_ids resolve to a node).
+ * caller_ids resolve to a node).  Sites whose callee was computed at runtime
+ * are also counted as `dynamic`, so a consumer can distinguish "flow leaves
+ * the map here" from "the resolver was not clever enough here".
  */
 function callCoverage(
   callGraph: CallGraph,
   registry: SymbolRegistry,
 ): Map<string, CallCoverage> {
   const unresolved = new Map<string, number>()
+  const dynamic = new Map<string, number>()
   for (const call of registry.unresolved_calls) {
     unresolved.set(call.caller_id, (unresolved.get(call.caller_id) ?? 0) + 1)
+    if (call.reason === COMPUTED_CALLEE_REASON) {
+      dynamic.set(call.caller_id, (dynamic.get(call.caller_id) ?? 0) + 1)
+    }
   }
 
   const coverage = new Map<string, CallCoverage>()
@@ -329,7 +359,12 @@ function callCoverage(
       if (!edge.implicit) resolved += edge.count
     }
     const missed = unresolved.get(id) ?? 0
-    coverage.set(id, { resolved, unresolved: missed, total: resolved + missed })
+    coverage.set(id, {
+      resolved,
+      unresolved: missed,
+      total: resolved + missed,
+      dynamic: dynamic.get(id) ?? 0,
+    })
   }
   return coverage
 }
