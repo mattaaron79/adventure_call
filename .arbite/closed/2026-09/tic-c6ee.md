@@ -1,19 +1,19 @@
 ---
 id: tic-c6ee
-title: 'bug (raw): Requires Classification'
-status: raw
+title: derive.ts holds literal NUL bytes, so git and grep treat it as binary
+status: closed
 type: bug
-tier: 'TODO: low|medium|high|frontier'
-domain: 'TODO: e.g. mesh, image_gen, audio_gen, ui, io'
-epic: classification
-priority: null
+tier: low
+domain: ui
+epic: call-flow
+priority: 6
 tags: []
 assignee: null
 depends_on: []
 blocked_by: null
 created: '2026-09-01T08:09:52'
-updated: '2026-09-01T08:09:52'
-closed: null
+updated: '2026-09-01T12:50:04'
+closed: '2026-09-01T12:50:04'
 ---
 
 ## Description
@@ -31,3 +31,4 @@ What still needs to be done (human or agent triage, typically via `arbite fetch`
 - status -- set to `open` once classified so it becomes workable via `arbite list next` (skip this if you're claiming it yourself instead -- `arbite claim` sets status to `in_progress` directly)
 
 ## Notes
+- 2026-09-01T12:50:04 claude.opus.001: Two raw NUL bytes, not one: the map-key separators in deriveFileImports (line 222) and deriveExternalCalls (line 824). Both are now the \u0000 escape, byte-identical at runtime and already the form used at the other two key-separator sites (deriveExternalImports line 730, deriveWorkspace line 907) -- so this is consistent now, not merely fixed. Verified: git diff --stat reports a line count instead of 'Bin', grep -n finds all four separators, 628 web tests pass unchanged. Found while working tic-7a5e, where it had forced every edit to derive.ts through a python script.

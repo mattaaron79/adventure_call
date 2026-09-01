@@ -1,7 +1,7 @@
 ---
 id: tic-7a5e
 title: 'Mode 3: the rooted local view -- one function''s call flow, upstream and down'
-status: open
+status: in_progress
 type: feature
 tier: high
 domain: ui
@@ -11,12 +11,12 @@ tags:
 - mode
 - call-flow
 - focus
-assignee: null
+assignee: claude.opus.001
 depends_on:
 - tic-d8a8
 blocked_by: null
 created: '2026-09-01T07:24:42'
-updated: '2026-09-01T07:24:42'
+updated: '2026-09-01T12:43:31'
 closed: null
 ---
 
