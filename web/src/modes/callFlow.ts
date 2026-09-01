@@ -17,15 +17,20 @@
  * whole trick, and it is why the layout can be a layered DAG rather than a
  * hairball.
  *
- * ## This ticket delivers the UNFOCUSED state
+ * ## Two states, one mode
  *
  * `focusPath === ''` is the mode's index: the entry points, ranked, with what
  * they immediately reach.  A purely rooted mode has a discovery problem --
  * you can only use it if you already know which function to ask about -- so
- * the unfocused state doubles as an architecture overview.  tic-7a5e adds the
- * rooted view; until then a focus path is honoured only by being ignored, per
- * the contract on `UiState.focusPath` (tic-e738): an unresolvable focus draws
- * the whole picture rather than nothing.
+ * the unfocused state doubles as an architecture overview, and every chip in
+ * it offers to become the root of the other state.
+ *
+ * A non-empty `focusPath` names a SYMBOL ID and gives the rooted view
+ * (tic-7a5e): one function, what it can set in motion, and what can reach it.
+ * That is a third meaning for the same per-mode field -- fs-tree reads it as
+ * a directory, the import graph as a file -- and `UiState.focusPath`
+ * documents the divergence and the fallback that makes it safe: a focus this
+ * mode cannot resolve draws the overview rather than nothing.
  *
  * ## Size is the real constraint, and it is not optional
  *
@@ -38,6 +43,9 @@
  * from those.  The count that was left out is reported on the scene, because
  * a view that silently shows 40 of 1491 roots while looking complete is the
  * same failure mode as a call graph that silently drops half its edges.
+ *
+ * The rooted view has the same problem in a different shape, and the same
+ * answer: see {@link coneOf} for what was measured and what it settled.
  */
 import type { CallGraph, ExternalCall, Workspace } from '../data/derive'
 import { deriveCallMetrics, type CallMetricsIndex } from '../data/callMetrics'
@@ -61,6 +69,17 @@ import type {
   UiState,
   VizMode,
 } from './types'
+
+/**
+ * Which way the rooted view (tic-7a5e) looks from its root.
+ *
+ * Two genuinely different questions, asked at different moments: `down` is
+ * "what does this set in motion", `up` is "who can reach this, and so who
+ * breaks if I change it".  `both` draws each as its own cone -- see
+ * {@link coneOf}, where the distinction turns out to be what makes the view
+ * drawable at all.
+ */
+export type FlowDirection = 'down' | 'up' | 'both'
 
 export interface CallFlowParams {
   /**
@@ -95,9 +114,41 @@ export interface CallFlowParams {
    * functions all called `go` -- outranked every real entry point.
    */
   includeTests: boolean
+
+  // -- the rooted view (tic-7a5e) -------------------------------------------
+
+  /**
+   * How many call hops the rooted view walks from its root, in each active
+   * direction.
+   *
+   * A separate knob from {@link CallFlowParams.depth} rather than a shared
+   * one, because the two states want opposite values and the measurements say
+   * so: the overview at depth 2 draws 2286 of carnot's 2574 nodes, while the
+   * rooted view at depth 1 draws a median of 3.  One number cannot serve
+   * both without being wrong for one of them.  Default 2; see {@link coneOf}.
+   */
+  rootDepth: number
+  /** Which way the rooted view looks; see {@link FlowDirection}. */
+  direction: FlowDirection
+  /**
+   * Draw a mutual-recursion knot as its member functions rather than as one
+   * condensed chip.
+   *
+   * Off by default: the condensation is what makes the picture layerable
+   * (see the module docstring), and expanding a knot puts a cycle back into
+   * the drawn graph, which elk lays out but cannot layer meaningfully.  It is
+   * worth having anyway -- once the view is rooted ON a knot, "which of these
+   * four functions calls which" is precisely the question, and a chip reading
+   * "4 functions (cycle)" refuses to answer it.
+   */
+  expandCycles: boolean
 }
 
 const CHIP_HEIGHT = 34
+/** Elk spacing for a rooted view, against the 64/12 default the overview
+ *  keeps; the same pair the import graph's Local View settled on. */
+const ROOTED_LAYER_GAP = 48
+const ROOTED_NODE_GAP = 10
 const CHIP_MIN_WIDTH = 140
 const CHIP_MAX_WIDTH = 320
 const CHAR_WIDTH = 6.6
@@ -124,6 +175,19 @@ interface FlowEdgeData {
   external: boolean
 }
 
+/** What a rooted scene records on its spec root for `layout` and `style`,
+ *  neither of which ever sees the ui state.  Absent on the overview. */
+interface RootedView {
+  /** Element ids drawn for the root's component. */
+  rootIds: readonly string[]
+}
+
+/** The element ids a rooted scene is rooted on, empty for the overview and
+ *  for a spec built by another mode. */
+export function rootedElementIds(spec: SceneSpec): readonly string[] {
+  return (spec.root.data as RootedView | undefined)?.rootIds ?? []
+}
+
 /** What `select` learned that only the app can render as text (tic-d8a8):
  *  how much of the entry set is actually on screen. */
 export interface CallFlowSummary {
@@ -140,9 +204,51 @@ export interface CallFlowSummary {
 const summaries = new WeakMap<SceneSpec, CallFlowSummary>()
 
 /** How many entry points this scene shows, out of how many exist.  Absent for
- *  a spec built by another mode. */
+ *  a spec built by another mode, and for a ROOTED scene, which shows no entry
+ *  set at all -- ask {@link callFlowRoot} about one of those. */
 export function callFlowSummary(spec: SceneSpec): CallFlowSummary | undefined {
   return summaries.get(spec)
+}
+
+/**
+ * What a rooted scene is rooted on (tic-7a5e), and how much of the
+ * neighbourhood it had to leave out.
+ *
+ * Two accessors rather than one union-typed summary because the two states
+ * report different things and nothing sensibly asks both at once: a scene is
+ * either the overview or a rooted view, and a consumer holding a
+ * `CallFlowRoot` already knows which.  It rides on a WeakMap for the same
+ * reason the overview's summary does -- the framework's `SceneSpec` has no
+ * field for a mode's own findings, and inventing one for a single mode is
+ * the wrong seam.
+ */
+export interface CallFlowRoot {
+  /** The symbol id the view is rooted on. */
+  root: string
+  /** Element ids drawn for the root's component: one, or one per member when
+   *  {@link CallFlowParams.expandCycles} split a knot open. */
+  rootIds: readonly string[]
+  direction: FlowDirection
+  depth: number
+  /** Components drawn, the root's included. */
+  drawn: number
+  /**
+   * Distinct components one step outside the drawn set, in the directions
+   * being looked -- "there is more this way".  The root chip wears this, so
+   * a depth-limited picture cannot pass for a complete one.
+   */
+  beyond: number
+  /** A whole level was refused because it would not fit the node budget;
+   *  see {@link coneOf}. */
+  truncated: boolean
+}
+
+const roots = new WeakMap<SceneSpec, CallFlowRoot>()
+
+/** The root of a rooted call-flow scene, or undefined for the overview and
+ *  for a spec built by another mode. */
+export function callFlowRoot(spec: SceneSpec): CallFlowRoot | undefined {
+  return roots.get(spec)
 }
 
 /**
@@ -217,6 +323,166 @@ export function frontierOf(
 }
 
 /**
+ * The most components a rooted view will draw before it stops growing.
+ *
+ * A depth limit alone does not bound the picture: carnot's `ConfigError` has
+ * 9 callers at one hop, 42 at two and 135 at three, and `Transcript` is
+ * worse.  Measured over all 1196 non-test roots at the default depth 2, a
+ * budget of 80 refuses a level for 6 of them (0.5%) and 40 refuses one for 26
+ * (2.2%) -- so 80 buys the tail without costing the ordinary case anything,
+ * since the median root draws 4 components and the 90th percentile 18.
+ *
+ * The budget can never refuse the FIRST level: the widest one-hop cone in
+ * carnot is 69 components.  So a rooted view always shows its immediate
+ * neighbourhood, whatever it has to give up beyond that.
+ */
+export const ROOTED_BUDGET = 80
+
+/** The neighbourhood a rooted view draws: which components, how far out, and
+ *  what it had to leave at the edge. */
+export interface CallCone {
+  /** Every component drawn, the root's included. */
+  components: Set<number>
+  /** Hops from the root, 0 for the root itself. */
+  depthOf: Map<number, number>
+  /** Distinct components one step outside `components`, in the directions
+   *  being looked. */
+  beyond: number
+  /** A level was refused for the budget rather than for the depth limit. */
+  truncated: boolean
+}
+
+/**
+ * The rooted view's neighbourhood (tic-7a5e): two independent cones from one
+ * component, up through callers and down through callees.
+ *
+ * ## Two cones, not one walk -- and this is the whole design
+ *
+ * The obvious reading of "upstream and down" is a breadth-first walk over the
+ * undirected call graph.  It is unusable, and the numbers are not close.
+ * Measured over carnot's 1196 non-test callables, components drawn:
+ *
+ * ```
+ *              depth 1        depth 2         depth 3         depth 4
+ * mixed walk   med 3 p90 8    med 12 p90 47   med 42 p90 160  med 121 p90 431
+ * two cones    med 3 p90 8    med  4 p90 18   med  5 p90  28  med   5 p90  38
+ * ```
+ *
+ * The mixed walk explodes because one step up to a caller drags in every
+ * OTHER thing that caller calls, and the step after that drags in their
+ * callers.  Those siblings are not part of either question being asked --
+ * "what does this set in motion" and "who can reach this" -- so a walk that
+ * collects them is answering neither, at ten times the size.  Two cones keep
+ * strictly to ancestors and descendants: the condensation is a DAG, so those
+ * two sets cannot overlap, and their union is the picture.
+ *
+ * (Edges are a separate matter: `select` draws every call edge with both ends
+ * on screen, so an ancestor that also calls a descendant directly shows that
+ * shortcut.  What the cone decides is which NODES exist, not which lines.)
+ *
+ * ## Depth 2 is the default, and the median is not why
+ *
+ * The median root draws 3 components at depth 1, 4 at depth 2, 5 at depth 3:
+ * most functions simply do not have much around them and the depth knob
+ * barely moves them.  The tail is what the default has to survive, and at
+ * depth 2 the 90th percentile is 18 components and the 99th is 57 -- a
+ * picture.  Depth 3's 99th percentile is 93 and depth 4's is 232.
+ *
+ * ## Growth is by whole levels
+ *
+ * A level that would breach {@link ROOTED_BUDGET} is refused entirely rather
+ * than taken in part, and `truncated` says so.  Taking part of a level would
+ * mean picking which callers of a hub to believe in, and there is no honest
+ * basis for that choice; refusing the level and reporting `beyond` says the
+ * true thing instead.  Each direction stops on its own, so a root with a
+ * thousand ancestors and three descendants still shows the descendants.
+ *
+ * Downstream is offered each level's budget first, which matters only when
+ * one direction fits and the other would not have if it went second.  The
+ * asymmetry is deliberate and small: "what does this set in motion" is the
+ * question the mode is named for, and an arbitrary rule beats a rule that
+ * depends on map iteration order.
+ */
+export function coneOf(
+  graph: CallGraph,
+  root: number,
+  direction: FlowDirection,
+  depth: number,
+  budget: number = ROOTED_BUDGET,
+): CallCone {
+  const components = new Set<number>([root])
+  const depthOf = new Map<number, number>([[root, 0]])
+  /** Which side of the root each drawn component is on, so the `beyond`
+   *  count below looks the right way from it.  Disjoint, because the
+   *  condensation is a DAG. */
+  const descendants = new Set<number>()
+  const ancestors = new Set<number>()
+  let truncated = false
+
+  const wantDown = direction === 'down' || direction === 'both'
+  const wantUp = direction === 'up' || direction === 'both'
+
+  /** One level along `adjacency`, committed only if the whole level fits. */
+  const advance = (
+    adjacency: ReadonlyMap<number, readonly number[]>,
+    side: Set<number>,
+    frontier: readonly number[],
+    step: number,
+  ): number[] => {
+    const next = new Set<number>()
+    for (const component of frontier) {
+      for (const target of adjacency.get(component) ?? []) {
+        if (!components.has(target)) next.add(target)
+      }
+    }
+    if (next.size === 0) return []
+    if (components.size + next.size > budget) {
+      truncated = true
+      return []
+    }
+    for (const component of next) {
+      components.add(component)
+      depthOf.set(component, step)
+      side.add(component)
+    }
+    return [...next]
+  }
+
+  // The two frontiers advance independently, so a root with a thousand
+  // ancestors and three descendants still shows the descendants.
+  let down = wantDown ? [root] : []
+  let up = wantUp ? [root] : []
+  for (let step = 1; step <= Math.max(0, depth); step++) {
+    if (down.length === 0 && up.length === 0) break
+    const nextDown = down.length > 0 ? advance(graph.condensed, descendants, down, step) : []
+    const nextUp = up.length > 0 ? advance(graph.condensedCallers, ancestors, up, step) : []
+    down = nextDown
+    up = nextUp
+  }
+
+  // What sits just past the edge of the picture, counted once however many
+  // drawn components lead to it.  Only in directions being looked: under
+  // `direction: 'up'` the root's callees are not beyond the edge, they are
+  // outside the question.
+  const outside = new Set<number>()
+  const look = (
+    adjacency: ReadonlyMap<number, readonly number[]>,
+    component: number,
+  ): void => {
+    for (const next of adjacency.get(component) ?? []) {
+      if (!components.has(next)) outside.add(next)
+    }
+  }
+  for (const component of components) {
+    const atRoot = component === root
+    if (wantDown && (atRoot || descendants.has(component))) look(graph.condensed, component)
+    if (wantUp && (atRoot || ancestors.has(component))) look(graph.condensedCallers, component)
+  }
+
+  return { components, depthOf, beyond: outside.size, truncated }
+}
+
+/**
  * The entry components to draw, most far-reaching first.
  *
  * Ranked by `reachDown` because "what sets the most in motion" is the useful
@@ -245,11 +511,145 @@ export function rankedEntryComponents(
     .map(([component]) => component)
 }
 
+/**
+ * The chips one component contributes, and the symbol-to-element mapping they
+ * imply -- one chip for the condensed component, or one per member when a
+ * knot is being expanded.
+ *
+ * Both states draw a component the same way, so what separates the overview
+ * from the rooted view is which components they choose, not how one looks.
+ */
+function drawComponent(
+  data: Workspace,
+  graph: CallGraph,
+  entryPoints: EntryPoints,
+  metrics: CallMetricsIndex,
+  component: number,
+  expand: boolean,
+  children: SpecNode[],
+  elementOf: Map<string, string>,
+  goto: Map<string, string>,
+): string[] {
+  const members = graph.members.get(component) ?? []
+  if (members.length === 0) return []
+  const groups = expand && members.length > 1 ? members.map((member) => [member]) : [members]
+  const ids: string[] = []
+
+  for (const group of groups) {
+    const id = componentId(group)
+    ids.push(id)
+    const representative = data.index.byId.get(group[0])
+    const role = entryPoints.roleOf.get(group[0])
+    const metric = metrics.metricOf.get(group[0])
+    // Drawn apart, only a real self-call earns the recursion badge; the lines
+    // between the members say the rest, which is the whole point of expanding.
+    const recursive = group.some((member) => graph.recursive.has(member))
+
+    children.push({
+      id,
+      role: 'call',
+      label: componentLabel(group, data.index),
+      sublabel: sublabelFor(
+        group,
+        representative ? moduleTail(representative.module) : null,
+        role?.framework ?? null,
+        metric?.reachDown ?? 0,
+        recursive,
+      ),
+      symbolId: group.length === 1 ? group[0] : null,
+      expandable: false,
+      // Every chip offers to become the root of its own view (tic-7a5e).
+      // This is the mode's own navigation and needs nothing from tic-e738's
+      // cross-mode machinery: re-rooting is a plain focusPath change, and the
+      // canvas already hides the button on the element that IS the focus.
+      focusTo: id,
+      focusIcon: 'local-view',
+      focusLabel: 'Trace call flow',
+      children: [],
+      data: {
+        role: role?.role ?? 'internal',
+        size: group.length,
+        recursive,
+        rank: metric?.rank ?? null,
+      } satisfies FlowNodeData,
+    })
+
+    for (const member of group) {
+      elementOf.set(member, id)
+      // Goto targets: the symbol itself, and the file it lives in, so the
+      // camera can reach a function from the sidebar or another mode.
+      goto.set(member, id)
+    }
+    if (representative) goto.set(representative.file_path, id)
+  }
+  return ids
+}
+
+/**
+ * The call edges between the drawn elements, deduplicated.
+ *
+ * Built from the raw per-symbol edges rather than from the condensation, so
+ * one function serves both states: with a knot condensed, mapping both ends
+ * through `elementOf` and dropping the self-edges reproduces the condensation
+ * exactly; with one expanded, the same pass draws the calls BETWEEN its
+ * members, which is the only thing an expanded knot is for.
+ *
+ * A self-edge is never drawn.  Direct recursion has nowhere to go on a chip,
+ * and the recursion badge already says it.
+ */
+function callEdgesBetween(
+  graph: CallGraph,
+  elementOf: ReadonlyMap<string, string>,
+): SpecEdge[] {
+  const edges: SpecEdge[] = []
+  const seen = new Set<string>()
+  for (const [source, outgoing] of graph.callees) {
+    const from = elementOf.get(source)
+    if (from === undefined) continue
+    for (const edge of outgoing) {
+      const to = elementOf.get(edge.target)
+      if (to === undefined || to === from) continue
+      const id = `call:${from}->${to}`
+      if (seen.has(id)) continue
+      seen.add(id)
+      edges.push({
+        id,
+        from,
+        to,
+        kind: 'call',
+        route: 'center',
+        directional: true,
+        data: { external: false } satisfies FlowEdgeData,
+      })
+    }
+  }
+  return edges
+}
+
 function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec {
   const graph = data.callGraph
   const entryPoints = deriveEntryPoints(graph, data.index)
   const metrics = deriveCallMetrics(graph, data.index, entryPoints)
 
+  // The focus path names a SYMBOL here (see the module docstring).  One the
+  // call graph does not hold -- a stale id, a directory from something that
+  // mistook this mode for the fs-tree, a symbol the excludes or the file
+  // query dropped -- falls back to the overview, which is the contract
+  // `UiState.focusPath` states rather than this mode's own politeness.
+  const focusPath = ui.focusPath ?? ''
+  const rootComponent = focusPath === '' ? undefined : graph.componentOf.get(focusPath)
+  return rootComponent === undefined
+    ? selectOverview(data, params, graph, entryPoints, metrics)
+    : selectRooted(data, params, graph, entryPoints, metrics, focusPath, rootComponent)
+}
+
+function selectOverview(
+  data: Workspace,
+  params: CallFlowParams,
+  graph: CallGraph,
+  entryPoints: EntryPoints,
+  metrics: CallMetricsIndex,
+): SceneSpec {
   // Filtered by FILE, not by the `test` role.  The role is name-based
   // (`^test_`), which misses the helpers a test module defines around its
   // tests -- on carnot the top of the ranking was a wall of nested functions
@@ -268,71 +668,14 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   const frontier = frontierOf(graph, seeds, Math.max(0, params.depth))
 
   const children: SpecNode[] = []
-  const edges: SpecEdge[] = []
   const goto = new Map<string, string>()
-  /** Component id -> the element id drawn for it. */
-  const elementOf = new Map<number, string>()
-
+  const elementOf = new Map<string, string>()
   for (const component of frontier) {
-    const members = graph.members.get(component) ?? []
-    if (members.length === 0) continue
-    const id = componentId(members)
-    elementOf.set(component, id)
-
-    const representative = data.index.byId.get(members[0])
-    const role = entryPoints.roleOf.get(members[0])
-    const metric = metrics.metricOf.get(members[0])
-    const recursive = members.some((member) => graph.recursive.has(member))
-
-    children.push({
-      id,
-      role: 'call',
-      label: componentLabel(members, data.index),
-      sublabel: sublabelFor(
-        members,
-        representative ? moduleTail(representative.module) : null,
-        role?.framework ?? null,
-        metric?.reachDown ?? 0,
-        recursive,
-      ),
-      symbolId: members.length === 1 ? members[0] : null,
-      expandable: false,
-      children: [],
-      data: {
-        role: role?.role ?? 'internal',
-        size: members.length,
-        recursive,
-        rank: metric?.rank ?? null,
-      } satisfies FlowNodeData,
-    })
-
-    // Goto targets: the symbol itself, and the file it lives in, so the
-    // camera can reach a function from the sidebar or another mode.
-    for (const member of members) goto.set(member, id)
-    if (representative) goto.set(representative.file_path, id)
+    drawComponent(data, graph, entryPoints, metrics, component, false, children, elementOf, goto)
   }
 
-  for (const component of frontier) {
-    const from = elementOf.get(component)
-    if (from === undefined) continue
-    for (const target of graph.condensed.get(component) ?? []) {
-      const to = elementOf.get(target)
-      if (to === undefined) continue // outside the frontier; not drawn
-      edges.push({
-        id: `call:${from}->${to}`,
-        from,
-        to,
-        kind: 'call',
-        route: 'center',
-        directional: true,
-        data: { external: false } satisfies FlowEdgeData,
-      })
-    }
-  }
-
-  if (params.showExternals) {
-    appendExternalSinks(data.externalCalls, graph, frontier, elementOf, children, edges)
-  }
+  const edges = callEdgesBetween(graph, elementOf)
+  if (params.showExternals) appendExternalSinks(data.externalCalls, elementOf, children, edges)
 
   const spec: SceneSpec = {
     root: { id: 'root', role: 'root', label: '', symbolId: null, expandable: false, children },
@@ -341,7 +684,100 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
     goto,
   }
   summaries.set(spec, { shown: seeds.length, total: ranked.length, hiddenTests })
-  void ui
+  return spec
+}
+
+/**
+ * The rooted view (tic-7a5e): one function, what it can set in motion, and
+ * what can reach it.
+ *
+ * Conceptually the README's `get_room_context` -- callers on one side,
+ * callees on the other -- generalised from one hop to N and given a picture.
+ * {@link coneOf} decides which components those are and what it had to leave
+ * out; everything here is the drawing.
+ */
+function selectRooted(
+  data: Workspace,
+  params: CallFlowParams,
+  graph: CallGraph,
+  entryPoints: EntryPoints,
+  metrics: CallMetricsIndex,
+  focusPath: string,
+  rootComponent: number,
+): SceneSpec {
+  const depth = Math.max(0, params.rootDepth)
+  const cone = coneOf(graph, rootComponent, params.direction, depth)
+
+  const children: SpecNode[] = []
+  const goto = new Map<string, string>()
+  const elementOf = new Map<string, string>()
+  let rootIds: string[] = []
+  for (const component of cone.components) {
+    const ids = drawComponent(
+      data,
+      graph,
+      entryPoints,
+      metrics,
+      component,
+      params.expandCycles,
+      children,
+      elementOf,
+      goto,
+    )
+    if (component === rootComponent) rootIds = ids
+  }
+
+  // The root chip wears what is missing.  A rooted view is a claim about a
+  // neighbourhood, and a depth- or budget-limited one that looks complete
+  // makes a false claim -- the same failure the overview's shown-of-total
+  // count exists to prevent, carried in the one place here that can carry it
+  // without a framework change.
+  const isRoot = new Set(rootIds)
+  for (const node of children) {
+    if (!isRoot.has(node.id)) continue
+    const members = graph.members.get(rootComponent) ?? []
+    const group = params.expandCycles && members.length > 1 ? [node.id] : members
+    const representative = data.index.byId.get(group[0])
+    node.sublabel = rootSublabelFor(
+      group,
+      representative ? moduleTail(representative.module) : null,
+      entryPoints.roleOf.get(group[0])?.framework ?? null,
+      group.some((member) => graph.recursive.has(member)),
+      cone.beyond,
+      cone.truncated,
+    )
+  }
+
+  const edges = callEdgesBetween(graph, elementOf)
+  if (params.showExternals) appendExternalSinks(data.externalCalls, elementOf, children, edges)
+
+  const spec: SceneSpec = {
+    root: {
+      id: 'root',
+      role: 'root',
+      label: '',
+      symbolId: null,
+      expandable: false,
+      children,
+      // The root rides on the spec rather than on the ui state, because
+      // `layout` and `style` never see the latter -- the channel importGraph's
+      // Local View centre uses, for the same two consumers: tighter elk
+      // spacing, and an accent border on the thing the view is about.
+      data: { rootIds } satisfies RootedView,
+    },
+    groups: [],
+    edges,
+    goto,
+  }
+  roots.set(spec, {
+    root: focusPath,
+    rootIds,
+    direction: params.direction,
+    depth,
+    drawn: cone.components.size,
+    beyond: cone.beyond,
+    truncated: cone.truncated,
+  })
   return spec
 }
 
@@ -356,12 +792,52 @@ export function sublabelFor(
   reachDown: number,
   recursive: boolean,
 ): string {
+  const parts = identityParts(members, module, framework, recursive)
+  parts.push(`reaches ${reachDown}`)
+  return parts.join(' · ')
+}
+
+/** Where a node lives and what it is, without any claim about its reach --
+ *  the half of {@link sublabelFor} both states share. */
+function identityParts(
+  members: readonly string[],
+  module: string | null,
+  framework: string | null,
+  recursive: boolean,
+): string[] {
   const parts: string[] = []
   if (module) parts.push(module)
   if (members.length > 1) parts.push(`${members.length} mutually recursive`)
   else if (recursive) parts.push('recursive')
   if (framework) parts.push(framework)
-  parts.push(`reaches ${reachDown}`)
+  return parts
+}
+
+/**
+ * The second row of the chip a rooted view is rooted on (tic-7a5e): what it
+ * is, and how much of its neighbourhood is missing.
+ *
+ * Deliberately NOT `reaches N`.  That figure is the overview's vocabulary --
+ * it exists to rank entry points by blast radius -- and on a root it is
+ * either redundant or actively misleading: carnot's `ConfigError` has 283
+ * things that can reach it and reaches nothing itself, so an upward-looking
+ * view of it read `reaches 0 · +93 more`, which invites the reader to
+ * subtract two numbers that measure opposite directions.  The picture already
+ * shows the reach.  What it cannot show is what it left out, so that is what
+ * the root says.
+ */
+export function rootSublabelFor(
+  members: readonly string[],
+  module: string | null,
+  framework: string | null,
+  recursive: boolean,
+  beyond: number,
+  truncated: boolean,
+): string {
+  const parts = identityParts(members, module, framework, recursive)
+  if (beyond > 0) {
+    parts.push(truncated ? `${beyond} not shown (depth capped)` : `${beyond} not shown`)
+  }
   return parts.join(' · ')
 }
 
@@ -374,17 +850,15 @@ export function sublabelFor(
  */
 function appendExternalSinks(
   externalCalls: readonly ExternalCall[],
-  graph: CallGraph,
-  frontier: ReadonlySet<number>,
-  elementOf: ReadonlyMap<number, string>,
+  elementOf: ReadonlyMap<string, string>,
   children: SpecNode[],
   edges: SpecEdge[],
 ): void {
   const pairs = new Map<string, { from: string; target: string; count: number }>()
   for (const call of externalCalls) {
-    const component = graph.componentOf.get(call.source)
-    if (component === undefined || !frontier.has(component)) continue
-    const from = elementOf.get(component)
+    // A caller that is not drawn contributes no sink: the same guard every
+    // derivation applies, and the one whose absence crashed elk in tic-56b2.
+    const from = elementOf.get(call.source)
     if (from === undefined) continue
     const key = `${from} ${call.target}`
     const known = pairs.get(key)
@@ -446,6 +920,16 @@ export function toElkGraphInput(spec: SceneSpec, sizes: SizeMap): ElkGraphInput 
   }
 }
 
+/**
+ * The single-slot layout cache's key.
+ *
+ * The root ids are in for the reason importGraph's Local View centre is in
+ * (tic-d7d7): re-rooting usually changes the node set, so the ids would
+ * mostly catch it -- but not always.  Re-rooting from a function onto its
+ * only caller, with `direction: 'both'` and nothing else nearby, can draw the
+ * identical two chips with identical sizes while the elk spacing and the
+ * accent border differ, and the roomy cached layout would be silently reused.
+ */
 export function cacheKeyOf(spec: SceneSpec, sizes: SizeMap, params: CallFlowParams): string {
   const nodes = spec.root.children.map((node) => node.id).join(',')
   const dims = spec.root.children
@@ -454,7 +938,8 @@ export function cacheKeyOf(spec: SceneSpec, sizes: SizeMap, params: CallFlowPara
       return size ? `${size.width}x${size.height}` : '?'
     })
     .join(',')
-  return `${nodes}|${spec.edges.map((e) => e.id).join(',')}|${dims}|${JSON.stringify(params)}`
+  const rooted = rootedElementIds(spec).join(',')
+  return `${nodes}|${spec.edges.map((e) => e.id).join(',')}|${dims}|${JSON.stringify(params)}|${rooted}`
 }
 
 const EMPTY_POSITIONED: Positioned = { rects: new Map(), edgePoints: new Map() }
@@ -481,7 +966,15 @@ function layout(spec: SceneSpec, sizes: SizeMap, params: CallFlowParams): Positi
 
   if (inFlightKey !== key) {
     inFlightKey = key
-    layoutGraph(toElkGraphInput(spec, sizes))
+    // A rooted view lays out tighter than the overview, as the import graph's
+    // Local View does (tic-d7d7): it draws a median of 4 chips against the
+    // overview's 168, and at that size the default gaps read as a scattering
+    // rather than a neighbourhood.
+    const rooted = rootedElementIds(spec).length > 0
+    layoutGraph(
+      toElkGraphInput(spec, sizes),
+      rooted ? { layerGap: ROOTED_LAYER_GAP, nodeGap: ROOTED_NODE_GAP } : undefined,
+    )
       .then((result) => {
         cache = { key, positioned: toPositioned(result) }
         if (inFlightKey === key) inFlightKey = null
@@ -511,9 +1004,16 @@ export function nodeStyleFor(data: FlowNodeData): NodeStyle {
 }
 
 function style(spec: SceneSpec): StyleMap {
+  // The chip a rooted view is about wears the accent border (as the import
+  // graph's Local View centre does), so it is obvious which of a dozen
+  // look-alike chips the neighbourhood hangs off.  It outranks the cycle
+  // colour on the border, which is not lost: the accent BAR still carries
+  // the cycle's pink, so a root inside a knot says both things at once.
+  const rootIds = new Set(rootedElementIds(spec))
   const nodes = new Map<string, NodeStyle>()
   for (const node of spec.root.children) {
-    nodes.set(node.id, nodeStyleFor(node.data as FlowNodeData))
+    const base = nodeStyleFor(node.data as FlowNodeData)
+    nodes.set(node.id, rootIds.has(node.id) ? { ...base, stroke: THEME.accent } : base)
   }
   const edges = new Map<string, EdgeStyle>()
   for (const edge of spec.edges) {
@@ -531,14 +1031,35 @@ function style(spec: SceneSpec): StyleMap {
 export const callFlowMode: VizMode<CallFlowParams> = {
   id: CALL_FLOW_MODE_ID,
   label: 'Call Flow',
-  defaultParams: { depth: 1, entryLimit: 25, showExternals: true, includeTests: false },
+  defaultParams: {
+    depth: 1,
+    entryLimit: 25,
+    showExternals: true,
+    includeTests: false,
+    rootDepth: 2,
+    direction: 'both',
+    expandCycles: false,
+  },
   paramToggles: [
     { key: 'showExternals', label: 'External calls' },
     { key: 'includeTests', label: 'Test entry points' },
+    { key: 'expandCycles', label: 'Expand cycles' },
+  ],
+  paramOptions: [
+    {
+      key: 'direction',
+      label: 'Trace',
+      options: [
+        { value: 'both', label: 'Both' },
+        { value: 'down', label: 'Calls' },
+        { value: 'up', label: 'Callers' },
+      ],
+    },
   ],
   paramNumbers: [
-    { key: 'depth', label: 'Depth', min: 0, max: 3, step: 1 },
+    { key: 'depth', label: 'Overview depth', min: 0, max: 3, step: 1 },
     { key: 'entryLimit', label: 'Entries', min: 1, max: 200, step: 10 },
+    { key: 'rootDepth', label: 'Trace depth', min: 0, max: 4, step: 1 },
   ],
   select,
   measure,

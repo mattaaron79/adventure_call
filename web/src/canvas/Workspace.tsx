@@ -877,10 +877,20 @@ export function Workspace({
     if (!output || focusPath === '') return null
     const dir =
       output.rects.get(`dir:${focusPath}:group`) ?? output.rects.get(`dir:${focusPath}`)
-    if (dir) return { rect: dir, rootOnly: false }
+    if (dir) return { rect: dir, rootOnly: false, label: undefined }
     const own = output.rects.get(focusPath)
-    return own ? { rect: own, rootOnly: true } : null
-  }, [output, focusPath])
+    if (!own) return null
+    // The one crumb of a root-only scope is named by the focused element's own
+    // chip label rather than by slicing the path (tic-7a5e).  Path-slicing
+    // worked while such a path was a file -- its last '/' segment IS the
+    // basename -- but call flow focuses a SYMBOL, and a dotted symbol id has
+    // no slash to slice, so the crumb came out as the whole
+    // `src.pkg.mod.Class.method`.  The chip already carries the short name the
+    // mode chose to identify it by, and using it is both shorter and more
+    // truthful: the toolbar names the thing the way the picture does.
+    const label = scene.nodes.find((node) => node.id === focusPath)?.label
+    return { rect: own, rootOnly: true, label }
+  }, [output, focusPath, scene])
 
   return (
     <div
@@ -1002,6 +1012,7 @@ export function Workspace({
           rect={focus.rect}
           focusPath={focusPath}
           rootOnly={focus.rootOnly}
+          rootLabel={focus.label}
           onNavigate={(path) => useWorkspace.getState().setFocusPath(path)}
         />
       )}

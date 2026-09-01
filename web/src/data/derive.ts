@@ -492,6 +492,19 @@ export interface CallGraph {
    * (reach, effect propagation) wants, with no topological sort needed.
    */
   condensed: ReadonlyMap<number, readonly number[]>
+  /**
+   * The condensation reversed: component id -> the component ids that call
+   * it.  Every component has an entry, empty when nothing outside itself
+   * calls it.
+   *
+   * Kept here rather than inverted by each consumer because it is a fact
+   * about the graph, not a rendering decision, and because more than one
+   * thing wants it: mode 3's rooted view walks it for the "who can reach
+   * this" cone (tic-7a5e), and the dominator work (tic-d8f2) will need it
+   * too.  Building it in the same pass costs one map over the edges already
+   * being walked, against every caller paying for its own inversion.
+   */
+  condensedCallers: ReadonlyMap<number, readonly number[]>
 }
 
 /** Kinds that can appear at either end of a CALLS edge.  Classes are in here
@@ -631,9 +644,11 @@ export function deriveCallGraph(edges: readonly GraphEdge[], index: SymbolIndex)
   }
 
   const condensed = new Map<number, number[]>()
+  const condensedCallers = new Map<number, number[]>()
   const seen = new Map<number, Set<number>>()
   for (const component of members.keys()) {
     condensed.set(component, [])
+    condensedCallers.set(component, [])
     seen.set(component, new Set())
   }
   for (const edge of callEdges) {
@@ -644,6 +659,7 @@ export function deriveCallGraph(edges: readonly GraphEdge[], index: SymbolIndex)
     if (already.has(to)) continue
     already.add(to)
     condensed.get(from)!.push(to)
+    condensedCallers.get(to)!.push(from)
   }
 
   const result: CallGraph = {
@@ -655,6 +671,7 @@ export function deriveCallGraph(edges: readonly GraphEdge[], index: SymbolIndex)
     members,
     recursive,
     condensed,
+    condensedCallers,
   }
   perIndex.set(index, result)
   return result

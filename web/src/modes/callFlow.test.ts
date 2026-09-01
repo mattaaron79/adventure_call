@@ -4,17 +4,24 @@ import { deriveWorkspace, indexSymbols } from '../data/derive'
 import { deriveEntryPoints } from '../data/entryPoints'
 import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind, SymbolRegistry } from '../data/types'
 import {
+  cacheKeyOf,
   callFlowMode,
+  callFlowRoot,
   callFlowSummary,
   componentId,
   componentLabel,
+  coneOf,
   EXTERNAL_PREFIX,
   frontierOf,
   moduleTail,
   rankedEntryComponents,
+  rootedElementIds,
+  rootSublabelFor,
   sublabelFor,
   toElkGraphInput,
 } from './callFlow'
+import { shouldShowGoIn } from '../canvas/iconButtonLogic'
+import { THEME } from '../canvas/theme'
 import { CALL_FLOW_MODE_ID } from './ids'
 import { modeById, MODES } from './registry'
 
@@ -430,5 +437,269 @@ describe('callFlowMode and the test surface', () => {
     const spec = select({ entryLimit: 50, includeTests: true })
     expect(spec.root.children.map((n) => n.label)).toContain('test_drives')
     expect(callFlowSummary(spec)!.hiddenTests).toBe(0)
+  })
+})
+
+// -- the rooted view (tic-7a5e) ---------------------------------------------
+
+/** The component holding `id`, which every rooted-view test needs. */
+const componentFor = (id: string): number => WORKSPACE.callGraph.componentOf.get(id)!
+const CALLS = WORKSPACE.callGraph
+
+/** `select` with a focus path, i.e. the rooted state. */
+const rooted = (focusPath: string, over = {}) =>
+  callFlowMode.select(WORKSPACE, params(over), { expanded: {}, focusPath })
+
+/** The symbol ids a rooted scene drew, external sinks excluded. */
+const drawnSymbols = (spec: ReturnType<typeof rooted>): Set<string> => {
+  const ids = new Set<string>()
+  for (const [symbol, element] of spec.goto ?? []) {
+    if (element.startsWith(EXTERNAL_PREFIX)) continue
+    if (CALLS.componentOf.has(symbol)) ids.add(symbol)
+  }
+  return ids
+}
+
+describe('coneOf', () => {
+  it('is just the root at depth 0', () => {
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'both', 0)
+    expect([...cone.components]).toEqual([componentFor('m.shared')])
+    expect(cone.depthOf.get(componentFor('m.shared'))).toBe(0)
+  })
+
+  it('walks callees downstream', () => {
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'down', 2)
+    expect(cone.components.has(componentFor('m.deep'))).toBe(true)
+    expect(cone.components.has(componentFor('m.deeper'))).toBe(true)
+    expect(cone.components.has(componentFor('m.wide'))).toBe(false)
+    expect(cone.depthOf.get(componentFor('m.deeper'))).toBe(2)
+  })
+
+  it('walks callers upstream', () => {
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'up', 2)
+    expect(cone.components.has(componentFor('m.wide'))).toBe(true)
+    expect(cone.components.has(componentFor('m.narrow'))).toBe(true)
+    expect(cone.components.has(componentFor('m.deep'))).toBe(false)
+  })
+
+  it('draws BOTH as two cones, never as a walk that picks up siblings', () => {
+    // `t.go` also calls m.deep, so it is two undirected hops from m.shared and
+    // an ordinary breadth-first walk would collect it.  It is neither an
+    // ancestor nor a descendant of m.shared, so it answers neither question
+    // the view asks -- and it is where the size blow-up comes from: on carnot
+    // the mixed walk draws a p90 of 47 components at depth 2 against the two
+    // cones' 18.
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'both', 2)
+    expect(cone.components.has(componentFor('t.go'))).toBe(false)
+    expect([...cone.components].sort()).toEqual(
+      ['m.shared', 'm.wide', 'm.narrow', 't.test_drives', 'm.deep', 'm.deeper']
+        .map(componentFor)
+        .sort(),
+    )
+  })
+
+  it('counts a mutual-recursion knot as one step, not one per member', () => {
+    // m.wide -> m.ping <-> m.pong.  One hop up from the knot reaches m.wide;
+    // if the knot cost a step per member it would not.
+    const cone = coneOf(CALLS, componentFor('m.ping'), 'up', 1)
+    expect(cone.components.has(componentFor('m.wide'))).toBe(true)
+    expect(componentFor('m.ping')).toBe(componentFor('m.pong'))
+  })
+
+  it('counts what sits one step past the edge, once per component', () => {
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'down', 1)
+    // m.deep is drawn; m.deeper is the one thing beyond it.
+    expect(cone.beyond).toBe(1)
+    expect(coneOf(CALLS, componentFor('m.shared'), 'down', 2).beyond).toBe(0)
+  })
+
+  it('does not count the direction it was told not to look in', () => {
+    // Looking only downstream, m.shared's three callers are not "beyond the
+    // edge of the picture" -- they are outside the question being asked.
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'down', 2)
+    expect(cone.beyond).toBe(0)
+    expect(coneOf(CALLS, componentFor('m.shared'), 'up', 2).beyond).toBe(0)
+  })
+
+  it('refuses a whole level rather than a part of one, and says so', () => {
+    // A budget of 2 admits the root plus nothing: m.shared's first upstream
+    // level is three components, which does not fit, so none of it is drawn.
+    // Taking two of the three would mean choosing which callers to believe in.
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'up', 1, 2)
+    expect(cone.components.size).toBe(1)
+    expect(cone.truncated).toBe(true)
+    expect(cone.beyond).toBe(3)
+  })
+
+  it('stops each direction on its own budget, not both together', () => {
+    // Downstream is one component per level and fits; upstream is three at
+    // once and does not.  The descendant must still be drawn.
+    const cone = coneOf(CALLS, componentFor('m.shared'), 'both', 1, 3)
+    expect(cone.components.has(componentFor('m.deep'))).toBe(true)
+    expect(cone.components.has(componentFor('m.wide'))).toBe(false)
+    expect(cone.truncated).toBe(true)
+  })
+
+  it('reports nothing beyond an orphan', () => {
+    const cone = coneOf(CALLS, componentFor('m.lonely'), 'both', 3)
+    expect(cone.components.size).toBe(1)
+    expect(cone.beyond).toBe(0)
+    expect(cone.truncated).toBe(false)
+  })
+})
+
+describe('callFlowMode rooted view', () => {
+  it('draws one function with its callers and callees, and nothing else', () => {
+    const spec = rooted('m.shared')
+    expect(drawnSymbols(spec)).toEqual(
+      new Set(['m.shared', 'm.wide', 'm.narrow', 't.test_drives', 'm.deep', 'm.deeper']),
+    )
+  })
+
+  it('reports what it is rooted on and what it left out', () => {
+    const summary = callFlowRoot(rooted('m.shared', { rootDepth: 1 }))!
+    expect(summary.root).toBe('m.shared')
+    expect(summary.rootIds).toEqual(['m.shared'])
+    expect(summary.direction).toBe('both')
+    expect(summary.depth).toBe(1)
+    expect(summary.drawn).toBe(5)
+    expect(summary.beyond).toBe(1) // m.deeper
+    expect(summary.truncated).toBe(false)
+  })
+
+  it('says on the root chip what is not shown, so a partial view cannot pass for a whole one', () => {
+    const spec = rooted('m.shared', { rootDepth: 1 })
+    const root = spec.root.children.find((node) => node.id === 'm.shared')!
+    expect(root.sublabel).toContain('1 not shown')
+    // ...and stays quiet when there is nothing to admit.
+    const whole = rooted('m.shared', { rootDepth: 3 })
+    expect(whole.root.children.find((node) => node.id === 'm.shared')!.sublabel).not.toContain(
+      'not shown',
+    )
+  })
+
+  it('never claims a reach number on the root, which measures the wrong direction', () => {
+    const spec = rooted('m.shared', { direction: 'up' })
+    const root = spec.root.children.find((node) => node.id === 'm.shared')!
+    expect(root.sublabel).not.toContain('reaches')
+  })
+
+  it('honours the direction, because the two questions are asked separately', () => {
+    expect(drawnSymbols(rooted('m.shared', { direction: 'down' }))).toEqual(
+      new Set(['m.shared', 'm.deep', 'm.deeper']),
+    )
+    expect(drawnSymbols(rooted('m.shared', { direction: 'up' }))).toEqual(
+      new Set(['m.shared', 'm.wide', 'm.narrow', 't.test_drives']),
+    )
+  })
+
+  it('honours the depth limit', () => {
+    expect(drawnSymbols(rooted('m.shared', { direction: 'down', rootDepth: 1 }))).toEqual(
+      new Set(['m.shared', 'm.deep']),
+    )
+  })
+
+  it('offers every chip as the next root, and the framework hides the one you are on', () => {
+    const spec = rooted('m.shared')
+    for (const node of spec.root.children) {
+      expect(node.focusTo).toBe(node.id)
+    }
+    expect(shouldShowGoIn(spec.root.children.find((n) => n.id === 'm.shared')!.focusTo, 'm.shared')).toBe(
+      false,
+    )
+    expect(shouldShowGoIn(spec.root.children.find((n) => n.id === 'm.deep')!.focusTo, 'm.shared')).toBe(
+      true,
+    )
+  })
+
+  it('marks the root so it can be told from its neighbours', () => {
+    const spec = rooted('m.shared')
+    expect(rootedElementIds(spec)).toEqual(['m.shared'])
+    const styles = callFlowMode.style(spec, params())
+    expect(styles.nodes.get('m.shared')!.stroke).toBe(THEME.accent)
+    expect(styles.nodes.get('m.deep')!.stroke).not.toBe(THEME.accent)
+  })
+
+  it('re-lays out when only the root changes', () => {
+    // Two roots can draw the same chips at the same sizes -- so the node ids
+    // and the params alone would hit the stale single-slot cache.
+    const a = rooted('m.wide', { direction: 'down', rootDepth: 0 })
+    const b = rooted('m.shared', { direction: 'up', rootDepth: 0 })
+    expect(cacheKeyOf(a, callFlowMode.measure(a, { expanded: {} }), params())).not.toBe(
+      cacheKeyOf(b, callFlowMode.measure(b, { expanded: {} }), params()),
+    )
+  })
+
+  it('draws a knot as one chip, and as its members when asked', () => {
+    const condensed = rooted('m.ping')
+    expect(condensed.root.children.map((n) => n.label)).toContain('2 functions (cycle)')
+    expect(callFlowRoot(condensed)!.rootIds).toHaveLength(1)
+
+    const expanded = rooted('m.ping', { expandCycles: true })
+    const labels = expanded.root.children.map((n) => n.label)
+    expect(labels).toContain('ping')
+    expect(labels).toContain('pong')
+    expect([...callFlowRoot(expanded)!.rootIds].sort()).toEqual(['m.ping', 'm.pong'])
+  })
+
+  it('draws the calls INSIDE an expanded knot, which is the only reason to expand one', () => {
+    const expanded = rooted('m.ping', { expandCycles: true })
+    const ids = expanded.edges.map((edge) => edge.id)
+    expect(ids).toContain('call:m.ping->m.pong')
+    expect(ids).toContain('call:m.pong->m.ping')
+    // Condensed, the same pair is one chip and the mutual call has nowhere to
+    // go; the "(cycle)" label carries it instead.
+    expect(rooted('m.ping').edges.map((e) => e.id)).not.toContain('call:m.ping->m.pong')
+  })
+
+  it('never draws a self-edge, whose chip has nowhere to put it', () => {
+    const spec = rooted('m.loops')
+    expect(spec.edges.filter((edge) => edge.from === edge.to)).toEqual([])
+    expect(spec.root.children.find((n) => n.id === 'm.loops')!.sublabel).toContain('recursive')
+  })
+
+  it('draws the overview for a focus the call graph cannot resolve', () => {
+    // The fallback `UiState.focusPath` requires (tic-e738): a stale symbol, or
+    // a DIRECTORY handed over by something that mistook this for the fs-tree.
+    for (const bogus of ['', 'm/nope.py', 'm.vanished', 'src/carnot']) {
+      const spec = callFlowMode.select(WORKSPACE, params(), { expanded: {}, focusPath: bogus })
+      expect(callFlowRoot(spec)).toBeUndefined()
+      expect(callFlowSummary(spec)).toBeDefined()
+    }
+  })
+
+  it('roots on a test function when asked directly, whatever the entry filter says', () => {
+    // includeTests governs which entries the OVERVIEW ranks.  Being handed a
+    // root is an explicit request, and silently refusing it would leave the
+    // canvas showing the overview with no explanation.
+    expect(drawnSymbols(rooted('t.go'))).toContain('t.go')
+  })
+
+  it('leaves an orphan as a picture of one thing rather than an empty canvas', () => {
+    const spec = rooted('m.lonely')
+    expect(spec.root.children.map((n) => n.id)).toEqual(['m.lonely'])
+    expect(spec.edges).toEqual([])
+  })
+})
+
+describe('rootSublabelFor', () => {
+  it('says what is missing rather than how far the root reaches', () => {
+    expect(rootSublabelFor(['m.a'], 'm', null, false, 4, false)).toBe('m · 4 not shown')
+  })
+
+  it('stays quiet when the picture is complete', () => {
+    expect(rootSublabelFor(['m.a'], 'm', null, false, 0, false)).toBe('m')
+  })
+
+  it('distinguishes a depth limit from a budget that cut the walk short', () => {
+    expect(rootSublabelFor(['m.a'], 'm', null, false, 9, true)).toBe(
+      'm · 9 not shown (depth capped)',
+    )
+  })
+
+  it('keeps the identity clauses the overview chips use', () => {
+    expect(rootSublabelFor(['m.a', 'm.b'], 'm', 'route', false, 0, false)).toBe(
+      'm · 2 mutually recursive · route',
+    )
   })
 })

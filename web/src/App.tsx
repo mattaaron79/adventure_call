@@ -151,12 +151,16 @@ export function App() {
 
   // A goto target that is not in the current focus scope (tic-1d9a): resolve
   // the smallest scope that contains it so the canvas can pop out and travel.
-  // Only the fs-tree can do that: `minimalScopeForTarget` answers with a
-  // DIRECTORY, and the import graph's focus path is a file -- its Local View
-  // (tic-d7d7) -- so handing it a directory would pop the view into a scope
-  // that mode cannot render, and it would silently fall back to the whole
-  // graph.  Resolving nothing there leaves an unreachable goto as the
-  // no-op the caller already treats it as.
+  // Only the fs-tree can do that, and the allow-list is deliberate rather than
+  // incidental: `minimalScopeForTarget` answers with a DIRECTORY, while the
+  // import graph's focus path is a FILE (its Local View, tic-d7d7) and call
+  // flow's is a SYMBOL ID (its rooted view, tic-7a5e).  Handing either one a
+  // directory would pop the view into a scope that mode cannot render, and
+  // both would then fall back to their unfocused state -- losing the focus the
+  // user had, to travel to something they would not arrive at anyway.
+  // Resolving nothing leaves an unreachable goto as the no-op the caller
+  // already treats it as.  A new mode is opted OUT until it says otherwise,
+  // which is the safe direction for a field whose meaning each mode defines.
   const resolveGotoScope = useCallback(
     (target: string): string | null =>
       workspace && modeId === fsTreeMode.id

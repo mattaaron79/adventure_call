@@ -33,6 +33,7 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   rect,
   focusPath,
   rootOnly = false,
+  rootLabel,
   onNavigate,
 }: {
   viewport: Viewport
@@ -48,6 +49,14 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
    * Local View of a single file.
    */
   rootOnly?: boolean
+  /**
+   * What to call the single root-only crumb (tic-7a5e): the focused element's
+   * own chip label, which the canvas reads off the scene.  Absent falls back
+   * to the last path segment, which is right for a file path and wrong for
+   * anything without slashes in it -- a call-flow focus is a dotted symbol id,
+   * and slicing it yields the whole id back.
+   */
+  rootLabel?: string
   /** Jump to a focus path -- a breadcrumb level, '..' or root (''). */
   onNavigate: (path: string) => void
 }) {
@@ -132,7 +141,7 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
             // The one crumb of a Local View names what the scene is about; it
             // is where you already are, so it is a label, not a button.
             <span className="crumb-label" title={crumb.path}>
-              {crumb.label}
+              {rootLabel ?? crumb.label}
             </span>
           ) : (
             <button

@@ -568,6 +568,12 @@ html, body, #root {
   color: var(--accent);
   font-size: 11.5px;
   font-weight: 600;
+  /* A long name is ellipsised rather than allowed to stretch the floating bar
+     off the canvas (tic-7a5e); the full path stays in the title attribute. */
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The near-pointer connection summary (tic-f1d7): what the lines under the
