@@ -77,6 +77,8 @@ const NODES: GraphNode[] = [
   node('m.pong', 'function'),
   node('m.loops', 'function'),
   node('m.lonely', 'function'),
+  node('t.test_drives', 'function', { module: 't', file_path: 'tests/t.py' }),
+  node('t.go', 'function', { module: 't', file_path: 'tests/t.py' }),
 ]
 
 const EDGES: GraphEdge[] = [
@@ -89,6 +91,8 @@ const EDGES: GraphEdge[] = [
   calls('m.pong', 'm.ping'),
   calls('m.wide', 'm.loops'),
   calls('m.loops', 'm.loops'),
+  calls('t.test_drives', 'm.shared'),
+  calls('t.go', 'm.deep'),
 ]
 
 const GRAPH: CodebaseGraph = {
@@ -397,5 +401,34 @@ describe('rankedEntryComponents', () => {
     const first = rankedEntryComponents(graph, entryPoints, metrics)
     const second = rankedEntryComponents(graph, entryPoints, metrics)
     expect(second).toEqual(first)
+  })
+})
+
+describe('callFlowMode and the test surface', () => {
+  it('leaves test entry points out by default', () => {
+    // Ranking by blast radius puts tests at the top -- they drive the deepest
+    // paths -- so an architecture overview that included them would open on a
+    // wall of them.
+    const labels = select({ entryLimit: 50 }).root.children.map((n) => n.label)
+    expect(labels).not.toContain('test_drives')
+    expect(labels).toContain('wide')
+  })
+
+  it('filters by FILE, not by the test naming rule', () => {
+    // `go` sits in a test module but is not named `test_*`, so the role rule
+    // misses it while it is plainly test surface. On carnot a dozen nested
+    // functions called `go` outranked every real entry point.
+    expect(select({ entryLimit: 50 }).root.children.map((n) => n.label)).not.toContain('go')
+  })
+
+  it('says how many entry points the filter held back', () => {
+    const summary = callFlowSummary(select({ entryLimit: 50 }))!
+    expect(summary.hiddenTests).toBe(2)
+  })
+
+  it('includes them when asked, and then hides none', () => {
+    const spec = select({ entryLimit: 50, includeTests: true })
+    expect(spec.root.children.map((n) => n.label)).toContain('test_drives')
+    expect(callFlowSummary(spec)!.hiddenTests).toBe(0)
   })
 })

@@ -18,7 +18,7 @@ depends_on:
 - tic-1ecc
 blocked_by: null
 created: '2026-09-01T07:24:08'
-updated: '2026-09-01T12:28:47'
+updated: '2026-09-01T12:34:03'
 closed: '2026-09-01T12:28:47'
 ---
 
@@ -61,3 +61,19 @@ FINDING WORTH ITS OWN TICKET, filed as tic-f9f7. The role map does badly on Djan
 Tests: 39 new (584 -> 623, 29 files) across callFlow.test.ts and entryPoints.test.ts -- registration through the registry, component labelling including the method-class and cycle cases, the frontier's component-space stepping and cycle termination, entry ranking (order, uniqueness, determinism), the cycle-as-one-node and self-recursion cases, orphans left out, depth honoured, the summary counts, external sink aggregation and scoping and the toggle, elk input well-formedness, styling coverage, and -- the shape that crashed elk in tic-56b2 -- that no edge ever names a node outside the scene, checked across four param combinations. tsc -b clean, production build fine, no new dependencies.
 
 NOT BROWSER-VERIFIED: no Playwright in this environment. What wants a human eye is listed in my handover message rather than repeated here.
+
+- 2026-09-01T12:34:03 claude.opus.001: Follow-up after the user restored the ../carnot export: verified the mode against it (it had only ever been run against the smaller Django project), and fixed a design problem the bigger codebase exposed.
+
+VERIFIED ON CARNOT: 2574 call nodes, 830 external call pairs, deriveWorkspace 26ms, select ~2ms after the first call. No dangling edges, no two nodes sharing a label+sublabel. The cycle machinery finally has something to draw here -- one "2 functions (cycle)" node, which is the src.carnot.audit._Scan._block/._statement mutual recursion hand-verified back in tic-a8a6.
+
+THE PROBLEM THE BIG CODEBASE EXPOSED: ranking entries by blast radius made this a TEST overview, not an architecture overview. 9 of the top 12 entries by reachDown were tests, because a test drives a deeper path through the system than almost anything else, and 982 of carnot's 1491 entry points are tests at all. The mode answered a different question than the one the ticket set it. Not visible on hypermenu, where the role map matches no tests at all (tic-f9f7).
+
+Fixed with an `includeTests` param, default OFF, and the default matters more than the param. Then a second correction on top: filtering by the `test` ROLE was not enough, because that rule is name-based (`^test_`) and misses the helpers a test module defines around its tests -- carnot's top ranks were a dozen different nested functions all called `go`, none matched by the role, all plainly test surface. The filter is now by FILE (roles.isTestPath), which is the question actually being asked.
+
+The difference is the whole value of the mode. Before: `go · test_tui`, `go · test_tool_running`, `main · playground`, four more `go`s. After: main (playground), ws_endpoint (app, route), create_session (app, route), CarnotApp.action_modal_nav / on_key / on_click (tui), Promote.run, new_agent (loop), CarnotApp.handle_submit (tui, handler), session (testing, fixture). That reads as "how does execution enter this codebase", which is what the ticket asked for.
+
+`CallFlowSummary` gained `hiddenTests` alongside `shown`/`total`, so a filter that removes two thirds of the roots cannot do it silently -- same principle as reporting shown-of-total in the first place.
+
+Sizes with the filter on (real entries reach further than test helpers, so the picture grew): depth 1 limit 25 -> 168 nodes / 283 edges; limit 40 -> 239/428; depth 2 limit 40 -> 415/775; depth 3 -> 507/968. Default entryLimit lowered 40 -> 25 on the strength of those numbers.
+
+4 more tests (623 -> 627): tests excluded by default, the filter working by file rather than by name, hiddenTests reported, and includeTests restoring them. tsc -b clean, build fine.

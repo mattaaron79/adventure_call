@@ -42,6 +42,7 @@
 import type { CallGraph, ExternalCall, Workspace } from '../data/derive'
 import { deriveCallMetrics, type CallMetricsIndex } from '../data/callMetrics'
 import { deriveEntryPoints, type EntryPoints } from '../data/entryPoints'
+import { isTestPath } from '../data/roles'
 import { KIND_COLOR, THEME } from '../canvas/theme'
 import type { Point, Rect, Size } from '../canvas/viewport'
 import { layoutGraph } from '../layout/elkGraph'
@@ -76,6 +77,24 @@ export interface CallFlowParams {
   entryLimit: number
   /** Draw the third-party and stdlib modules the code calls out to. */
   showExternals: boolean
+  /**
+   * Include test functions among the entry points.
+   *
+   * Off by default, and that default is load-bearing rather than a
+   * preference.  Ranking entries by blast radius puts TESTS at the top,
+   * because a test drives a deeper path through the system than almost
+   * anything else: measured on carnot, 9 of the top 12 entries by `reachDown`
+   * were tests, and 982 of 1491 entries are tests at all.  An overview meant
+   * to answer "how does execution enter this codebase" that opens on a wall
+   * of test functions has answered a different question.  Turn it on to see
+   * the test surface, which is a real thing to want -- just not the default.
+   *
+   * The filter is by FILE (roles.isTestPath), not by the `test` role: the
+   * role matches on a `^test_` name, which misses the helpers a test module
+   * defines around its tests, and on carnot those helpers -- a dozen nested
+   * functions all called `go` -- outranked every real entry point.
+   */
+  includeTests: boolean
 }
 
 const CHIP_HEIGHT = 34
@@ -108,8 +127,14 @@ interface FlowEdgeData {
 /** What `select` learned that only the app can render as text (tic-d8a8):
  *  how much of the entry set is actually on screen. */
 export interface CallFlowSummary {
+  /** Entry points drawn. */
   shown: number
+  /** Entry points eligible to be drawn, after the test filter. */
   total: number
+  /** Entry points held back because they are tests (see
+   *  {@link CallFlowParams.includeTests}) -- reported separately so a filter
+   *  that removes two thirds of the roots cannot do it silently. */
+  hiddenTests: number
 }
 
 const summaries = new WeakMap<SceneSpec, CallFlowSummary>()
@@ -204,9 +229,11 @@ export function rankedEntryComponents(
   graph: CallGraph,
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
+  /** Which entries to rank; defaults to all of them. */
+  entries: readonly string[] = entryPoints.entries,
 ): number[] {
   const best = new Map<number, number>()
-  for (const id of entryPoints.entries) {
+  for (const id of entries) {
     const component = graph.componentOf.get(id)
     if (component === undefined) continue
     const reach = metrics.metricOf.get(id)?.reachDown ?? 0
@@ -223,7 +250,20 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   const entryPoints = deriveEntryPoints(graph, data.index)
   const metrics = deriveCallMetrics(graph, data.index, entryPoints)
 
-  const ranked = rankedEntryComponents(graph, entryPoints, metrics)
+  // Filtered by FILE, not by the `test` role.  The role is name-based
+  // (`^test_`), which misses the helpers a test module defines around its
+  // tests -- on carnot the top of the ranking was a wall of nested functions
+  // called `go`, none of which the role matched and all of which are test
+  // surface.  "Is this in a test file" is the question actually being asked.
+  const eligible = params.includeTests
+    ? entryPoints.entries
+    : entryPoints.entries.filter((id) => {
+        const node = data.index.byId.get(id)
+        return node === undefined || !isTestPath(node.file_path)
+      })
+  const hiddenTests = entryPoints.entries.length - eligible.length
+
+  const ranked = rankedEntryComponents(graph, entryPoints, metrics, eligible)
   const seeds = ranked.slice(0, Math.max(1, params.entryLimit))
   const frontier = frontierOf(graph, seeds, Math.max(0, params.depth))
 
@@ -300,7 +340,7 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
     edges,
     goto,
   }
-  summaries.set(spec, { shown: seeds.length, total: ranked.length })
+  summaries.set(spec, { shown: seeds.length, total: ranked.length, hiddenTests })
   void ui
   return spec
 }
@@ -491,8 +531,11 @@ function style(spec: SceneSpec): StyleMap {
 export const callFlowMode: VizMode<CallFlowParams> = {
   id: CALL_FLOW_MODE_ID,
   label: 'Call Flow',
-  defaultParams: { depth: 1, entryLimit: 40, showExternals: true },
-  paramToggles: [{ key: 'showExternals', label: 'External calls' }],
+  defaultParams: { depth: 1, entryLimit: 25, showExternals: true, includeTests: false },
+  paramToggles: [
+    { key: 'showExternals', label: 'External calls' },
+    { key: 'includeTests', label: 'Test entry points' },
+  ],
   paramNumbers: [
     { key: 'depth', label: 'Depth', min: 0, max: 3, step: 1 },
     { key: 'entryLimit', label: 'Entries', min: 1, max: 200, step: 10 },
