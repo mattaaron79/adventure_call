@@ -373,6 +373,48 @@ export function importEdgesIncidentTo(
 }
 
 /**
+ * The nodes at both ends of the given edges -- and the containers those ends
+ * live inside (tic-ece1).
+ *
+ * The companion to {@link importEdgesIncidentTo}: that one answers "which
+ * lines light up", this one answers "which chips do those lines land on", so
+ * the canvas can lend the far end of a lit connection the hover border.  Both
+ * ends are returned, not just the far one -- the caller already paints the
+ * hovered/selected element in a louder colour, so including it costs nothing
+ * and keeps the function a plain property of the edge set.
+ *
+ * Ancestors are walked through {@link SceneNode.parent} (populated during
+ * assemble, see modes/types.ts) because a mode may anchor an import line to a
+ * row inside an expanded container: the row is the endpoint, but the thing a
+ * viewer sees at that end of the line is the container it sits in, so the
+ * container must light up too.  The `hit.has` check both de-duplicates the
+ * walk and terminates it, so a malformed parent cycle cannot hang the render.
+ *
+ * Edges missing a `from`/`to` (assembled before endpoints were carried) and
+ * ids naming no edge in the scene contribute nothing; an empty edge set is
+ * empty out, which is the idle case and must stay cheap.
+ */
+export function endpointNodesOf(scene: Scene, edgeIds: ReadonlySet<string>): Set<string> {
+  const hit = new Set<string>()
+  if (edgeIds.size === 0) return hit
+  const parentOf = new Map<string, string | undefined>()
+  for (const node of scene.nodes) parentOf.set(node.id, node.parent)
+  const addWithAncestors = (start: string): void => {
+    let current: string | undefined = start
+    while (current !== undefined && !hit.has(current)) {
+      hit.add(current)
+      current = parentOf.get(current)
+    }
+  }
+  for (const edge of scene.edges) {
+    if (!edgeIds.has(edge.id)) continue
+    if (edge.from !== undefined) addWithAncestors(edge.from)
+    if (edge.to !== undefined) addWithAncestors(edge.to)
+  }
+  return hit
+}
+
+/**
  * Reorder edges so highlighted ones draw last -- and therefore on top of the
  * grey neighbours (tic-5393).  Stable one-pass partition; when nothing is
  * highlighted the input array is returned untouched, so the common no-selection
