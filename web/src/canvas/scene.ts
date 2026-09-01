@@ -45,6 +45,17 @@ export interface SceneNode extends Rect {
    */
   focusTo?: string
   /**
+   * Which glyph the focus affordance wears (tic-d7d7): 'go-in' (the default
+   * folder-and-arrow) or 'local-view' (the import graph's neighbourhood
+   * scope).  A mode names the shape, the canvas owns the button.
+   */
+  focusIcon?: string
+  /**
+   * The focus affordance's tooltip (tic-d7d7), e.g. 'Local View'; absent
+   * falls back to the generic "Go into <path>".
+   */
+  focusLabel?: string
+  /**
    * A camera-goto target (tic-4d7c): when set, the canvas renders a small
    * 'goto' button on the node that flies the camera to this file/dir path via
    * the existing goto event.  Set by the mode on import rows; absent on rows
@@ -160,27 +171,54 @@ export function reproject(scene: Scene, overrides: Readonly<Record<string, Point
   // container's delta, so its edges and group box travel with it.
   const placed = placedRects(scene, overrides)
 
+  const laidOut = new Map(scene.nodes.map((node) => [node.id, node]))
+  /** How far an endpoint has travelled from where the layout put it. */
+  const deltaOf = (id: string, at: Rect): Point => {
+    const node = laidOut.get(id)
+    if (node === undefined) return ZERO
+    return { x: at.x - node.x, y: at.y - node.y }
+  }
+  const still = (delta: Point): boolean => delta.x === 0 && delta.y === 0
+
+  let rerouted = false
   const edges = scene.edges.map((edge) => {
     if (edge.from === undefined || edge.to === undefined) return edge
     const from = placed.get(edge.from)
     const to = placed.get(edge.to)
     if (!from || !to) return edge
-    // Re-route in the layout's orientation, honouring the wrapped pipe so a
-    // dragged edge keeps its inter-column gap instead of reverting to the
+    const fromDelta = deltaOf(edge.from, from)
+    const toDelta = deltaOf(edge.to, to)
+    // An edge whose ends are both exactly where the layout left them is left
+    // exactly as the layout drew it (tic-556d).  This is what keeps a drag
+    // local: the import graph's polylines come out of elk with real routing --
+    // bends around other files, trunks shared by merged lines -- and re-deriving
+    // every edge on every drag threw all of it away, so moving one chip
+    // flattened the whole picture into centre-to-centre lines.  Nothing about
+    // dragging requires that; only the lines that actually moved need touching.
+    if (still(fromDelta) && still(toDelta)) return edge
+    rerouted = true
+    // The fs-tree's nesting lines are re-elbowed, honouring the wrapped pipe so
+    // a dragged edge keeps its inter-column gap instead of reverting to the
     // midpoint.  The pipe is a fixed offset from the child's leading edge, so
     // it is re-derived from the child's current position on every drag and
     // never lives in absolute space (tic-1d7c).
-    const absPipe =
-      edge.pipe === undefined
-        ? undefined
-        : 'dx' in edge.pipe
-          ? { x: to.x + edge.pipe.dx }
-          : { y: to.y + edge.pipe.dy }
-    const points =
-      edge.route === 'elbow'
-        ? elbow(from, to, edge.orientation ?? 'lr', absPipe)
-        : centerLine(from, to)
-    return { ...edge, points }
+    if (edge.route === 'elbow') {
+      const absPipe =
+        edge.pipe === undefined
+          ? undefined
+          : 'dx' in edge.pipe
+            ? { x: to.x + edge.pipe.dx }
+            : { y: to.y + edge.pipe.dy }
+      return { ...edge, points: elbow(from, to, edge.orientation ?? 'lr', absPipe) }
+    }
+    // Everything else follows its endpoints instead of being redrawn between
+    // them (tic-556d): each end travels with the node it is attached to and
+    // every bend in between is kept, so a routed line stays the line the layout
+    // computed -- attached where it was attached, bending where it bent -- and
+    // simply stretches to the node's new position.  A two-point line is the
+    // degenerate case and comes out exactly as the old centre-to-centre
+    // re-derivation did, since its ends were the centres to begin with.
+    return { ...edge, points: translateEnds(edge.points, fromDelta, toDelta) }
   })
 
   const groups = scene.groups.map((group) => {
@@ -200,16 +238,36 @@ export function reproject(scene: Scene, overrides: Readonly<Record<string, Point
     }
   })
 
-  // Junction dots (tic-531b) are deliberately dropped, not carried: they mark
-  // where elk's merged trunks split, and every edge above has just been
-  // re-routed as a straight centre line between its placed endpoints, so the
-  // old dots would sit on routing that no longer exists.
-  return { groups, edges, nodes: scene.nodes }
+  // Junction dots (tic-531b) are dropped as soon as anything has actually
+  // moved, but no sooner (tic-556d).  They mark where elk's merged trunks
+  // split, which is a property of the routing as a whole: an endpoint that
+  // travels can leave a dot sitting on a trunk that no longer parts there.
+  // With nothing moved there is nothing to invalidate, and a scene that is
+  // only reprojected because some *other* node carries an override keeps its
+  // dots.
+  return { groups, edges, nodes: scene.nodes, ...(rerouted ? {} : { junctions: scene.junctions }) }
 }
 
-/** Straight line between the centres of two rects -- the import-line routing. */
-function centerLine(a: Rect, b: Rect): number[] {
-  return [a.x + a.width / 2, a.y + a.height / 2, b.x + b.width / 2, b.y + b.height / 2]
+/** The delta of an endpoint whose node is not in the scene: it cannot have
+ *  moved, because there is nothing to have moved it. */
+const ZERO: Point = { x: 0, y: 0 }
+
+/**
+ * A polyline with its two ends moved by their nodes' deltas and every bend
+ * between them untouched (tic-556d).
+ *
+ * The line keeps the shape the layout gave it and stays attached to the same
+ * point on each node -- elk anchors an import on a file's border, not its
+ * centre -- so dragging a chip stretches its lines rather than redrawing them.
+ */
+function translateEnds(points: readonly number[], from: Point, to: Point): number[] {
+  const moved = [...points]
+  if (moved.length < 2) return moved
+  moved[0] += from.x
+  moved[1] += from.y
+  moved[moved.length - 2] += to.x
+  moved[moved.length - 1] += to.y
+  return moved
 }
 
 /** Where a node actually sits, once the user's drag override is applied. */
@@ -435,6 +493,176 @@ export function endpointNodesOf(scene: Scene, edgeIds: ReadonlySet<string>): Set
     if (edge.to !== undefined) addWithAncestors(edge.to)
   }
   return hit
+}
+
+// -- near-pointer edge query (tic-f1d7) ---------------------------------------
+
+/**
+ * Distance from `p` to the segment `a`-`b`, all in the same space.
+ *
+ * The zero-length segment is a real case, not a defensive one: a layout can
+ * emit a polyline whose consecutive points coincide (an edge between two
+ * nodes at the same spot, an orthogonal route with a doubled corner), and the
+ * projection below divides by the segment's squared length.  It degenerates to
+ * the distance to the point, which is the right answer anyway.
+ */
+function distanceToSegment(ax: number, ay: number, bx: number, by: number, p: Point): number {
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  if (len2 === 0) return Math.hypot(p.x - ax, p.y - ay)
+  // Projection of ap onto ab, clamped to the segment so a point past either
+  // end measures to that end rather than to the infinite line.
+  const t = Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / len2))
+  return Math.hypot(p.x - (ax + t * dx), p.y - (ay + t * dy))
+}
+
+/**
+ * Distance from a point to a flat `[x0, y0, x1, y1, ...]` polyline (tic-f1d7),
+ * i.e. the smallest distance to any of its segments.
+ *
+ * In whatever space the polyline is in -- the caller works in world units and
+ * converts a screen-pixel radius by the camera scale, so the pick area stays
+ * the same size on screen at any zoom.
+ *
+ * A polyline with a single point measures to that point; an empty one is
+ * infinitely far, so it can never be picked.
+ */
+export function distanceToPolyline(points: readonly number[], p: Point): number {
+  if (points.length < 2) return Infinity
+  if (points.length === 2) return Math.hypot(p.x - points[0], p.y - points[1])
+  let best = Infinity
+  for (let i = 0; i + 3 < points.length; i += 2) {
+    const d = distanceToSegment(points[i], points[i + 1], points[i + 2], points[i + 3], p)
+    if (d < best) best = d
+  }
+  return best
+}
+
+/** An edge found near the pointer, with how far from it the line runs. */
+export interface NearEdge {
+  edge: SceneEdge
+  distance: number
+}
+
+/** What {@link edgesNearPoint} found: the closest few, and how many there were. */
+export interface NearEdges {
+  /** Nearest first, at most `limit` of them. */
+  edges: readonly NearEdge[]
+  /**
+   * How many edges were within the radius altogether, `edges` included.
+   *
+   * The count rides along because the caller renders a summary and has to say
+   * how much of it it is not showing -- over a merged trunk (tic-531b) the
+   * honest answer is "these eight, and forty more", and a capped list alone
+   * cannot say that.
+   */
+  total: number
+}
+
+const NOTHING_NEAR: NearEdges = { edges: [], total: 0 }
+
+/**
+ * Bounding boxes of edge polylines, memoised on the edge object itself.
+ *
+ * The reject below has to be cheaper than the maths it is protecting, and
+ * computing a box means walking every point of the polyline -- for every edge
+ * in the scene, on every probe.  Keyed on the object because scene edges are
+ * immutable and stable across frames: culling filters the array, highlight
+ * ordering re-sorts it, and reproject hands back the very same object for any
+ * edge a drag did not move (tic-556d), so a pointer sweep pays for the boxes
+ * once and then reads them.  Weak, so an edge dropped by a re-layout takes its
+ * entry with it.
+ */
+const edgeBoundsCache = new WeakMap<SceneEdge, Rect>()
+
+function cachedEdgeBounds(edge: SceneEdge): Rect {
+  let box = edgeBoundsCache.get(edge)
+  if (box === undefined) {
+    box = edgeBounds(edge.points)
+    edgeBoundsCache.set(edge, box)
+  }
+  return box
+}
+
+/**
+ * The edges running within `radius` of a world point, nearest first (tic-f1d7).
+ *
+ * A proximity query rather than hit-testing: the edge layer is deliberately
+ * `listening={false}` (hit-testing thousands of polylines on every pointer
+ * move is the most expensive thing on this canvas), so the near-pointer
+ * connection summary asks geometry instead of asking Konva.  Feed it the
+ * CULLED scene -- the one the renderer already computed for this frame -- so
+ * the scan is over what is on screen rather than over the whole graph.
+ *
+ * The cheap bounding-box reject in front of the per-segment maths is what
+ * makes it affordable at pointer rates: on a big graph most edges are nowhere
+ * near the cursor and cost one rect comparison each.
+ */
+export function edgesNearPoint(
+  scene: Scene,
+  at: Point,
+  radius: number,
+  limit: number,
+): NearEdges {
+  if (radius <= 0 || limit <= 0) return NOTHING_NEAR
+  const near: NearEdge[] = []
+  for (const edge of scene.edges) {
+    if (edge.points.length < 2) continue
+    const box = cachedEdgeBounds(edge)
+    if (
+      at.x < box.x - radius ||
+      at.x > box.x + box.width + radius ||
+      at.y < box.y - radius ||
+      at.y > box.y + box.height + radius
+    ) {
+      continue
+    }
+    const distance = distanceToPolyline(edge.points, at)
+    if (distance <= radius) near.push({ edge, distance })
+  }
+  if (near.length === 0) return NOTHING_NEAR
+  near.sort((a, b) => a.distance - b.distance)
+  return { edges: near.length > limit ? near.slice(0, limit) : near, total: near.length }
+}
+
+/**
+ * One `importer -> imported` line per edge, named by the FILES at its ends
+ * (tic-f1d7).
+ *
+ * An edge may be anchored to a row inside an expanded container -- that is
+ * what makes hovering one import light exactly its own line (tic-ea9d) -- but
+ * a row's label is a symbol name, and a connection summary that read
+ * "Thing -> parse" would not tell anyone which files are involved.  So a row
+ * or section endpoint is lifted to the element that contains it, and only
+ * that far: in the fs-tree a file chip's own parent is its DIRECTORY chip, so
+ * walking to the outermost ancestor would name every connection after the
+ * root folder.
+ *
+ * An endpoint naming nothing in the scene falls back to its own id, which for
+ * every mode here is a file path -- more use than a placeholder.
+ */
+export function describeConnections(scene: Scene, edges: readonly SceneEdge[]): string[] {
+  if (edges.length === 0) return []
+  const byId = new Map(scene.nodes.map((node) => [node.id, node]))
+  const nameOf = (id: string | undefined): string => {
+    if (id === undefined) return '?'
+    let node = byId.get(id)
+    const seen = new Set<string>()
+    // `seen` terminates the walk as well as de-duplicating it, so a malformed
+    // parent cycle cannot hang a pointer move.
+    while (
+      node !== undefined &&
+      (node.role === 'row' || node.role === 'section') &&
+      node.parent !== undefined &&
+      !seen.has(node.id)
+    ) {
+      seen.add(node.id)
+      node = byId.get(node.parent)
+    }
+    return node?.label ?? id
+  }
+  return edges.map((edge) => `${nameOf(edge.from)} → ${nameOf(edge.to)}`)
 }
 
 /**

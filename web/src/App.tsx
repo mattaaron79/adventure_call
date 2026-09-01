@@ -7,7 +7,7 @@ import { Workspace } from './canvas/Workspace'
 import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
-import { fileOnlyDirIds, minimalScopeForTarget } from './modes/fsTree'
+import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './modes/fsTree'
 import { getLayoutVersion, subscribeLayoutReady } from './modes/asyncLayout'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
@@ -151,9 +151,18 @@ export function App() {
 
   // A goto target that is not in the current focus scope (tic-1d9a): resolve
   // the smallest scope that contains it so the canvas can pop out and travel.
+  // Only the fs-tree can do that: `minimalScopeForTarget` answers with a
+  // DIRECTORY, and the import graph's focus path is a file -- its Local View
+  // (tic-d7d7) -- so handing it a directory would pop the view into a scope
+  // that mode cannot render, and it would silently fall back to the whole
+  // graph.  Resolving nothing there leaves an unreachable goto as the
+  // no-op the caller already treats it as.
   const resolveGotoScope = useCallback(
-    (target: string): string | null => (workspace ? minimalScopeForTarget(workspace.tree, target) : null),
-    [workspace],
+    (target: string): string | null =>
+      workspace && modeId === fsTreeMode.id
+        ? minimalScopeForTarget(workspace.tree, target)
+        : null,
+    [workspace, modeId],
   )
 
   // A preset's filters were captured as the effective list, so restoring them

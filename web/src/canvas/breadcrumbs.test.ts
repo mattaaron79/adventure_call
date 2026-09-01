@@ -3,6 +3,7 @@ import {
   breadcrumbSegments,
   elideBreadcrumbs,
   parentPath,
+  toolbarCrumbs,
   toolbarScreenY,
 } from './breadcrumbs'
 
@@ -78,5 +79,39 @@ describe('toolbarScreenY (tic-9f02)', () => {
 
   it('uses the custom gap when supplied', () => {
     expect(toolbarScreenY(100, 200, 24, 12)).toBe(100 - 12 - 24)
+  })
+})
+
+describe('toolbarCrumbs (tic-d7d7)', () => {
+  it('is the elided ancestor trail for an ordinary directory scope', () => {
+    expect(toolbarCrumbs('src/app/cli', false, 6)).toEqual(
+      elideBreadcrumbs(breadcrumbSegments('src/app/cli'), 6),
+    )
+    expect(toolbarCrumbs('a/b/c/d/e/f/g/h', false, 6)).toContain(null)
+  })
+
+  it('is the focused item alone in rootOnly mode, however deep it sits', () => {
+    // The import graph's Local View focuses a FILE: its parent directories
+    // are not scopes that mode can render, so the trail collapses to the one
+    // crumb naming what the scene is about -- and never elides, so the
+    // ellipsis a long path would have produced cannot appear.
+    expect(toolbarCrumbs('src/app/cli/main.py', true, 6)).toEqual([
+      { path: 'src/app/cli/main.py', label: 'main.py', current: true },
+    ])
+    expect(toolbarCrumbs('a/b/c/d/e/f/g/h.py', true, 6)).toEqual([
+      { path: 'a/b/c/d/e/f/g/h.py', label: 'h.py', current: true },
+    ])
+  })
+
+  it('keeps the full path on the crumb, so the label can stay the bare name', () => {
+    const [crumb] = toolbarCrumbs('src/app/cli/main.py', true, 6)
+    expect(crumb).not.toBeNull()
+    expect(crumb!.label).toBe('main.py')
+    expect(crumb!.path).toBe('src/app/cli/main.py')
+  })
+
+  it('has no crumbs at the root in either mode, so the toolbar does not exist', () => {
+    expect(toolbarCrumbs('', true, 6)).toEqual([])
+    expect(toolbarCrumbs('', false, 6)).toEqual([])
   })
 })

@@ -54,6 +54,18 @@ export interface SpecNode {
    */
   focusTo?: string
   /**
+   * Which glyph the focus affordance wears (tic-d7d7).  The framework owns
+   * the button; a mode only names the shape it wants, so a new affordance is
+   * an icon and a string rather than canvas code.  Absent means the folder-
+   * and-arrow 'go into' the fs-tree has always drawn.
+   */
+  focusIcon?: 'go-in' | 'local-view'
+  /**
+   * The focus affordance's tooltip (tic-d7d7), e.g. 'Local View'.  Absent
+   * falls back to the generic "Go into <path>".
+   */
+  focusLabel?: string
+  /**
    * When set, the element carries a camera-goto target (tic-4d7c): the canvas
    * renders a 'goto' button that flies the camera to this path via the goto
    * event.  The fs-tree sets it on import rows; the framework renders it
@@ -304,6 +316,8 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         accent: s?.accent,
         draggable: s?.draggable,
         focusTo: node.focusTo,
+        focusIcon: node.focusIcon,
+        focusLabel: node.focusLabel,
         gotoTo: node.gotoTo,
         // Containment (tic-2697): the spec node this one lives inside, so
         // reproject can translate it by its ancestors' drag offsets.

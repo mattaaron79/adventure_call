@@ -559,6 +559,48 @@ html, body, #root {
   padding: 0 4px;
   color: var(--text-faint);
 }
+/* The Local View's single crumb is a label, not a button (tic-d7d7): it names
+   the file the scene is about, which is where you already are.  It borrows the
+   button's metrics so the bar reads as one piece rather than as a button with
+   loose text beside it. */
+.breadcrumb-toolbar .crumb-label {
+  padding: 3px 7px;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* The near-pointer connection summary (tic-f1d7): what the lines under the
+   cursor connect, shown while the cursor is over empty canvas.  Same surface,
+   border and shadow language as the icon tooltip beside it, but multi-line and
+   left-aligned, since it is a list rather than a label.  Never a pointer
+   target: it follows the cursor, so it must not be able to sit under it. */
+.edge-popup {
+  position: absolute;
+  z-index: 40;
+  max-width: 340px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  line-height: 1.5;
+  text-align: left;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.edge-popup-line {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The tail that keeps a dense trunk from papering the canvas over. */
+.edge-popup-more {
+  margin-top: 2px;
+  color: var(--text-faint);
+}
 
 /* The real icon-button tooltip (tic-1d9a): a small positioned bubble above
    the pointer, replacing the host-div title that did not reliably show. */

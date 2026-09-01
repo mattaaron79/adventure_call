@@ -9,14 +9,16 @@
  * useless").  A long trail elides its middle segments rather than running off
  * the canvas, and the toolbar clamps to the visible workspace so a folder
  * that hugs an edge keeps its navigation on screen.
+ *
+ * `rootOnly` cuts it down to a return-to-root button and a label (tic-d7d7),
+ * for a scope whose path is not a directory trail -- the import graph's Local
+ * View focuses a file, so '..' and the ancestor crumbs would offer folder
+ * scopes that mode cannot render.  Everything else about the toolbar --
+ * measuring, clamping, the vertical flip -- is shared, so both shapes behave
+ * identically once positioned.
  */
 import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import {
-  breadcrumbSegments,
-  elideBreadcrumbs,
-  parentPath,
-  toolbarScreenY,
-} from './breadcrumbs'
+import { parentPath, toolbarCrumbs, toolbarScreenY } from './breadcrumbs'
 import { sameSize, worldToScreen, type Rect, type Size, type Viewport } from './viewport'
 
 /** How many crumbs (plus at most one ellipsis) the toolbar shows before
@@ -30,6 +32,7 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   size,
   rect,
   focusPath,
+  rootOnly = false,
   onNavigate,
 }: {
   viewport: Viewport
@@ -38,6 +41,13 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   rect: Rect
   /** The active focus path; non-empty by the time this is rendered. */
   focusPath: string
+  /**
+   * Cut the toolbar down to '/' plus a plain label (tic-d7d7): no '..', no
+   * ancestor crumbs, nothing clickable but the return to the whole graph.
+   * For a focus path that is not a directory trail, i.e. the import graph's
+   * Local View of a single file.
+   */
+  rootOnly?: boolean
   /** Jump to a focus path -- a breadcrumb level, '..' or root (''). */
   onNavigate: (path: string) => void
 }) {
@@ -47,8 +57,8 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   // re-runs every render, setBox() of a fresh size object never bails out
   // (Object.is), and the loop blows past React's update-depth limit.
   const crumbs = useMemo(
-    () => elideBreadcrumbs(breadcrumbSegments(focusPath), MAX_CRUMBS),
-    [focusPath],
+    () => toolbarCrumbs(focusPath, rootOnly, MAX_CRUMBS),
+    [focusPath, rootOnly],
   )
 
   // Measure the toolbar so it can be clamped to the visible workspace: the
@@ -85,14 +95,18 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
       role="navigation"
       aria-label="Scope breadcrumbs"
     >
-      <button
-        type="button"
-        className="crumb-nav"
-        onClick={() => onNavigate(parentPath(focusPath))}
-        title={`Up to ${parentPath(focusPath) || '/'}`}
-      >
-        ..
-      </button>
+      {/* A file's parent directories are meaningless in a scene laid out by
+          imports, so the Local View toolbar drops '..' entirely (tic-d7d7). */}
+      {!rootOnly && (
+        <button
+          type="button"
+          className="crumb-nav"
+          onClick={() => onNavigate(parentPath(focusPath))}
+          title={`Up to ${parentPath(focusPath) || '/'}`}
+        >
+          ..
+        </button>
+      )}
       <button
         type="button"
         className="crumb-nav"
@@ -113,6 +127,12 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
           {crumb === null ? (
             <span className="crumb-ellipsis" aria-hidden="true">
               …
+            </span>
+          ) : rootOnly ? (
+            // The one crumb of a Local View names what the scene is about; it
+            // is where you already are, so it is a label, not a button.
+            <span className="crumb-label" title={crumb.path}>
+              {crumb.label}
             </span>
           ) : (
             <button

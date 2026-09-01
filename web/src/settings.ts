@@ -59,3 +59,27 @@ export const NODE_DRAG_THRESHOLD = 5
 /** Duration of the Konva tween that glides a node to its new position after a
  *  re-layout (expansion, collapse, relayout), in seconds. */
 export const TWEEN_DURATION = 0.2
+
+/**
+ * How close the pointer must come to a connection line, in SCREEN pixels,
+ * before the near-pointer connection summary picks it up (tic-f1d7).
+ *
+ * Screen pixels rather than world units on purpose: the query converts this
+ * by the camera scale, so the pick area stays the same size under the cursor
+ * whether the graph is zoomed right in or pulled all the way out.  32 is the
+ * figure the feature was specified to start at -- generous enough that a 1px
+ * line does not have to be hit exactly, tight enough that it does not sweep
+ * up half a bundle.  Tune here.
+ */
+export const EDGE_HOVER_RADIUS_PX = 32
+
+/**
+ * How many connections the near-pointer summary lists before it stops and
+ * counts the rest (tic-f1d7).
+ *
+ * Over a merged trunk (tic-531b) the query legitimately finds dozens of lines
+ * at nearly the same distance -- which is exactly when the summary is worth
+ * having -- so it has to have a stopping point, or a dense bundle papers the
+ * popup over the canvas it is describing.
+ */
+export const EDGE_POPUP_MAX_LINES = 8

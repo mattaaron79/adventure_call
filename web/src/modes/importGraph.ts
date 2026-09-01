@@ -22,6 +22,14 @@
  * `layout()` call -- for the same graph, so the same cache key -- returns
  * the real result synchronously.
  *
+ * "Local View" (tic-d7d7) narrows the whole graph to one file's immediate
+ * neighbourhood -- the centre, everything it imports, everything that imports
+ * it, and every import edge running between those neighbours -- so a change's
+ * blast radius can be read without the rest of the codebase in the way.  It
+ * reuses the per-mode `ui.focusPath` the fs-tree scopes with rather than
+ * inventing state of its own, with one difference the rest of the app has to
+ * respect: here a focus path names a FILE, not a directory.
+ *
  * A file expands into its detail container on a double-click (tic-ea9d),
  * showing the same rows an fs-tree container does -- with "Imported By"
  * added above Imports, because in a mode about import topology the incoming
@@ -106,11 +114,36 @@ interface ImportEdgeData extends CycleFlag {
 const rowsOf = (node: SpecNode): Row[] => node.children.map((child) => child.data as Row)
 
 const FILE_CHIP_HEIGHT = 40
-const FILE_CHIP_MIN_WIDTH = 120
-const FILE_CHIP_MAX_WIDTH = 260
+const FILE_CHIP_MIN_WIDTH = 150
+const FILE_CHIP_MAX_WIDTH = 340
 /** Rough world-space width of one character at the chip's font size. */
 const CHAR_W = 6.4
-const CHIP_PAD = 24
+/**
+ * Everything on a file chip that is not its name (tic-ea7b): the 12-unit left
+ * inset the canvas draws the label at, plus the two 24-unit icon slots at the
+ * right edge -- the source link and the Local View button, which every file
+ * chip in this mode carries.
+ *
+ * It was 24, from before the chips had icons at all, and the buttons were
+ * simply drawn over the end of the name: a chip measured wide enough for its
+ * label lost 64 units of that label to the icons, so the longer names came out
+ * clipped and the chips read as too small beside the fs-tree's.  Measuring the
+ * whole chip -- name AND furniture -- is what makes the width honest.
+ */
+const CHIP_PAD = 76
+
+/**
+ * Elk spacing while a Local View is up (tic-d7d7), against the 64/12 default
+ * ./elkConvert lays the whole graph out with.  "A less spacious view for
+ * quicker analysis" was the request: a dozen chips at whole-graph spacing
+ * read as a sparse scattering, and pulling the layers and the rows together
+ * makes the neighbourhood read as one compact picture.  Not so tight that
+ * the import lines lose their room to bend -- elk still routes between the
+ * layers, and below about a chip's height of layer gap the arrows start
+ * crowding the boxes they point at.
+ */
+const LOCAL_LAYER_GAP = 36
+const LOCAL_NODE_GAP = 8
 
 const EMPTY_POSITIONED: Positioned = { rects: new Map(), edgePoints: new Map() }
 
@@ -143,6 +176,60 @@ function rowNodes(data: Workspace, file: FsFile): SpecNode[] {
   }))
 }
 
+/**
+ * What {@link select} records on the spec root about the active Local View
+ * (tic-d7d7): the centre file, or the empty string for the whole graph.
+ *
+ * It rides on the root's mode-private `data` payload -- the same channel the
+ * cycle flags use -- because `layout` and `style` never see `UiState`, and
+ * both need to know: the layout tightens its spacing inside a Local View and
+ * the styling emphasises the file the view is about.  Threading the ui state
+ * into two more phase signatures would change the framework for one mode;
+ * this stays inside the mode, where the framework already promises not to
+ * look.
+ */
+interface LocalView {
+  centre: string
+}
+
+/** The Local View centre carried on a spec, or '' for the whole graph. */
+export function localViewCentre(spec: SceneSpec): string {
+  return (spec.root.data as LocalView | undefined)?.centre ?? ''
+}
+
+/**
+ * The files a Local View of `centre` shows (tic-d7d7): the centre itself,
+ * every file it imports, and every file that imports it.  One hop in BOTH
+ * directions, confirmed with the user 2026-08-31 -- "which files does a
+ * change here immediately affect" is as much about the importers above as
+ * the imports below, and two hops is the whole graph again on anything but a
+ * leaf.
+ *
+ * Only the node set is computed here.  The edges follow from it for free:
+ * `select` keeps every import edge with both ends in the set, so a dependency
+ * two neighbours share shows the lines that make them share it, rather than
+ * hiding them and leaving the neighbourhood looking like a bare star.
+ *
+ * `visible` is the file set the current exclude/file-query scope leaves in
+ * the tree; a neighbour outside it is dropped here rather than becoming a
+ * node this mode never creates (the unresolved-shape crash tic-56b2 fixed).
+ * One pass over `fileImports` covers both directions -- `data.fileImporters`
+ * (tic-0680) indexes the incoming half, but there is no forward index, so a
+ * single scan is both simpler and cheaper than an index lookup plus a scan.
+ */
+export function neighbourhoodOf(
+  data: Workspace,
+  centre: string,
+  visible: ReadonlySet<string>,
+): Set<string> {
+  const files = new Set<string>([centre])
+  for (const edge of data.fileImports) {
+    if (edge.source === centre && visible.has(edge.target)) files.add(edge.target)
+    if (edge.target === centre && visible.has(edge.source)) files.add(edge.source)
+  }
+  return files
+}
+
 function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneSpec {
   const expanded = ui.expanded
   const lod = ui.lod ?? 0
@@ -164,14 +251,27 @@ function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneS
   // show no rows, so drawing them is cost with nothing to read.
   const fileOpen = (file: FsFile): boolean => lod < 3 && (expanded[file.path] ?? false)
 
+  // Local View (tic-d7d7).  The mode reuses `ui.focusPath` -- already
+  // persisted, already captured by presets, and `setFocusPath` already clears
+  // the drag overrides a wider view left behind -- but reads it as a FILE
+  // rather than a directory.  A focus path naming nothing in the current
+  // workspace (a `/out` refetch or a filter change dropped it) falls back to
+  // the whole graph rather than drawing nothing, exactly as fsTree.scopeRoot
+  // does with a directory that has gone away.
+  const files = [...walkFiles(data.tree)]
+  const inWorkspace = new Set(files.map((file) => file.path))
+  const focusPath = ui.focusPath ?? ''
+  const centre = focusPath !== '' && inWorkspace.has(focusPath) ? focusPath : ''
+  const visibleFiles =
+    centre === '' ? inWorkspace : neighbourhoodOf(data, centre, inWorkspace)
+
   const children: SpecNode[] = []
   const goto = new Map<string, string>()
-  const visibleFiles = new Set<string>()
   /** Files drawn as containers right now, so the edge anchoring below knows
    *  which ends actually have rows to land on. */
   const openFiles = new Set<string>()
-  for (const file of walkFiles(data.tree)) {
-    visibleFiles.add(file.path)
+  for (const file of files) {
+    if (!visibleFiles.has(file.path)) continue
     const open = fileOpen(file)
     if (open) openFiles.add(file.path)
     const symbols = data.index.byModule.get(file.module.id)?.length ?? 0
@@ -190,6 +290,13 @@ function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneS
       // Double-click expands (tic-ea9d); the canvas reads this through
       // ModeOutput.expandable and the store persists it per mode.
       expandable: true,
+      // Local View (tic-d7d7): every file offers to become the centre of its
+      // own neighbourhood.  The canvas renders the button generically off
+      // these three fields -- and hides it on the file already at the centre,
+      // which has nowhere to go into.
+      focusTo: file.path,
+      focusIcon: 'local-view',
+      focusLabel: 'Local View',
       children: open ? rowNodes(data, file) : [],
       data: { inCycle: fileInCycle(file.path) } satisfies CycleFlag,
     })
@@ -248,6 +355,7 @@ function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneS
     symbolId: null,
     expandable: false,
     children,
+    data: { centre } satisfies LocalView,
   }
 
   return { root, groups: [], edges, goto }
@@ -298,6 +406,13 @@ function measure(spec: SceneSpec, _ui: UiState): SizeMap {
  * (an expanded container, say) alters the geometry without touching an id,
  * and would fall into the identical trap.
  *
+ * The Local View centre (tic-d7d7) is in for the third time for the same
+ * reason.  Scoping to a neighbourhood usually changes the node set, so the
+ * ids would mostly catch it -- but not always: on a two-file graph the
+ * neighbourhood of one file IS both files, so the ids and the sizes match
+ * the whole-graph layout exactly while the elk spacing does not, and the
+ * tighter layout would silently reuse the roomy cached one.
+ *
  * Node ids and edge ids are unique and deterministic per file/edge, so
  * joining them is enough; the sizes ride along in the same order as the
  * children they measure, and the params are serialised whole so a new knob
@@ -312,7 +427,7 @@ export function cacheKeyOf(spec: SceneSpec, sizes: SizeMap, params: ImportGraphP
       return size ? `${size.width}x${size.height}` : '?'
     })
     .join(',')
-  return `${nodeIds}|${edgeIds}|${dims}|${JSON.stringify(params)}`
+  return `${nodeIds}|${edgeIds}|${dims}|${JSON.stringify(params)}|${localViewCentre(spec)}`
 }
 
 /**
@@ -452,7 +567,13 @@ function layout(spec: SceneSpec, sizes: SizeMap, params: ImportGraphParams): Pos
 
   if (inFlightKey !== key) {
     inFlightKey = key
-    layoutGraph(toElkGraphInput(spec, sizes), { mergeEdges: params.mergeLines })
+    // A Local View lays out tighter than the whole graph (tic-d7d7); the
+    // centre rides on the spec because `layout` never sees the ui state.
+    const local = localViewCentre(spec) !== ''
+    layoutGraph(toElkGraphInput(spec, sizes), {
+      mergeEdges: params.mergeLines,
+      ...(local ? { layerGap: LOCAL_LAYER_GAP, nodeGap: LOCAL_NODE_GAP } : {}),
+    })
       .then((result) => {
         // The spec captured here is the one this key was computed from, so
         // the rows and anchors finalisePositioned reads always match the
@@ -505,14 +626,22 @@ function rowStyle(row: Row, role: string): NodeStyle {
 }
 
 function style(spec: SceneSpec, _params: ImportGraphParams): StyleMap {
+  const centre = localViewCentre(spec)
   const nodes = new Map<string, NodeStyle>()
   for (const node of spec.root.children) {
     const cycle = isInCycle(node)
+    // The file a Local View is about wears the accent border (tic-d7d7), so
+    // it is obvious which of a dozen look-alike chips the neighbourhood hangs
+    // off.  It outranks the cycle border, which is not lost: the accent bar
+    // below still carries the cycle's pink, so a centre inside a cycle says
+    // both things at once.  Outside a Local View `centre` is '' and no file
+    // id can match it, so the whole graph is styled exactly as before.
+    const isCentre = node.id === centre
     nodes.set(node.id, {
       // An expanded container reads as a surface holding rows, a collapsed
       // file as a chip on the grid -- the same two fills fs-tree uses.
       fill: node.children.length > 0 ? THEME.surface2 : THEME.surface,
-      stroke: cycle ? THEME.cycle : THEME.line,
+      stroke: isCentre ? THEME.accent : cycle ? THEME.cycle : THEME.line,
       accent: cycle ? THEME.cycle : KIND_COLOR.module,
     })
     for (const child of node.children) {

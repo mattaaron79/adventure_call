@@ -4,6 +4,9 @@ import {
   ANTS_DASH,
   ANTS_SPEED_PX_PER_SEC,
   antsDashOffset,
+  describeConnections,
+  distanceToPolyline,
+  edgesNearPoint,
   endpointNodesOf,
   highlightedEdgesLast,
   importEdgesIncidentTo,
@@ -190,7 +193,11 @@ const CONTAINER: Scene = {
     },
   ],
   edges: [
-    { id: 'e', points: [262, 190, 450, 20], stroke: '#222', from: 'r2', to: 'x', route: 'center' },
+    // The LAID-OUT line: r2's centre (62,90) to x's centre (450,20).  It has
+    // to be the pre-drag geometry -- reproject now moves an edge's ends by how
+    // far their nodes have travelled from the layout (tic-556d), so a fixture
+    // baked at the post-drag position would be translated a second time.
+    { id: 'e', points: [62, 90, 450, 20], stroke: '#222', from: 'r2', to: 'x', route: 'center' },
   ],
   nodes: [
     node('c', 0, 0),
@@ -441,5 +448,206 @@ describe('antsDashOffset', () => {
 
   it('uses a short, subtle repeating dash pattern', () => {
     expect(ANTS_DASH).toEqual([6, 6])
+  })
+})
+
+// -- routed polylines survive a drag (tic-556d) -------------------------------
+
+/**
+ * What elk hands the import graph: real polylines with bends, anchored on the
+ * files' borders rather than their centres, plus the junction dots of a merged
+ * trunk.  `a -> c` and `b -> c` share the trunk that enters c.
+ */
+const ROUTED_GRAPH: Scene = {
+  groups: [],
+  edges: [
+    { id: 'a->c', points: [50, 40, 50, 70, 250, 70, 250, 100], stroke: '#222', from: 'a', to: 'c' },
+    { id: 'b->c', points: [250, 40, 250, 70, 250, 100], stroke: '#222', from: 'b', to: 'c' },
+  ],
+  nodes: [node('a', 0, 0), node('b', 200, 0), node('c', 200, 100)],
+  junctions: [{ x: 250, y: 70 }],
+}
+
+describe('reproject keeps the routing a drag did not touch (tic-556d)', () => {
+  it('leaves an edge whose ends both stayed put exactly as the layout drew it', () => {
+    // The bug: every edge was re-derived on every drag, so moving one chip
+    // flattened every routed line in the scene into a centre-to-centre stick.
+    const { edges } = reproject(ROUTED_GRAPH, { b: { x: 600, y: 400 } })
+    const untouched = edges.find((e) => e.id === 'a->c')!
+    expect(untouched.points).toEqual([50, 40, 50, 70, 250, 70, 250, 100])
+    expect(untouched).toBe(ROUTED_GRAPH.edges[0])
+  })
+
+  it('moves the dragged end and keeps every bend in between', () => {
+    const { edges } = reproject(ROUTED_GRAPH, { b: { x: 600, y: 400 } })
+    const moved = edges.find((e) => e.id === 'b->c')!
+    // b travelled (+400,+400): its end of the line goes with it, the bend at
+    // (250,70) and the anchor on c are exactly where elk put them.
+    expect(moved.points).toEqual([650, 440, 250, 70, 250, 100])
+  })
+
+  it('carries both ends when the whole edge travels', () => {
+    const { edges } = reproject(ROUTED_GRAPH, { b: { x: 210, y: 10 }, c: { x: 210, y: 110 } })
+    expect(edges.find((e) => e.id === 'b->c')!.points).toEqual([260, 50, 250, 70, 260, 110])
+  })
+
+  it('keeps the junction dots while nothing has moved, and drops them once something has', () => {
+    // A dot marks where merged trunks part; an endpoint that travels can leave
+    // one sitting on routing that no longer parts there.  But a scene
+    // reprojected with overrides that move nothing has nothing to invalidate.
+    expect(reproject(ROUTED_GRAPH, {}).junctions).toEqual([{ x: 250, y: 70 }])
+    expect(reproject(ROUTED_GRAPH, { a: { x: 0, y: 0 } }).junctions).toEqual([{ x: 250, y: 70 }])
+    expect(reproject(ROUTED_GRAPH, { b: { x: 600, y: 400 } }).junctions).toBeUndefined()
+  })
+})
+
+// -- the near-pointer edge query (tic-f1d7) -----------------------------------
+
+describe('distanceToPolyline', () => {
+  /** A right-angled route: (0,0) across to (100,0), then down to (100,100). */
+  const L = [0, 0, 100, 0, 100, 100]
+
+  it('measures perpendicular to the segment a point sits beside', () => {
+    expect(distanceToPolyline(L, { x: 50, y: 10 })).toBe(10)
+    expect(distanceToPolyline(L, { x: 90, y: 50 })).toBe(10)
+  })
+
+  it('is zero on the line itself, corners included', () => {
+    expect(distanceToPolyline(L, { x: 50, y: 0 })).toBe(0)
+    expect(distanceToPolyline(L, { x: 100, y: 0 })).toBe(0)
+  })
+
+  it('measures to the nearer END for a point past either one', () => {
+    // Not to the infinite line the segment lies on: a point beyond the start
+    // of a horizontal run is 10 away from that start, not 0 away from the
+    // line through it.
+    expect(distanceToPolyline(L, { x: -10, y: 0 })).toBe(10)
+    expect(distanceToPolyline(L, { x: 100, y: 130 })).toBe(30)
+  })
+
+  it('takes the closest of several segments', () => {
+    // Nearest the corner: 10 from the horizontal run, ~14 from the vertical.
+    expect(distanceToPolyline(L, { x: 90, y: -10 })).toBe(10)
+  })
+
+  it('handles a zero-length segment as the distance to that point', () => {
+    // A doubled point is a real thing a layout can emit, and the projection
+    // maths divides by the segment length.
+    expect(distanceToPolyline([50, 50, 50, 50], { x: 50, y: 60 })).toBe(10)
+    expect(distanceToPolyline([0, 0, 0, 0, 10, 0], { x: 5, y: 3 })).toBe(3)
+  })
+
+  it('measures to a single point, and puts an empty polyline out of reach', () => {
+    expect(distanceToPolyline([10, 10], { x: 13, y: 14 })).toBe(5)
+    expect(distanceToPolyline([], { x: 0, y: 0 })).toBe(Infinity)
+  })
+})
+
+/** Three parallel horizontal lines 20 apart, as a bundle running past a point. */
+const BUNDLE: Scene = {
+  groups: [],
+  nodes: [],
+  edges: [
+    { id: 'near', points: [0, 100, 200, 100], stroke: '#222' },
+    { id: 'mid', points: [0, 120, 200, 120], stroke: '#222' },
+    { id: 'far', points: [0, 160, 200, 160], stroke: '#222' },
+    { id: 'elsewhere', points: [0, 900, 200, 900], stroke: '#222' },
+  ],
+}
+
+describe('edgesNearPoint', () => {
+  it('returns the edges within the radius, nearest first', () => {
+    const found = edgesNearPoint(BUNDLE, { x: 100, y: 95 }, 30, 8)
+    expect(found.edges.map((e) => e.edge.id)).toEqual(['near', 'mid'])
+    expect(found.edges[0].distance).toBe(5)
+    expect(found.edges[1].distance).toBe(25)
+    expect(found.total).toBe(2)
+  })
+
+  it('respects the radius', () => {
+    expect(edgesNearPoint(BUNDLE, { x: 100, y: 95 }, 4, 8).edges).toEqual([])
+    expect(edgesNearPoint(BUNDLE, { x: 100, y: 95 }, 70, 8).total).toBe(3)
+  })
+
+  it('honours the limit while still reporting how many there were', () => {
+    // The merged-trunk case: the cap is what keeps the popup off the canvas,
+    // and the total is what lets it say how much it is not showing.
+    const found = edgesNearPoint(BUNDLE, { x: 100, y: 95 }, 70, 2)
+    expect(found.edges.map((e) => e.edge.id)).toEqual(['near', 'mid'])
+    expect(found.total).toBe(3)
+  })
+
+  it('finds nothing in an empty scene, or with a radius or limit of zero', () => {
+    expect(edgesNearPoint({ groups: [], nodes: [], edges: [] }, { x: 0, y: 0 }, 30, 8)).toEqual({
+      edges: [],
+      total: 0,
+    })
+    expect(edgesNearPoint(BUNDLE, { x: 100, y: 100 }, 0, 8).edges).toEqual([])
+    expect(edgesNearPoint(BUNDLE, { x: 100, y: 100 }, 30, 0).edges).toEqual([])
+  })
+
+  it('measures the whole polyline, not just its bounding box', () => {
+    // A point inside an L's bounding box but far from either run must not be
+    // picked up: the bbox is only the cheap reject in front of the maths.
+    const l: Scene = {
+      groups: [],
+      nodes: [],
+      edges: [{ id: 'l', points: [0, 0, 100, 0, 100, 100], stroke: '#222' }],
+    }
+    expect(edgesNearPoint(l, { x: 10, y: 90 }, 30, 8).edges).toEqual([])
+    expect(edgesNearPoint(l, { x: 10, y: 90 }, 120, 8).edges).toHaveLength(1)
+  })
+})
+
+describe('describeConnections', () => {
+  const scene: Scene = {
+    groups: [],
+    nodes: [
+      { ...node('src/a.py', 0, 0), label: 'a.py', role: 'file' },
+      { ...node('src/b.py', 300, 0), label: 'b.py', role: 'file' },
+      { ...node('dir:src', 0, 0), label: 'src', role: 'dir' },
+      { ...node('row:src/a.py:imp:1', 10, 10), label: 'Thing', role: 'row', parent: 'src/a.py' },
+    ],
+    edges: [],
+  }
+
+  it('names both ends by their node labels', () => {
+    const line = { id: 'e', points: [0, 0, 1, 1], stroke: '', from: 'src/a.py', to: 'src/b.py' }
+    expect(describeConnections(scene, [line])).toEqual(['a.py → b.py'])
+  })
+
+  it('lifts a row endpoint to the file container it sits in', () => {
+    // A row's own label is a symbol name; "Thing → b.py" would not say which
+    // files are connected, which is the whole point of the summary.
+    const line = {
+      id: 'e',
+      points: [0, 0, 1, 1],
+      stroke: '',
+      from: 'row:src/a.py:imp:1',
+      to: 'src/b.py',
+    }
+    expect(describeConnections(scene, [line])).toEqual(['a.py → b.py'])
+  })
+
+  it('does not lift a file to its directory', () => {
+    // In the fs-tree a file chip's parent IS its directory chip, so walking to
+    // the outermost ancestor would name every connection after the root folder.
+    const withParent: Scene = {
+      ...scene,
+      nodes: scene.nodes.map((n) => (n.id === 'src/a.py' ? { ...n, parent: 'dir:src' } : n)),
+    }
+    const line = { id: 'e', points: [0, 0, 1, 1], stroke: '', from: 'src/a.py', to: 'src/b.py' }
+    expect(describeConnections(withParent, [line])).toEqual(['a.py → b.py'])
+  })
+
+  it('falls back to the endpoint id when the node is not in the scene', () => {
+    // An edge can cross the viewport with both its files culled out of it; the
+    // id is a file path, which is more use than a placeholder.
+    const line = { id: 'e', points: [0, 0, 1, 1], stroke: '', from: 'src/gone.py', to: 'src/b.py' }
+    expect(describeConnections(scene, [line])).toEqual(['src/gone.py → b.py'])
+  })
+
+  it('is empty for no edges', () => {
+    expect(describeConnections(scene, [])).toEqual([])
   })
 })

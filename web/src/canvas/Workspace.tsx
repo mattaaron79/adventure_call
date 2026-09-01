@@ -18,7 +18,13 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Circle, Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
-import { GOTO_DURATION_MS, NODE_DRAG_THRESHOLD, TWEEN_DURATION } from '../settings'
+import {
+  EDGE_HOVER_RADIUS_PX,
+  EDGE_POPUP_MAX_LINES,
+  GOTO_DURATION_MS,
+  NODE_DRAG_THRESHOLD,
+  TWEEN_DURATION,
+} from '../settings'
 import { emitGoto, onGoto } from '../data/goto'
 import { resolveGoto, type ModeOutput } from '../modes/types'
 import {
@@ -32,16 +38,19 @@ import {
 import { FILE_SYMLINK_ICON_PATHS } from '../ui/FileSymlinkIcon'
 import { GOTO_ICON_PATHS } from '../ui/GotoIcon'
 import { GO_IN_ICON_PATHS } from '../ui/GoInIcon'
+import { LOCAL_VIEW_ICON_PATHS } from '../ui/VectorPolygonIcon'
 import { launchVscodeLink } from '../ui/Inspector'
 import { BreadcrumbToolbar } from './BreadcrumbToolbar'
 import { Grid } from './Grid'
 import { CanvasIconButton } from './IconButton'
-import { shouldShowGoIn } from './iconButtonLogic'
+import { iconSlots, shouldShowGoIn } from './iconButtonLogic'
 import { lodOf } from './lod'
 import {
   ANTS_DASH,
   antsDashOffset,
   cullScene,
+  describeConnections,
+  edgesNearPoint,
   endpointNodesOf,
   highlightedEdgesLast,
   importEdgesIncidentTo,
@@ -58,7 +67,7 @@ import {
 } from './scene'
 import { THEME } from './theme'
 import { useViewport } from './useViewport'
-import { centerOn, type Point, type Rect as WorldRect } from './viewport'
+import { centerOn, screenToWorld, type Point, type Rect as WorldRect } from './viewport'
 
 const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif'
 
@@ -72,12 +81,35 @@ const DBLCLICK_MS = 350
  *  low zoom instead of pockmarking the graph. */
 const JUNCTION_RADIUS = 3
 
+/**
+ * The glyphs a focus affordance can wear (tic-d7d7), by the small id a mode
+ * puts on `SceneNode.focusIcon`.  The button itself stays generic: a mode
+ * names a shape, the canvas looks it up here, and an unset (or unknown) id
+ * falls back to the folder-and-arrow the fs-tree has always drawn -- so
+ * adding an affordance is an entry here and a string in the mode.
+ */
+const FOCUS_ICON_PATHS: Readonly<Record<string, readonly string[]>> = {
+  'go-in': GO_IN_ICON_PATHS,
+  'local-view': LOCAL_VIEW_ICON_PATHS,
+}
+
 /** Nothing selected and nothing hovered: the lit-edge set and the connected-
  *  node set both stay this one stable reference so the idle scene (and every
  *  pan/zoom frame) re-renders for free (tic-5393, tic-ece1).  Two empty sets
  *  would render identically but break the memo identity that makes the idle
  *  case cost nothing, so both memos return this. */
 const NO_HIGHLIGHT: ReadonlySet<string> = new Set()
+
+/** The near-pointer connection summary (tic-f1d7), in host-relative px. */
+interface EdgePopup {
+  x: number
+  y: number
+  /** One `importer -> imported` line per connection, at most
+   *  {@link EDGE_POPUP_MAX_LINES} of them. */
+  lines: string[]
+  /** Connections within the pick radius that the list does not name. */
+  more: number
+}
 
 interface NodeHandlers {
   onPointerDown: (e: KonvaEventObject<PointerEvent>) => void
@@ -387,14 +419,31 @@ export function Workspace({
   // not stale drags from the wider view.  Skipped on mount (prev === current),
   // so a restored scoped view keeps its saved camera.
   const prevFocusPath = useRef(focusPath)
+  const fitAfterFocus = useRef(false)
   useEffect(() => {
     if (prevFocusPath.current === focusPath) return
     prevFocusPath.current = focusPath
     // A goto that widened the scope flies straight to its target (tic-1d9a);
     // skip the fit so it does not fight the pending flight.
     if (pendingGotoRef.current !== null) return
+    // Deferred rather than fitted here (tic-ea7b): a mode whose layout is
+    // async has nothing laid out yet at this point -- the import graph's Local
+    // View re-renders with an empty scene and only fills in when elk answers,
+    // so fitting now would frame nothing and the arriving scene would never be
+    // framed at all.  The effect below fits as soon as there is something to
+    // fit, which for a synchronous mode is this same commit.
+    fitAfterFocus.current = true
+  }, [focusPath])
+
+  // The deferred focus-scope fit: the first non-empty scene after entering or
+  // leaving a scope gets framed.  Empty scenes are skipped rather than
+  // consuming the flag, which is what lets it survive the placeholder render
+  // an async layout goes through (tic-ea7b).
+  useEffect(() => {
+    if (!fitAfterFocus.current || scene.nodes.length === 0) return
+    fitAfterFocus.current = false
     fit()
-  }, [focusPath, fit])
+  }, [scene, fit])
 
   // Collapse All / Expand All (tic-2356) reshape the scene, then re-frame the
   // camera on the new layout.  fit() reads the scene through a ref, so it
@@ -664,6 +713,114 @@ export function Workspace({
   // a threshold crossing, never per pan/zoom frame.
   const lod = lodOf(viewport.scale)
 
+  // -- the near-pointer connection summary (tic-f1d7) -----------------------
+  //
+  // Hovering a bundle of lines over empty canvas says what those lines
+  // connect.  It is a proximity query against the culled scene this render
+  // already computed, NOT a hit test: the edge layer is listening={false} on
+  // purpose (see the module docstring), and making a couple of thousand
+  // polylines into hit targets to answer this would be the most expensive
+  // thing on the canvas.
+  //
+  // The pointer moves far more often than the browser paints, so the query is
+  // throttled to one requestAnimationFrame: the handler only records where the
+  // pointer is, and at most one probe runs per frame with the latest position.
+  const [edgePopup, setEdgePopup] = useState<EdgePopup | null>(null)
+  // Import lines only, which is what "a connection" means everywhere else on
+  // this canvas -- selection highlighting and the marching ants both key on
+  // the same kind (tic-5393, tic-ece1).  The fs-tree's nesting elbows are
+  // structure rather than connection: a popup reading "app -> errors.py" over
+  // one says nothing the picture is not already saying, and a folder's fan of
+  // them would crowd out the import lines the summary is for.  Filtered once
+  // per scene rather than per probe, and it shrinks the scan too.
+  const connections = useMemo(
+    () => ({ ...visible, edges: visible.edges.filter((edge) => edge.kind === 'import') }),
+    [visible],
+  )
+  const connectionsRef = useRef(connections)
+  connectionsRef.current = connections
+  const viewportRef = useRef(viewport)
+  viewportRef.current = viewport
+  const probe = useRef<{ frame: number | null; at: Point | null }>({ frame: null, at: null })
+
+  // The summary answers a question about EMPTY canvas, so it stays out of the
+  // way of everything else the pointer can be doing: the user's explicit
+  // condition is "not when a node is under the pointer", and a gesture in
+  // flight (pan, marquee, node drag) owns the pointer outright.
+  const suppressed = hovered !== null || panning || marquee !== null
+  const suppressedRef = useRef(suppressed)
+  suppressedRef.current = suppressed
+
+  const probeEdges = useCallback((clientX: number, clientY: number) => {
+    const el = host.current
+    if (!el) return
+    const box = el.getBoundingClientRect()
+    const at = { x: clientX - box.left, y: clientY - box.top }
+    const vp = viewportRef.current
+    // A screen-pixel radius converted by the camera scale, so the pick area is
+    // the same size under the cursor at any zoom.
+    const found = edgesNearPoint(
+      connectionsRef.current,
+      screenToWorld(vp, at),
+      EDGE_HOVER_RADIUS_PX / vp.scale,
+      EDGE_POPUP_MAX_LINES,
+    )
+    if (found.edges.length === 0) {
+      setEdgePopup(null)
+      return
+    }
+    // Named off the FULL scene, not the culled one: a line can cross the
+    // viewport with both of its files scrolled off it, and the summary should
+    // still be able to say what it connects.  Identical lines are collapsed --
+    // in the fs-tree several symbol rows of one file can import the same file,
+    // and repeating "a.py -> b.py" four times says nothing extra.
+    const lines = [
+      ...new Set(describeConnections(sceneRef.current, found.edges.map((near) => near.edge))),
+    ]
+    setEdgePopup({ x: at.x, y: at.y, lines, more: found.total - found.edges.length })
+  }, [])
+
+  const onStagePointerMove = useCallback(
+    (e: KonvaEventObject<PointerEvent>) => {
+      if (suppressedRef.current || drag.current !== null) {
+        setEdgePopup(null)
+        return
+      }
+      probe.current.at = { x: e.evt.clientX, y: e.evt.clientY }
+      if (probe.current.frame !== null) return
+      probe.current.frame = requestAnimationFrame(() => {
+        probe.current.frame = null
+        const at = probe.current.at
+        // Re-checked inside the frame: a gesture can start between the move
+        // and the paint, and a probe that lands after it would put a popup up
+        // that nothing is going to take down.
+        if (at && !suppressedRef.current && drag.current === null) probeEdges(at.x, at.y)
+      })
+    },
+    [probeEdges],
+  )
+
+  useEffect(() => {
+    const pending = probe.current
+    return () => {
+      if (pending.frame !== null) cancelAnimationFrame(pending.frame)
+    }
+  }, [])
+
+  // Down the moment a node comes under the pointer or a gesture starts, rather
+  // than waiting for the next pointer move -- a drag that begins on a line the
+  // popup is describing would otherwise carry it along.
+  useEffect(() => {
+    if (suppressed) setEdgePopup(null)
+  }, [suppressed])
+
+  // A wheel zoom moves the world under a stationary pointer, so whatever the
+  // summary is naming may no longer be under the cursor; it comes back on the
+  // next pointer move, measured against the new camera.
+  useEffect(() => {
+    setEdgePopup(null)
+  }, [viewport])
+
   // Keyboard: f = fit to content, e = expand/collapse selection,
   // Esc = deselect, / = focus the file filter.  Ignored while typing.
   const expandableRef = useRef(expandable)
@@ -700,20 +857,42 @@ export function Workspace({
     return () => window.removeEventListener('keydown', onKey)
   }, [fit])
 
-  // The world rect the breadcrumb toolbar floats above (tic-b1ab): the
-  // focused folder's group box when it has one (it is auto-expanded on scope
-  // enter, and an empty folder renders no box), falling back to its chip.
-  // The ids are the fs-tree mode's `dir:<path>` scheme, matching the expand
-  // keys the store auto-expands.
-  const focusRect = useMemo(() => {
+  // The world rect the breadcrumb toolbar floats above (tic-b1ab), and which
+  // shape of toolbar it is (tic-d7d7).  The focused folder's group box when
+  // it has one (it is auto-expanded on scope enter, and an empty folder
+  // renders no box), falling back to its chip; those ids are the fs-tree
+  // mode's `dir:<path>` scheme, matching the expand keys the store
+  // auto-expands.  Failing both, the focus path may name an element directly
+  // -- the import graph's Local View focuses a FILE, whose element id is its
+  // own path -- and that scope gets the cut-down return-to-root toolbar,
+  // because a file's ancestor directories are not scopes that mode can render.
+  const focus = useMemo(() => {
     if (!output || focusPath === '') return null
-    return output.rects.get(`dir:${focusPath}:group`) ?? output.rects.get(`dir:${focusPath}`) ?? null
+    const dir =
+      output.rects.get(`dir:${focusPath}:group`) ?? output.rects.get(`dir:${focusPath}`)
+    if (dir) return { rect: dir, rootOnly: false }
+    const own = output.rects.get(focusPath)
+    return own ? { rect: own, rootOnly: true } : null
   }, [output, focusPath])
 
   return (
-    <div ref={host} className="workspace" style={{ cursor }}>
+    <div
+      ref={host}
+      className="workspace"
+      style={{ cursor }}
+      onPointerLeave={() => setEdgePopup(null)}
+    >
       {size.width > 0 && size.height > 0 && (
-        <Stage width={size.width} height={size.height} {...stageProps}>
+        <Stage
+          width={size.width}
+          height={size.height}
+          {...stageProps}
+          onPointerMove={onStagePointerMove}
+          // The host's own pointerleave covers the pointer leaving the
+          // workspace; this covers it leaving the CANVAS for the HUD floating
+          // over it, which is still inside the host.
+          onPointerLeave={() => setEdgePopup(null)}
+        >
           <Layer listening={false}>
             <Grid
               width={size.width}
@@ -808,14 +987,43 @@ export function Workspace({
       {/* On-workspace navigation (tic-b1ab): the '/' and '..' buttons moved out
           of the HUD into this toolbar, which floats above the focused folder
           and can jump straight to any ancestor level. */}
-      {focusRect && (
+      {focus && (
         <BreadcrumbToolbar
           viewport={viewport}
           size={size}
-          rect={focusRect}
+          rect={focus.rect}
           focusPath={focusPath}
+          rootOnly={focus.rootOnly}
           onNavigate={(path) => useWorkspace.getState().setFocusPath(path)}
         />
+      )}
+
+      {/* The near-pointer connection summary (tic-f1d7): what the lines under
+          the cursor connect, while the cursor is over empty canvas.  It flips
+          to the other side of the pointer near the right or bottom edge, which
+          keeps it on screen without having to measure it first. */}
+      {edgePopup && (
+        <div
+          className="edge-popup"
+          style={{
+            left: edgePopup.x,
+            top: edgePopup.y,
+            transform: `translate(${
+              edgePopup.x > size.width - 300 ? 'calc(-100% - 14px)' : '14px'
+            }, ${edgePopup.y > size.height - 160 ? 'calc(-100% - 14px)' : '14px'})`,
+          }}
+        >
+          {edgePopup.lines.map((line) => (
+            <div key={line} className="edge-popup-line">
+              {line}
+            </div>
+          ))}
+          {edgePopup.more > 0 && (
+            <div className="edge-popup-more">
+              +{edgePopup.more} more
+            </div>
+          )}
+        </div>
       )}
 
       {/* Icon-button tooltip (tic-1d9a): a real positioned tooltip near the
@@ -1044,22 +1252,20 @@ const NodeChip = memo(function NodeChip({
         ? THEME.hovered
         : node.stroke
   const labelY = node.sublabel === undefined ? node.height / 2 - 7 : 8
-  // Icon buttons reserve the right edge so they never cover the label
-  // (tic-4d7c / tic-468e): a source link and a goto button together need room
-  // for both, a single icon needs the current 40px slot, otherwise the label
-  // runs to the original inset.
+  // Where this node's icon buttons sit and how much of its right edge they
+  // cost the label (tic-4d7c / tic-468e / tic-ea7b); the rule itself is pure
+  // and lives in ./iconButtonLogic.
   const hasGoto = node.gotoTo !== undefined
   const hasSource = sourceLinks.has(node.id)
-  const labelInset = hasGoto ? (hasSource ? 64 : 40) : hasSource ? 40 : 20
+  // The action slot is the focus affordance's or the goto button's: rows carry
+  // a goto target, chips carry a focus target, and nothing carries both.
+  const hasFocus = shouldShowGoIn(node.focusTo, focusPath)
+  const slots = iconSlots(node.width, node.height, hasSource, hasGoto || hasFocus)
   const sourceLink = sourceLinks.get(node.id)
-  // File workspace items (tic-2996): the goto-code affordance sits in the
-  // upper-right corner of the chip/container, and hovering the file name
-  // shows the global file location in a positioned tooltip.  A file item's
-  // element id is its root-relative path in the fs-tree mode, so the same
-  // value drives both the icon's source line and the tooltip text.
+  // File workspace items (tic-2996): hovering the file name shows the global
+  // file location in a positioned tooltip.  A file item's element id is its
+  // root-relative path, which is the tooltip's text.
   const isFile = node.role === 'file'
-  const sourceIconX = node.width - (hasGoto ? 50 : 26)
-  const sourceIconY = isFile ? 4 : node.height / 2 - 9
 
   // Position is owned imperatively, not through props: react-konva would
   // teleport the node on re-render, while a Konva tween glides it there
@@ -1128,7 +1334,7 @@ const NodeChip = memo(function NodeChip({
         <Text
           x={12}
           y={labelY}
-          width={Math.max(0, node.width - labelInset)}
+          width={Math.max(0, node.width - slots.labelInset)}
           text={node.label}
           fontFamily={FONT}
           fontSize={12}
@@ -1171,25 +1377,30 @@ const NodeChip = memo(function NodeChip({
       )}
       {/* 'Go into' affordance (tic-e7d2): a folder never offers to go into
           itself -- the focused folder hides its button (tic-4d7c). */}
-      {showGoIn && shouldShowGoIn(node.focusTo, focusPath) && (
+      {showGoIn && hasFocus && (
         <CanvasIconButton
-          x={node.width - 26}
-          y={node.height / 2 - 9}
-          paths={GO_IN_ICON_PATHS}
-          tooltip={`Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
+          x={slots.action}
+          y={slots.y}
+          // The mode names the glyph and the wording (tic-d7d7); a mode that
+          // names neither gets the fs-tree's folder-and-arrow and its
+          // "Go into ..." tooltip, unchanged.
+          paths={
+            (node.focusIcon !== undefined ? FOCUS_ICON_PATHS[node.focusIcon] : undefined) ??
+            GO_IN_ICON_PATHS
+          }
+          tooltip={node.focusLabel ?? `Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
           onTooltip={onTooltip}
           onClick={() => onGoIn(node.focusTo!)}
         />
       )}
       {/* Goto-code affordance (tic-468e / tic-2996): opens the item's source
-          line in VS Code, the same deep link the inspector shows.  On a file
-          workspace item it sits in the upper right corner; rows keep the
-          vertically centred slot, left of the goto button when both are
-          present. */}
+          line in VS Code, the same deep link the inspector shows.  It owns the
+          outer slot on every item that has one (tic-ea7b), with the action
+          button inboard of it. */}
       {showGoIn && sourceLink !== undefined && (
         <CanvasIconButton
-          x={sourceIconX}
-          y={sourceIconY}
+          x={slots.source}
+          y={slots.y}
           paths={FILE_SYMLINK_ICON_PATHS}
           tooltip="Open in VS Code"
           onTooltip={onTooltip}
@@ -1200,8 +1411,8 @@ const NodeChip = memo(function NodeChip({
           the imported file via the existing goto event. */}
       {showGoIn && node.gotoTo !== undefined && (
         <CanvasIconButton
-          x={node.width - 26}
-          y={node.height / 2 - 9}
+          x={slots.action}
+          y={slots.y}
           paths={GOTO_ICON_PATHS}
           tooltip={`Go to ${node.gotoTo}`}
           onTooltip={onTooltip}

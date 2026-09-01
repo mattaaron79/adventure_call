@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { iconGlyphGeometry, isIconClick, shouldShowGoIn } from './iconButtonLogic'
+import { iconGlyphGeometry, iconSlots, isIconClick, shouldShowGoIn } from './iconButtonLogic'
 
 describe('isIconClick (tic-4d7c)', () => {
   it('counts a still press as a click', () => {
@@ -52,5 +52,52 @@ describe('iconGlyphGeometry (tic-4d7c)', () => {
       expect(g.x + glyph).toBeLessThanOrEqual(size)
       expect(g.y + glyph).toBeLessThanOrEqual(size)
     }
+  })
+})
+
+describe('iconSlots (tic-ea7b)', () => {
+  const CHIP = { width: 200, height: 40 }
+  const ROW = { width: 260, height: 24 }
+  const CONTAINER = { width: 300, height: 220 }
+
+  it('gives the source link the outer slot and the action button the inner one', () => {
+    // The swap the user asked for: "open the code" lands in the same place on
+    // every item that offers it, whatever else the item carries.
+    const both = iconSlots(CHIP.width, CHIP.height, true, true)
+    expect(both.source).toBe(174)
+    expect(both.action).toBe(150)
+    expect(both.source).toBeGreaterThan(both.action)
+  })
+
+  it('puts a lone button in the outer slot rather than leaving a gap', () => {
+    expect(iconSlots(CHIP.width, CHIP.height, true, false).source).toBe(174)
+    expect(iconSlots(CHIP.width, CHIP.height, false, true).action).toBe(174)
+  })
+
+  it('centres the icons on a chip and on a row', () => {
+    // The folder chips are the model: an 18-unit button centred in the box.
+    expect(iconSlots(CHIP.width, CHIP.height, true, true).y).toBe(11)
+    expect(iconSlots(150, 36, false, true).y).toBe(9)
+    expect(iconSlots(ROW.width, ROW.height, true, true).y).toBe(3)
+  })
+
+  it('pins the icons to the top corner of an expanded container', () => {
+    // Centred on a box this tall would be halfway down its rows, far from the
+    // header the buttons belong to.
+    expect(iconSlots(CONTAINER.width, CONTAINER.height, true, true).y).toBe(4)
+  })
+
+  it('reserves label width for the buttons that are actually there', () => {
+    expect(iconSlots(CHIP.width, CHIP.height, false, false).labelInset).toBe(20)
+    expect(iconSlots(CHIP.width, CHIP.height, true, false).labelInset).toBe(40)
+    expect(iconSlots(CHIP.width, CHIP.height, false, true).labelInset).toBe(40)
+    expect(iconSlots(CHIP.width, CHIP.height, true, true).labelInset).toBe(64)
+  })
+
+  it('keeps the label clear of the inner button', () => {
+    // The regression that made this worth extracting: an import-graph file chip
+    // carries both buttons, and a label inset measured for one ran under them.
+    const both = iconSlots(CHIP.width, CHIP.height, true, true)
+    expect(CHIP.width - both.labelInset).toBeLessThanOrEqual(both.action)
   })
 })

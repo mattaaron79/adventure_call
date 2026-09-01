@@ -62,6 +62,32 @@ export function elideBreadcrumbs(
 }
 
 /**
+ * The crumbs the toolbar renders for a focus path (tic-d7d7).
+ *
+ * Ordinarily the elided ancestor trail: the fs-tree's focus paths are
+ * directories, and every level above the focused one is somewhere the user
+ * can usefully jump to.  In `rootOnly` mode there is exactly one crumb, the
+ * focused item itself, and it is rendered as a plain label rather than a
+ * button -- the import graph's Local View (tic-d7d7) focuses a FILE, whose
+ * parent directories mean nothing in a scene laid out by imports.  The only
+ * navigation left there is "back to the whole graph", which is the '/' button
+ * the toolbar draws either way.
+ *
+ * The crumb still carries its full `path`, so the label can show the bare
+ * file name while the title shows where the file lives.
+ */
+export function toolbarCrumbs(
+  focusPath: string,
+  rootOnly: boolean,
+  max: number,
+): (Breadcrumb | null)[] {
+  const segments = breadcrumbSegments(focusPath)
+  if (!rootOnly) return elideBreadcrumbs(segments, max)
+  const last = segments[segments.length - 1]
+  return last === undefined ? [] : [last]
+}
+
+/**
  * The screen y coordinate for the toolbar, given the focused folder's screen
  * top/bottom and the toolbar's own measured height (tic-9f02).  When there is
  * room, the toolbar floats `TOOLBAR_GAP` above the folder's top edge -- its

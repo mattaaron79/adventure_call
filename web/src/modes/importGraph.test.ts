@@ -6,6 +6,8 @@ import {
   finalisePositioned,
   flattenJunctions,
   importGraphMode,
+  localViewCentre,
+  neighbourhoodOf,
   toElkGraphInput,
 } from './importGraph'
 import type { SceneSpec } from './types'
@@ -150,9 +152,20 @@ describe('importGraphMode.measure', () => {
       const size = sizes.get(node.id)
       expect(size).toBeDefined()
       expect(size!.height).toBe(40)
-      expect(size!.width).toBeGreaterThanOrEqual(120)
-      expect(size!.width).toBeLessThanOrEqual(260)
+      expect(size!.width).toBeGreaterThanOrEqual(150)
+      expect(size!.width).toBeLessThanOrEqual(340)
     }
+  })
+
+  it('leaves room for the name AND the icons the chip carries (tic-ea7b)', () => {
+    // The canvas reserves 64 units at the right edge for the source link and
+    // the Local View button, and draws the label from x=12.  A chip measured
+    // for its name alone had the buttons sitting on the end of that name.
+    const longest = spec.root.children.reduce((a, b) =>
+      a.label.length >= b.label.length ? a : b,
+    )
+    const width = sizes.get(longest.id)!.width
+    expect(width - 64 - 12).toBeGreaterThanOrEqual(longest.label.length * 6.4)
   })
 })
 
@@ -641,5 +654,213 @@ describe('importGraphMode.style with an expanded file', () => {
     const open = styles.nodes.get('src/pkg/a.py')!
     const chip = styles.nodes.get('src/pkg/b.py')!
     expect(open.fill).not.toBe(chip.fill)
+  })
+})
+
+// -- Local View (tic-d7d7) ----------------------------------------------------
+
+/** A CodebaseGraph around a node/edge list; nothing under test here reads the
+ *  stats, so they stay at their zeroes. */
+function graphOf(nodes: GraphNode[], edges: GraphEdge[]): CodebaseGraph {
+  return {
+    directed: true,
+    multigraph: false,
+    graph: {
+      schema_version: 1,
+      generated_at: '2026-08-30T00:00:00+00:00',
+      root: '../fixture',
+      stats: {
+        files: nodes.length,
+        files_with_diagnostics: 0,
+        symbols: nodes.length,
+        nodes: nodes.length,
+        edges: edges.length,
+        node_kinds: {},
+        edge_types: {},
+        calls_resolved: 0,
+        calls_heuristic: 0,
+        calls_unresolved: 0,
+        calls_builtin: 0,
+        diagnostics: 0,
+      },
+    },
+    nodes,
+    edges,
+  }
+}
+
+const file = (name: string): GraphNode =>
+  node(`pkg.${name}`, 'module', `src/pkg/${name}.py`, `pkg.${name}`)
+const path = (name: string): string => `src/pkg/${name}.py`
+
+/**
+ * A hub with importers above, imports below, one edge running between two of
+ * those neighbours, a file two hops out and a file with no imports at all:
+ * every case the neighbourhood rule has to answer, in one graph.
+ *
+ *   far -> up1 -> hub <- up2       lonely
+ *           |      |
+ *           v      v
+ *         down1  down2
+ */
+const LOCAL_WORKSPACE = deriveWorkspace(
+  graphOf(['hub', 'up1', 'up2', 'down1', 'down2', 'far', 'lonely'].map(file), [
+    imports('pkg.up1', 'pkg.hub'),
+    imports('pkg.up2', 'pkg.hub'),
+    imports('pkg.hub', 'pkg.down1'),
+    imports('pkg.hub', 'pkg.down2'),
+    // A dependency two neighbours share: the edge that makes a Local View
+    // more than a bare star.
+    imports('pkg.up1', 'pkg.down1'),
+    // Two hops from the hub, so outside the view entirely.
+    imports('pkg.far', 'pkg.up1'),
+  ]),
+  [],
+)
+
+const localSpec = (focusPath: string) =>
+  importGraphMode.select(LOCAL_WORKSPACE, importGraphMode.defaultParams, {
+    expanded: {},
+    focusPath,
+  })
+
+describe('neighbourhoodOf (tic-d7d7)', () => {
+  const everything = new Set(['hub', 'up1', 'up2', 'down1', 'down2', 'far', 'lonely'].map(path))
+
+  it('takes one hop in both directions from the centre', () => {
+    expect([...neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), everything)].sort()).toEqual(
+      [path('down1'), path('down2'), path('hub'), path('up1'), path('up2')].sort(),
+    )
+  })
+
+  it('is just the centre for a file with no imports either way', () => {
+    expect([...neighbourhoodOf(LOCAL_WORKSPACE, path('lonely'), everything)]).toEqual([
+      path('lonely'),
+    ])
+  })
+
+  it('drops a neighbour the current filter scope has removed from the tree', () => {
+    // A file outside `visible` is one this mode never turns into a node, and
+    // an edge to a node elk was never given crashes the layout (tic-56b2).
+    const withoutUp2 = new Set([...everything].filter((p) => p !== path('up2')))
+    const files = neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), withoutUp2)
+    expect(files.has(path('up2'))).toBe(false)
+    expect(files.has(path('up1'))).toBe(true)
+  })
+})
+
+describe('importGraphMode.select with a Local View', () => {
+  const spec = localSpec(path('hub'))
+  const ids = spec.root.children.map((n) => n.id).sort()
+
+  it('scopes the scene to the centre, its importers and its imports', () => {
+    expect(ids).toEqual([path('hub'), path('up1'), path('up2'), path('down1'), path('down2')].sort())
+  })
+
+  it('leaves a file two hops out, and a file with no edges at all, absent', () => {
+    expect(ids).not.toContain(path('far'))
+    expect(ids).not.toContain(path('lonely'))
+  })
+
+  it('keeps every import edge running between two neighbours', () => {
+    // The point of the rule: a dependency up1 and hub share is visible as the
+    // two lines that make it shared, rather than hidden behind a bare star.
+    expect(spec.edges.map((e) => e.id).sort()).toEqual(
+      [
+        `imp:${path('up1')}->${path('hub')}`,
+        `imp:${path('up2')}->${path('hub')}`,
+        `imp:${path('hub')}->${path('down1')}`,
+        `imp:${path('hub')}->${path('down2')}`,
+        `imp:${path('up1')}->${path('down1')}`,
+      ].sort(),
+    )
+  })
+
+  it('drops an edge with an end outside the neighbourhood', () => {
+    expect(spec.edges.map((e) => e.id)).not.toContain(`imp:${path('far')}->${path('up1')}`)
+  })
+
+  it('indexes goto targets for the scoped files only', () => {
+    expect(spec.goto?.get(path('up1'))).toBe(path('up1'))
+    expect(spec.goto?.has(path('far'))).toBe(false)
+  })
+
+  it('records the centre on the spec, for the phases that never see the ui', () => {
+    expect(localViewCentre(spec)).toBe(path('hub'))
+    expect(localViewCentre(localSpec(''))).toBe('')
+  })
+
+  it('scopes to nothing but itself for an isolated file', () => {
+    const isolated = localSpec(path('lonely'))
+    expect(isolated.root.children.map((n) => n.id)).toEqual([path('lonely')])
+    expect(isolated.edges).toEqual([])
+  })
+
+  it('falls back to the whole graph for a focus path naming no visible file', () => {
+    // A `/out` refetch or a filter change can drop the focused file, exactly
+    // as it can drop fsTree.scopeRoot's directory: draw everything, not
+    // nothing.  A directory path lands here too -- this mode scopes to files.
+    for (const stale of [path('gone'), 'src/pkg', 'nonsense']) {
+      expect(localSpec(stale).root.children).toHaveLength(7)
+    }
+    expect(localSpec('').root.children).toHaveLength(7)
+  })
+})
+
+describe('importGraphMode Local View affordance', () => {
+  it('offers every file as the centre of its own neighbourhood', () => {
+    for (const fileNode of localSpec('').root.children) {
+      expect(fileNode.focusTo).toBe(fileNode.id)
+      expect(fileNode.focusIcon).toBe('local-view')
+      expect(fileNode.focusLabel).toBe('Local View')
+    }
+  })
+
+  it('keeps the affordance on the neighbours of an active Local View', () => {
+    // Switching centre from inside a Local View is the fastest way to walk a
+    // dependency chain; the canvas hides only the centre's own button, via
+    // shouldShowGoIn(focusTo === focusPath).
+    const up1 = localSpec(path('hub')).root.children.find((n) => n.id === path('up1'))!
+    expect(up1.focusTo).toBe(path('up1'))
+  })
+})
+
+describe('importGraphMode.style with a Local View', () => {
+  it('emphasises the centre against its neighbours', () => {
+    const styles = importGraphMode.style(localSpec(path('hub')), importGraphMode.defaultParams)
+    expect(styles.nodes.get(path('hub'))!.stroke).not.toBe(styles.nodes.get(path('up1'))!.stroke)
+  })
+
+  it('leaves every file alike outside a Local View', () => {
+    const whole = importGraphMode.style(localSpec(''), importGraphMode.defaultParams)
+    const strokes = new Set([...whole.nodes.values()].map((s) => s.stroke))
+    expect(strokes.size).toBe(1)
+  })
+})
+
+describe('cacheKeyOf with a Local View', () => {
+  // The trap tic-531b describes, one layer in: on a two-file graph a Local
+  // View of either file contains both files, so every node id, every edge id
+  // and every measured size matches the whole-graph layout -- while the elk
+  // spacing does not.  Without the centre in the key the tighter layout would
+  // silently reuse the roomy cached one.
+  const TWO = deriveWorkspace(graphOf(['p', 'q'].map(file), [imports('pkg.p', 'pkg.q')]), [])
+  const specOf = (focusPath: string) =>
+    importGraphMode.select(TWO, importGraphMode.defaultParams, { expanded: {}, focusPath })
+  const PARAMS = importGraphMode.defaultParams
+
+  it('differs from the whole graph even when the ids and sizes are identical', () => {
+    const whole = specOf('')
+    const local = specOf(path('p'))
+    expect(local.root.children.map((n) => n.id)).toEqual(whole.root.children.map((n) => n.id))
+    const sizes = importGraphMode.measure(whole, { expanded: {} })
+    expect(cacheKeyOf(local, sizes, PARAMS)).not.toBe(cacheKeyOf(whole, sizes, PARAMS))
+  })
+
+  it('differs between two Local Views of the same graph', () => {
+    const sizes = importGraphMode.measure(specOf(''), { expanded: {} })
+    expect(cacheKeyOf(specOf(path('p')), sizes, PARAMS)).not.toBe(
+      cacheKeyOf(specOf(path('q')), sizes, PARAMS),
+    )
   })
 })
