@@ -6,6 +6,7 @@ import type { GraphNode, SymbolKind } from '../data/types'
 import {
   Inspector,
   buildImportRows,
+  buildImportedByRows,
   buildSourceLinks,
   countSymbolsByKind,
   launchVscodeLink,
@@ -331,5 +332,106 @@ describe('launchVscodeLink (tic-e523)', () => {
 
   it('is a no-op without a DOM (node-side render)', () => {
     expect(() => launchVscodeLink('vscode://file/x')).not.toThrow()
+  })
+})
+
+describe('buildImportedByRows (tic-2caf)', () => {
+  it('emits one row per importing file, each carrying a goto target', () => {
+    const rows = buildImportedByRows(WORKSPACE, 'src/app/errors.py')
+    expect(rows.map((r) => r.key)).toEqual(['impby:src/app/loop.py', 'impby:src/other.py'])
+    expect(rows.map((r) => r.goto)).toEqual(['src/app/loop.py', 'src/other.py'])
+  })
+
+  it('is one row per file however many symbols that file pulls', () => {
+    const rows = buildImportedByRows(WORKSPACE, 'src/app/errors.py')
+    // loop.py imports errors.py twice; it still depends on it once.
+    expect(rows).toHaveLength(2)
+    expect(rows[0].count).toBe(2)
+  })
+
+  it('is empty for a file nobody imports', () => {
+    expect(buildImportedByRows(WORKSPACE, 'src/app/loop.py')).toEqual([])
+  })
+
+  it('never marks a row external: nothing outside the codebase imports it', () => {
+    for (const row of buildImportedByRows(WORKSPACE, 'src/app/errors.py')) {
+      expect(row.external).toBe(false)
+      expect(row.goto).not.toBeNull()
+    }
+  })
+
+  it('falls back to the raw path when the importer has no module node', () => {
+    expect(buildImportedByRows(WORKSPACE, 'src/app/errors.py')[0].label).toBe('src/app/loop.py')
+  })
+
+  it('shapes the label like the Imports rows when the module is known', () => {
+    const withModules: Workspace = {
+      ...WORKSPACE,
+      index: {
+        ...index,
+        moduleByFile: new Map([['src/app/loop.py', node('app.loop', 'module', 'loop', 'app.loop')]]),
+      },
+    }
+    expect(buildImportedByRows(withModules, 'src/app/errors.py')[0].label).toBe(
+      'loop · app.loop',
+    )
+  })
+})
+
+describe('Inspector Imported By rendering (tic-2caf)', () => {
+  // errors.py is imported by two files AND imports one, so both directions
+  // are on the card at once -- which is the only way to assert their order.
+  const edges: FileImportEdge[] = [
+    ...FILE_IMPORTS,
+    { source: 'src/app/errors.py', target: 'src/deep.py', count: 1, symbolIds: ['deep.Thing'] },
+  ]
+  const workspace: Workspace = {
+    ...WORKSPACE,
+    fileImports: edges,
+    fileImporters: deriveFileImporters(edges),
+  }
+  const selected: GraphNode = {
+    ...node('app.errors.PluginError', 'class', 'PluginError', 'app.errors'),
+    file_path: 'src/app/errors.py',
+  }
+  const render = (ws: Workspace) =>
+    renderToStaticMarkup(
+      createElement(Inspector, {
+        node: selected,
+        workspace: ws,
+        absoluteRoot: '/repo',
+        collapsed: false,
+        onToggleCollapsed: () => {},
+      }),
+    )
+
+  it('puts the Imported By section above Imports', () => {
+    const html = render(workspace)
+    expect(html).toContain('<h3>Imported By</h3>')
+    expect(html).toContain('<h3>Imports</h3>')
+    expect(html.indexOf('<h3>Imported By</h3>')).toBeLessThan(html.indexOf('<h3>Imports</h3>'))
+  })
+
+  it('lists each importer with a goto affordance', () => {
+    const html = render(workspace)
+    expect(html).toContain('src/app/loop.py')
+    expect(html).toContain('src/other.py')
+    expect(html).toContain('Go to src/app/loop.py')
+  })
+
+  it('omits the section entirely for a file nobody imports', () => {
+    const leaf: GraphNode = { ...selected, file_path: 'src/app/loop.py' }
+    const html = renderToStaticMarkup(
+      createElement(Inspector, {
+        node: leaf,
+        workspace,
+        absoluteRoot: '/repo',
+        collapsed: false,
+        onToggleCollapsed: () => {},
+      }),
+    )
+    expect(html).not.toContain('Imported By')
+    // ...while the outgoing section it does have is still there.
+    expect(html).toContain('<h3>Imports</h3>')
   })
 })

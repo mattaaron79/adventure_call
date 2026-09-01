@@ -140,6 +140,41 @@ export function buildImportRows(workspace: Workspace, filePath: string): ImportR
   return rows
 }
 
+/**
+ * The files that import one file (tic-2caf) -- the reverse of
+ * {@link buildImportRows}.
+ *
+ * Imports answer "what does this file need"; this answers "who breaks if I
+ * change it", which the card could not answer at all before.  One row per
+ * importing FILE rather than per symbol: the forward section names symbols
+ * because that is what an import statement binds, but the incoming
+ * relationship is a fact about files -- one importer pulling three symbols
+ * is one dependency, not three.
+ *
+ * Shaped as an {@link ImportRow} so both sections render through the same
+ * markup, and never `external`: an external module is something this
+ * codebase imports, never something that imports it, so the muted treatment
+ * cannot apply here.  Reads tic-0680's reverse index, so this is a map
+ * lookup rather than a scan of every edge in the graph.
+ */
+export function buildImportedByRows(workspace: Workspace, filePath: string): ImportRow[] {
+  const rows: ImportRow[] = []
+  for (const edge of workspace.fileImporters.get(filePath) ?? []) {
+    const module = workspace.index.moduleByFile.get(edge.source)
+    rows.push({
+      key: `impby:${edge.source}`,
+      goto: edge.source,
+      // Shaped like the Imports rows so the two sections read as siblings;
+      // the raw path is the fallback for an importer whose module node is
+      // somehow not in this index.
+      label: module ? `${module.name} \u00b7 ${module.id}` : edge.source,
+      external: false,
+      count: edge.count,
+    })
+  }
+  return rows
+}
+
 /** Per-kind symbol counts for a module, sorted by kind for a stable display. */
 export interface KindCount {
   kind: SymbolKind
@@ -155,6 +190,34 @@ export function countSymbolsByKind(nodes: readonly GraphNode[]): KindCount[] {
 }
 
 // -- the component ------------------------------------------------------------
+
+/**
+ * One list of import relationships (tic-2caf).
+ *
+ * Imports and Imported By are the same rows pointing opposite ways, so they
+ * render through one component rather than two copies of the markup that
+ * could drift apart.  A section with no rows renders nothing at all, which
+ * is how Imports has always behaved.
+ */
+function ImportSection({ title, rows }: { title: string; rows: ImportRow[] }) {
+  if (rows.length === 0) return null
+  return (
+    <>
+      <h3>{title}</h3>
+      <ul className="inspector-list inspector-imports">
+        {rows.map((row) => (
+          <li key={row.key} className={row.external ? 'inspector-external' : undefined}>
+            <code>{row.label}</code>
+            {row.count > 1 && <span className="inspector-dim"> ×{row.count}</span>}
+            {/* Internal targets fly the camera to the file; external ones
+                (tic-314c) have nothing to centre on and get no icon. */}
+            {row.goto !== null && <GotoIcon target={row.goto} label={`Go to ${row.goto}`} />}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
 
 export function Inspector({
   node,
@@ -205,6 +268,12 @@ export function Inspector({
   // selection from the in-memory workspace.
   const imports = useMemo(
     () => (node && workspace ? buildImportRows(workspace, filePath) : []),
+    [node, workspace, filePath],
+  )
+  // Who imports this file (tic-2caf), above the outgoing list: a reader asks
+  // "who breaks if I change this" before "what does this need".
+  const importedBy = useMemo(
+    () => (node && workspace ? buildImportedByRows(workspace, filePath) : []),
     [node, workspace, filePath],
   )
   const symbolCounts = useMemo(
@@ -339,24 +408,8 @@ export function Inspector({
             </>
           )}
 
-          {imports.length > 0 && (
-            <>
-              <h3>Imports</h3>
-              <ul className="inspector-list inspector-imports">
-                {imports.map((row) => (
-                  <li key={row.key} className={row.external ? 'inspector-external' : undefined}>
-                    <code>{row.label}</code>
-                    {row.count > 1 && <span className="inspector-dim"> ×{row.count}</span>}
-                    {/* Internal targets fly the camera to the imported file;
-                        external targets (tic-314c) have no goto icon. */}
-                    {row.goto !== null && (
-                      <GotoIcon target={row.goto} label={`Go to ${row.goto}`} />
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
+          <ImportSection title="Imported By" rows={importedBy} />
+          <ImportSection title="Imports" rows={imports} />
 
           {symbolCounts.length > 0 && (
             <>
