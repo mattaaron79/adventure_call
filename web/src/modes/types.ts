@@ -12,7 +12,7 @@
  * outside and the whole pipeline is trivially testable.
  */
 import type { EdgeRoute, Scene, SceneEdge, SceneGroup, SceneNode } from '../canvas/scene'
-import type { Rect, Size } from '../canvas/viewport'
+import type { Point, Rect, Size } from '../canvas/viewport'
 import type { Workspace } from '../data/derive'
 
 /** The derived view of the graph export that modes select from. */
@@ -129,6 +129,14 @@ export interface Positioned {
   rects: ReadonlyMap<string, Rect>
   /** Flat `[x0, y0, x1, y1, ...]` polylines, as the canvas `Line` wants. */
   edgePoints: ReadonlyMap<string, readonly number[]>
+  /**
+   * Junction dots to draw where merged edge trunks split (tic-531b), in
+   * world space.  Flat and de-duplicated rather than keyed per edge: a
+   * junction is a property of the picture, not of any one line, and the
+   * canvas only ever wants to stamp a dot there.  Absent when the layout
+   * merged nothing, which is the default and must stay free.
+   */
+  junctions?: readonly Point[]
   /** Per-edge pipe override (see tidyTree.elbow), stored as a fixed offset
    *  from the child's leading edge so a drag re-routes a wrapped connector
    *  with the same inter-line gap pipe, re-derived from the child's current
@@ -359,7 +367,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
   }
 
   return {
-    scene: { groups, edges, nodes },
+    scene: { groups, edges, nodes, junctions: positioned.junctions },
     rects: positioned.rects,
     symbolOf,
     goto: spec.goto ?? EMPTY_GOTO,

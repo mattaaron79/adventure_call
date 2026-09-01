@@ -56,4 +56,22 @@ describe('cullScene', () => {
     expect(SCENE.nodes).toHaveLength(2)
     expect(SCENE.edges).toHaveLength(2)
   })
+
+  it('culls junction dots against the same visible rect (tic-531b)', () => {
+    const withJunctions: Scene = {
+      ...SCENE,
+      junctions: [
+        { x: 50, y: 50 },
+        { x: 100000, y: 100000 },
+      ],
+    }
+    const culled = cullScene(withJunctions, visibleWorldRect(VIEWPORT, SIZE))
+    expect(culled.junctions).toEqual([{ x: 50, y: 50 }])
+  })
+
+  it('leaves junctions undefined -- not an empty array -- for a scene with none', () => {
+    // A scene that merged nothing must allocate nothing here, so the ordinary
+    // pan frame stays exactly as cheap as it was before junctions existed.
+    expect(cullScene(SCENE, visibleWorldRect(VIEWPORT, SIZE)).junctions).toBeUndefined()
+  })
 })

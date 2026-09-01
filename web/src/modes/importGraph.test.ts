@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deriveWorkspace } from '../data/derive'
 import type { CodebaseGraph, GraphEdge, GraphNode, SymbolKind } from '../data/types'
-import { cacheKeyOf, importGraphMode, toElkGraphInput } from './importGraph'
+import { cacheKeyOf, flattenJunctions, importGraphMode, toElkGraphInput } from './importGraph'
 import type { SceneSpec } from './types'
 
 function node(id: string, kind: SymbolKind, file_path: string, module: string): GraphNode {
@@ -166,26 +166,106 @@ describe('importGraphMode.style', () => {
 })
 
 describe('cacheKeyOf', () => {
+  const specOf = () =>
+    importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, { expanded: {} })
+  const sizesOf = (spec: SceneSpec) => importGraphMode.measure(spec, { expanded: {} })
+  const DEFAULTS = importGraphMode.defaultParams
+
   it('is stable across two separately-built specs with the same content', () => {
-    const a = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, { expanded: {} })
-    const b = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, { expanded: {} })
+    const a = specOf()
+    const b = specOf()
     expect(a).not.toBe(b) // select() always returns a fresh object
-    expect(cacheKeyOf(a)).toBe(cacheKeyOf(b))
+    expect(cacheKeyOf(a, sizesOf(a), DEFAULTS)).toBe(cacheKeyOf(b, sizesOf(b), DEFAULTS))
   })
 
   it('differs when the edge set differs', () => {
-    const full = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, { expanded: {} })
+    const full = specOf()
     const noEdges: SceneSpec = { ...full, edges: [] }
-    expect(cacheKeyOf(full)).not.toBe(cacheKeyOf(noEdges))
+    expect(cacheKeyOf(full, sizesOf(full), DEFAULTS)).not.toBe(
+      cacheKeyOf(noEdges, sizesOf(noEdges), DEFAULTS),
+    )
   })
 
   it('differs when the node set differs', () => {
-    const full = importGraphMode.select(WORKSPACE, importGraphMode.defaultParams, { expanded: {} })
+    const full = specOf()
     const fewerNodes: SceneSpec = {
       ...full,
       root: { ...full.root, children: full.root.children.slice(0, 1) },
     }
-    expect(cacheKeyOf(full)).not.toBe(cacheKeyOf(fewerNodes))
+    expect(cacheKeyOf(full, sizesOf(full), DEFAULTS)).not.toBe(
+      cacheKeyOf(fewerNodes, sizesOf(fewerNodes), DEFAULTS),
+    )
+  })
+
+  // The crux of tic-531b: toggling mergeLines changes no node id and no edge
+  // id, so a key built from ids alone would hit the stale single-slot cache
+  // and the checkbox would silently do nothing, in either direction.
+  it('differs when the params differ, even though every id is identical', () => {
+    const spec = specOf()
+    const sizes = sizesOf(spec)
+    const unmerged = cacheKeyOf(spec, sizes, { mergeLines: false })
+    const merged = cacheKeyOf(spec, sizes, { mergeLines: true })
+    expect(merged).not.toBe(unmerged)
+    // ...and toggling back returns to exactly the first key, so the cached
+    // unmerged layout is reused rather than recomputed.
+    expect(cacheKeyOf(spec, sizes, { mergeLines: false })).toBe(unmerged)
+  })
+
+  // The same trap waits for anything that resizes a chip without renaming it
+  // (an expanded container, say), which is why the measured sizes are in the
+  // key ahead of the feature that needs them.
+  it('differs when a measured size differs, even though every id is identical', () => {
+    const spec = specOf()
+    const sizes = sizesOf(spec)
+    const first = spec.root.children[0].id
+    const grown = new Map(sizes)
+    grown.set(first, { width: sizes.get(first)!.width + 40, height: 40 })
+    expect(cacheKeyOf(spec, grown, DEFAULTS)).not.toBe(cacheKeyOf(spec, sizes, DEFAULTS))
+  })
+})
+
+describe('flattenJunctions', () => {
+  it('flattens every edge list into one world-space point array', () => {
+    const flat = flattenJunctions(
+      new Map([
+        ['a->c', [{ x: 10, y: 20 }]],
+        ['b->c', [{ x: 30, y: 40 }]],
+      ]),
+    )
+    expect(flat).toEqual([
+      { x: 10, y: 20 },
+      { x: 30, y: 40 },
+    ])
+  })
+
+  it('de-duplicates a coordinate claimed by more than one edge', () => {
+    // Insurance, not a fix for observed behaviour: elk was measured to
+    // attribute each junction to a single edge, but nothing promises that,
+    // and stacked identical circles cost Konva nodes for no visual gain.
+    const flat = flattenJunctions(
+      new Map([
+        ['a->d', [{ x: 10, y: 20 }]],
+        ['b->d', [{ x: 10, y: 20 }]],
+        ['c->d', [{ x: 10.4, y: 19.6 }]],
+      ]),
+    )
+    expect(flat).toEqual([{ x: 10, y: 20 }])
+  })
+
+  it('is empty for a layout that merged nothing', () => {
+    expect(flattenJunctions(new Map())).toEqual([])
+  })
+})
+
+describe('mode params', () => {
+  it('defaults to unmerged import lines', () => {
+    expect(importGraphMode.defaultParams).toEqual({ mergeLines: false })
+  })
+
+  it('declares mergeLines as a toggle so ModePicker renders it generically', () => {
+    expect(importGraphMode.paramToggles).toEqual([
+      { key: 'mergeLines', label: 'Merge import lines' },
+    ])
   })
 })
 
@@ -270,10 +350,11 @@ describe('importGraphMode.select with a query-scoped workspace', () => {
 })
 
 describe('importGraphMode metadata', () => {
-  it('is registered with a stable id and no configurable params', () => {
+  it('is registered with a stable id', () => {
     expect(importGraphMode.id).toBe('import-graph')
-    expect(importGraphMode.defaultParams).toEqual({})
   })
+  // The params themselves are covered by the 'mode params' block above; this
+  // stopped asserting an empty defaultParams when tic-531b added mergeLines.
 })
 
 // -- cycle highlighting (tic-56b2) --------------------------------------------

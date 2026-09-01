@@ -17,7 +17,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
-import { Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
+import { Circle, Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import { GOTO_DURATION_MS, NODE_DRAG_THRESHOLD, TWEEN_DURATION } from '../settings'
 import { emitGoto, onGoto } from '../data/goto'
 import { resolveGoto, type ModeOutput } from '../modes/types'
@@ -65,6 +65,12 @@ const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-ser
 /** Two clicks on the same node inside this window count as a double-click,
  *  which is what expands/contracts a workspace object (tic-3430). */
 const DBLCLICK_MS = 350
+
+/** World-space radius of a junction dot (tic-531b).  Small enough to read as
+ *  a joint on a 1px trunk rather than a node of its own, and it scales with
+ *  the camera like every other world-space shape, so it vanishes politely at
+ *  low zoom instead of pockmarking the graph. */
+const JUNCTION_RADIUS = 3
 
 /** Nothing selected and nothing hovered: the lit-edge set and the connected-
  *  node set both stay this one stable reference so the idle scene (and every
@@ -733,6 +739,23 @@ export function Workspace({
                 animateAll={animateAllEdges}
                 register={registerEdge}
                 registerAnts={registerAnts}
+              />
+            ))}
+            {/* Junction dots (tic-531b): where elk's merged import trunks
+                split.  They live in the edge layer because they belong to
+                the lines, and that layer already has listening={false} --
+                a junction is decoration and must never be a hit target or
+                steal the empty-space drag that pans the camera.  Culled
+                with everything else, and absent entirely unless the layout
+                merged edges, so the unmerged scene renders none of them. */}
+            {visible.junctions?.map((point) => (
+              <Circle
+                key={`junction:${point.x},${point.y}`}
+                x={point.x}
+                y={point.y}
+                radius={JUNCTION_RADIUS}
+                fill={THEME.edge}
+                perfectDrawEnabled={false}
               />
             ))}
           </Layer>

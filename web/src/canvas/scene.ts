@@ -126,6 +126,14 @@ export interface Scene {
   groups: SceneGroup[]
   edges: SceneEdge[]
   nodes: SceneNode[]
+  /**
+   * Junction dots (tic-531b): world-space points where merged edge trunks
+   * split, drawn as small non-listening circles in the edge layer.  Pure
+   * decoration -- never a hit target, never an id -- so it is a bare point
+   * list rather than a scene item type.  Absent unless the mode's layout
+   * merged edges, so every other scene is exactly as cheap as before.
+   */
+  junctions?: readonly Point[]
 }
 
 export const EMPTY_SCENE: Scene = { groups: [], edges: [], nodes: [] }
@@ -192,6 +200,10 @@ export function reproject(scene: Scene, overrides: Readonly<Record<string, Point
     }
   })
 
+  // Junction dots (tic-531b) are deliberately dropped, not carried: they mark
+  // where elk's merged trunks split, and every edge above has just been
+  // re-routed as a straight centre line between its placed endpoints, so the
+  // old dots would sit on routing that no longer exists.
   return { groups, edges, nodes: scene.nodes }
 }
 
@@ -338,6 +350,17 @@ export function cullScene(scene: Scene, visible: Rect): Scene {
     groups: scene.groups.filter(inView),
     edges: scene.edges.filter((edge) => inView(edgeBounds(edge.points))),
     nodes: scene.nodes.filter(inView),
+    // Junction dots are points, not rects, so they get a plain containment
+    // test against the same padded world rect.  `?.` matters: a scene with
+    // no junctions allocates no array here, keeping the ordinary pan frame
+    // exactly as cheap as it was before merging existed (tic-531b).
+    junctions: scene.junctions?.filter(
+      (point) =>
+        point.x >= visible.x &&
+        point.x <= visible.x + visible.width &&
+        point.y >= visible.y &&
+        point.y <= visible.y + visible.height,
+    ),
   }
 }
 

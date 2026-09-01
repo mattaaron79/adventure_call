@@ -9,6 +9,7 @@ import type {
   ElkGraphEdgeInput,
   ElkGraphInput,
   ElkGraphNodeInput,
+  ElkGraphPoint,
   ElkGraphResult,
   ElkLayoutOptions,
   ElkRect,
@@ -22,6 +23,12 @@ const DEFAULT_NODE_GAP = 12
  * algorithm with direction 'DOWN' -- so a source node (the importer) lands in
  * an earlier layer than its target (the imported file), i.e. importers rank
  * above what they import (tic-5f52).
+ *
+ * `mergeEdges` (tic-531b) is always emitted rather than emitted-when-true:
+ * elk's default is false anyway, so the explicit 'false' is a no-op for the
+ * layout, but writing it unconditionally keeps the option set the same shape
+ * for both values of the toggle -- there is no path where a stale merged
+ * routing survives because the key simply vanished.
  */
 export function toElkNode(input: ElkGraphInput, options: ElkLayoutOptions = {}): ElkNode {
   const layerGap = options.layerGap ?? DEFAULT_LAYER_GAP
@@ -33,6 +40,7 @@ export function toElkNode(input: ElkGraphInput, options: ElkLayoutOptions = {}):
       'elk.direction': 'DOWN',
       'elk.layered.spacing.nodeNodeBetweenLayers': String(layerGap),
       'elk.spacing.nodeNode': String(nodeGap),
+      'elk.layered.mergeEdges': String(options.mergeEdges ?? false),
     },
     children: input.nodes.map(toElkChild),
     edges: input.edges.map(toElkEdge),
@@ -60,15 +68,20 @@ function toElkEdge(edge: ElkGraphEdgeInput): ElkExtendedEdge {
 }
 
 /**
- * Flatten a laid-out ElkNode tree into absolute rects and edge polylines.
- * elk positions a node's children, ports and edge sections relative to that
- * node's own origin, so this walks the tree accumulating each ancestor's
- * offset -- the only way to recover world-space coordinates for a nested
- * (compound) graph.
+ * Flatten a laid-out ElkNode tree into absolute rects, edge polylines and
+ * junction points.
+ *
+ * elk positions a node's children, ports, edge sections AND junction points
+ * relative to that node's own origin, so this walks the tree accumulating
+ * each ancestor's offset -- the only way to recover world-space coordinates
+ * for a nested (compound) graph.  Junction points ride on exactly the same
+ * offset as the sections of the edge that owns them (tic-531b), which is why
+ * they are read inside the same loop rather than in a second pass.
  */
 export function fromElkResult(root: ElkNode): ElkGraphResult {
   const rects = new Map<string, ElkRect>()
   const edgePoints = new Map<string, number[]>()
+  const junctionPoints = new Map<string, ElkGraphPoint[]>()
 
   const walk = (node: ElkNode, originX: number, originY: number): void => {
     const x = originX + (node.x ?? 0)
@@ -93,10 +106,21 @@ export function fromElkResult(root: ElkNode): ElkGraphResult {
         points.push(x + section.endPoint.x, y + section.endPoint.y)
       }
       edgePoints.set(edge.id, points)
+      // elkjs's own `ElkEdge` (which ElkExtendedEdge extends) already
+      // declares junctionPoints, so no cast or local narrowing is needed --
+      // elk simply omits the array on edges it computed no junctions for,
+      // and those edges stay out of the map entirely.
+      const junctions = edge.junctionPoints
+      if (junctions && junctions.length > 0) {
+        junctionPoints.set(
+          edge.id,
+          junctions.map((point) => ({ x: x + point.x, y: y + point.y })),
+        )
+      }
     }
     for (const child of node.children ?? []) walk(child, x, y)
   }
   walk(root, 0, 0)
 
-  return { rects, edgePoints }
+  return { rects, edgePoints, junctionPoints }
 }

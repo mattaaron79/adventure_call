@@ -25,9 +25,14 @@
 import type { Workspace } from '../data/derive'
 import { walkFiles } from '../data/derive'
 import { KIND_COLOR, THEME } from '../canvas/theme'
-import type { Size } from '../canvas/viewport'
+import type { Point, Size } from '../canvas/viewport'
 import { layoutGraph } from '../layout/elkGraph'
-import type { ElkGraphEdgeInput, ElkGraphInput, ElkGraphNodeInput } from '../layout/elkTypes'
+import type {
+  ElkGraphEdgeInput,
+  ElkGraphInput,
+  ElkGraphNodeInput,
+  ElkGraphPoint,
+} from '../layout/elkTypes'
 import { notifyLayoutReady } from './asyncLayout'
 import type {
   EdgeStyle,
@@ -42,10 +47,24 @@ import type {
   VizMode,
 } from './types'
 
-/** Mode params. Empty for v1: no configurable knobs (tic-5f52 fixed the
- *  layout direction; cycle highlighting (tic-56b2) is always on, not a
- *  toggle -- a cycle is a fact about the code, not a display preference). */
-export type ImportGraphParams = Record<string, never>
+/**
+ * Mode params.  tic-5f52 fixed the layout direction and tic-56b2 made cycle
+ * highlighting unconditional -- a cycle is a fact about the code, not a
+ * display preference -- so the only knob here is how the lines are routed.
+ */
+export interface ImportGraphParams {
+  /**
+   * Merge the import lines into a junction system (tic-531b).
+   *
+   * Off, every import is its own line and a popular module wears a fan of
+   * them.  On, elk's layered `mergeEdges` routes everything entering a file
+   * through one shared point and everything leaving it through another, so
+   * the fan collapses into trunks and elk hands back the junction points
+   * where those trunks split -- drawn as dots by the canvas.  A display
+   * choice, hence a param rather than something the data decides.
+   */
+  mergeLines: boolean
+}
 
 /** The cycle-membership payload {@link select} carries on `SpecNode.data`
  *  and `SpecEdge.data` for {@link style} to read (tic-56b2). */
@@ -147,18 +166,74 @@ function measure(spec: SceneSpec, _ui: UiState): SizeMap {
 // -- layout ---------------------------------------------------------------
 
 /**
- * A stable content key for the current node/edge set, independent of the
- * `SceneSpec` object's identity -- `select()` builds a fresh spec object on
- * every call, including the one triggered by this mode's own `notifyLayoutReady`,
- * so identity-keyed caching would never hit. Node ids and edge ids are
- * already unique and deterministic per file/edge, so joining them is enough;
- * the file count alone can't accidentally collide with a different edge set
- * because the edge ids are included too.
+ * A stable content key for everything the elk layout depends on, independent
+ * of the `SceneSpec` object's identity -- `select()` builds a fresh spec
+ * object on every call, including the one triggered by this mode's own
+ * `notifyLayoutReady`, so identity-keyed caching would never hit.
+ *
+ * It keys on the ids, the measured sizes AND the params, and all three
+ * matter (tic-531b).  Ids alone was the original v1 key and it was a trap:
+ * turning on `mergeLines` changes no node id and no edge id, so the toggle
+ * would have hit the stale single-slot cache and appeared to do nothing at
+ * all, in either direction.  Folding the params in is what makes the
+ * re-derive the user asked for happen for free -- a params change re-runs
+ * App's `renderMode` memo, `layout()` misses this key, elk runs, and
+ * `notifyLayoutReady` triggers the second, cache-hit render.  The sizes are
+ * in for the same reason ahead of time: a future change that resizes a chip
+ * (an expanded container, say) alters the geometry without touching an id,
+ * and would fall into the identical trap.
+ *
+ * Node ids and edge ids are unique and deterministic per file/edge, so
+ * joining them is enough; the sizes ride along in the same order as the
+ * children they measure, and the params are serialised whole so a new knob
+ * is covered without editing this function again.
  */
-export function cacheKeyOf(spec: SceneSpec): string {
+export function cacheKeyOf(spec: SceneSpec, sizes: SizeMap, params: ImportGraphParams): string {
   const nodeIds = spec.root.children.map((node) => node.id).join(',')
   const edgeIds = spec.edges.map((edge) => edge.id).join(',')
-  return `${nodeIds}|${edgeIds}`
+  const dims = spec.root.children
+    .map((node) => {
+      const size = sizes.get(node.id)
+      return size ? `${size.width}x${size.height}` : '?'
+    })
+    .join(',')
+  return `${nodeIds}|${edgeIds}|${dims}|${JSON.stringify(params)}`
+}
+
+/**
+ * Every distinct junction elk reported, flattened into one world-space list
+ * (tic-531b).
+ *
+ * Flat rather than per-edge because a junction belongs to the picture, not
+ * to any one line: the canvas only ever wants to stamp a dot there, and
+ * nothing selects, hovers or hit-tests one.  Which edge owned the point is
+ * information no caller has a use for.
+ *
+ * The de-duplication is deliberate insurance rather than a fix for observed
+ * duplication.  Measured against elkjs directly while building this
+ * (tic-531b): a merged 42-edge fan-in produced 12 junction entries and 12
+ * distinct coordinates, so elk attributes each junction to exactly one edge
+ * rather than to every edge running through it.  Nothing in elk's contract
+ * promises that though -- two edges parting at one point could each claim
+ * it -- and stacking identical circles on a pixel costs Konva nodes for no
+ * visual difference.  The key rounds to a whole world pixel, which also
+ * collapses near-coincident points the dot radius would have covered over;
+ * the unrounded coordinate is what gets kept and drawn.
+ */
+export function flattenJunctions(
+  junctionPoints: ReadonlyMap<string, readonly ElkGraphPoint[]>,
+): Point[] {
+  const seen = new Set<string>()
+  const flat: Point[] = []
+  for (const points of junctionPoints.values()) {
+    for (const point of points) {
+      const key = `${Math.round(point.x)},${Math.round(point.y)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      flat.push({ x: point.x, y: point.y })
+    }
+  }
+  return flat
 }
 
 /** The domain graph elk lays out: one node per file, one edge per import. */
@@ -188,15 +263,26 @@ let cache: LayoutCache | null = null
  *  redundant elk request for the same graph. */
 let inFlightKey: string | null = null
 
-function layout(spec: SceneSpec, sizes: SizeMap, _params: ImportGraphParams): Positioned {
-  const key = cacheKeyOf(spec)
+function layout(spec: SceneSpec, sizes: SizeMap, params: ImportGraphParams): Positioned {
+  const key = cacheKeyOf(spec, sizes, params)
   if (cache && cache.key === key) return cache.positioned
 
   if (inFlightKey !== key) {
     inFlightKey = key
-    layoutGraph(toElkGraphInput(spec, sizes))
+    layoutGraph(toElkGraphInput(spec, sizes), { mergeEdges: params.mergeLines })
       .then((result) => {
-        cache = { key, positioned: { rects: result.rects, edgePoints: result.edgePoints } }
+        // Junctions are omitted rather than stored empty when nothing merged,
+        // so `Positioned.junctions` stays absent on the ordinary layout and
+        // the canvas cull skips the point filter entirely (tic-531b).
+        const junctions = flattenJunctions(result.junctionPoints)
+        cache = {
+          key,
+          positioned: {
+            rects: result.rects,
+            edgePoints: result.edgePoints,
+            ...(junctions.length > 0 ? { junctions } : {}),
+          },
+        }
         if (inFlightKey === key) inFlightKey = null
         notifyLayoutReady()
       })
@@ -243,7 +329,10 @@ function style(spec: SceneSpec, _params: ImportGraphParams): StyleMap {
 export const importGraphMode: VizMode<ImportGraphParams> = {
   id: 'import-graph',
   label: 'Import graph',
-  defaultParams: {},
+  defaultParams: { mergeLines: false },
+  // Rendered as a checkbox by ModePicker's generic paramToggles handling
+  // (tic-83ec), so merging needs no UI code of its own (tic-531b).
+  paramToggles: [{ key: 'mergeLines', label: 'Merge import lines' }],
   select,
   measure,
   layout,

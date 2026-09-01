@@ -38,6 +38,20 @@ describe('toElkNode', () => {
     })
   })
 
+  it('emits the layered mergeEdges option for both values of the toggle', () => {
+    // Always emitted, never conditionally omitted, so the option set has the
+    // same shape whichever way the checkbox is set (tic-531b).
+    expect(toElkNode(GRAPH).layoutOptions).toMatchObject({
+      'elk.layered.mergeEdges': 'false',
+    })
+    expect(toElkNode(GRAPH, { mergeEdges: false }).layoutOptions).toMatchObject({
+      'elk.layered.mergeEdges': 'false',
+    })
+    expect(toElkNode(GRAPH, { mergeEdges: true }).layoutOptions).toMatchObject({
+      'elk.layered.mergeEdges': 'true',
+    })
+  })
+
   it('carries node sizes, nested children and ports through', () => {
     const elkNode = toElkNode(GRAPH)
     const [a, b] = elkNode.children!
@@ -136,5 +150,65 @@ describe('fromElkResult', () => {
     }
     const result = fromElkResult(laidOut)
     expect(result.edgePoints.get('a->b')).toEqual([10, 5, 50, 5, 100, 105])
+  })
+
+  it('reads an edge junction points and offsets them by the ancestor origin', () => {
+    // elk reports junction points in the coordinate space of the node that
+    // owns the edge, exactly like the section start/bend/end points, so they
+    // take the identical accumulated offset (tic-531b).
+    const laidOut: ElkNode = {
+      id: 'root',
+      children: [
+        {
+          id: 'box',
+          x: 1000,
+          y: 500,
+          width: 400,
+          height: 400,
+          children: [
+            { id: 'a', x: 0, y: 0, width: 10, height: 10 },
+            { id: 'b', x: 100, y: 100, width: 10, height: 10 },
+          ],
+          edges: [
+            {
+              id: 'a->b',
+              sources: ['a'],
+              targets: ['b'],
+              sections: [{ id: 'a->b_s0', startPoint: { x: 5, y: 10 }, endPoint: { x: 5, y: 100 } }],
+              junctionPoints: [
+                { x: 5, y: 60 },
+                { x: 5, y: 80 },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const result = fromElkResult(laidOut)
+    expect(result.junctionPoints.get('a->b')).toEqual([
+      { x: 1005, y: 560 },
+      { x: 1005, y: 580 },
+    ])
+  })
+
+  it('leaves an edge elk computed no junctions for out of the map entirely', () => {
+    // The unmerged layout is the default, and it must not pay for a feature
+    // it never used.
+    const laidOut: ElkNode = {
+      id: 'root',
+      children: [{ id: 'a', x: 0, y: 0, width: 10, height: 10 }],
+      edges: [
+        {
+          id: 'a->a',
+          sources: ['a'],
+          targets: ['a'],
+          sections: [{ id: 's', startPoint: { x: 0, y: 0 }, endPoint: { x: 1, y: 1 } }],
+          junctionPoints: [],
+        },
+      ],
+    }
+    const result = fromElkResult(laidOut)
+    expect(result.junctionPoints.has('a->a')).toBe(false)
+    expect(result.junctionPoints.size).toBe(0)
   })
 })
