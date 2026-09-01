@@ -119,7 +119,12 @@ export function deriveEntryPoints(
     // An implicit class -> __init__ edge counts as a caller here on purpose:
     // constructing the class really does reach __init__, and treating it as
     // caller-less would nominate every constructor as an entry point.
-    if (callGraph.callers.has(id)) {
+    // A SELF-edge is not a caller (tic-d8a8).  A directly recursive function
+    // is its own caller in the graph, but calling yourself is not something
+    // reaching you: a recursive function nothing else calls is still a root,
+    // and counting the self-edge classifies it `internal` and hides it from
+    // the entry set entirely.  Found by mode 3 failing to draw one.
+    if (hasCallerOtherThanItself(callGraph, id)) {
       roleOf.set(id, { role: 'internal', framework, reason })
       continue
     }
@@ -131,7 +136,7 @@ export function deriveEntryPoints(
       continue
     }
 
-    if (callGraph.callees.has(id)) {
+    if (callsSomethingOtherThanItself(callGraph, id)) {
       roleOf.set(id, { role: 'entry', framework: null, reason: null })
       entries.push(id)
       continue
@@ -144,4 +149,16 @@ export function deriveEntryPoints(
   const result: EntryPoints = { roleOf, entries, orphans, rescued }
   perRules.set(rules, result)
   return result
+}
+
+/** Whether anything OTHER than the symbol itself calls it. */
+function hasCallerOtherThanItself(callGraph: CallGraph, id: string): boolean {
+  return (callGraph.callers.get(id) ?? []).some((edge) => edge.source !== id)
+}
+
+/** Whether it calls anything OTHER than itself -- the difference between an
+ *  `entry` that heads some flow and a self-recursive `orphan` that heads
+ *  none. */
+function callsSomethingOtherThanItself(callGraph: CallGraph, id: string): boolean {
+  return (callGraph.callees.get(id) ?? []).some((edge) => edge.target !== id)
 }

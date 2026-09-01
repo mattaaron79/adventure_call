@@ -169,3 +169,32 @@ describe('deriveEntryPoints', () => {
     expect(deriveEntryPoints(graph, index, rules)).toBe(deriveEntryPoints(graph, index, rules))
   })
 })
+
+describe('deriveEntryPoints and self-recursion (tic-d8a8)', () => {
+  it('does not treat a self-call as something reaching the function', () => {
+    // A directly recursive function is its own caller in the graph. Counting
+    // that would classify a recursive root as `internal` and drop it from the
+    // entry set -- which is exactly how mode 3 failed to draw one.
+    const points = classify([fn('recurse'), fn('helper')], [
+      calls('recurse', 'recurse'),
+      calls('recurse', 'helper'),
+    ])
+    expect(points.roleOf.get('recurse')?.role).toBe('entry')
+    expect(points.entries).toContain('recurse')
+  })
+
+  it('calls a function that only ever calls itself an orphan, not an entry', () => {
+    // It heads no flow: nothing reaches it and it reaches nothing.
+    const points = classify([fn('spin')], [calls('spin', 'spin')])
+    expect(points.roleOf.get('spin')?.role).toBe('orphan')
+    expect(points.orphans).toEqual(['spin'])
+  })
+
+  it('still counts a real caller of a recursive function', () => {
+    const points = classify([fn('caller'), fn('recurse')], [
+      calls('caller', 'recurse'),
+      calls('recurse', 'recurse'),
+    ])
+    expect(points.roleOf.get('recurse')?.role).toBe('internal')
+  })
+})

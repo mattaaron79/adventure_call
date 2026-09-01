@@ -6,6 +6,7 @@
  * `VizMode` interface into a mode's internals -- adding a mode is adding one
  * entry here.
  */
+import { callFlowMode } from './callFlow'
 import { fsTreeMode } from './fsTree'
 import { importGraphMode } from './importGraph'
 import type { VizMode } from './types'
@@ -19,7 +20,7 @@ import type { VizMode } from './types'
 export type AnyMode = VizMode<any>
 
 /** Every registered mode, in picker order. */
-export const MODES: readonly AnyMode[] = [fsTreeMode, importGraphMode]
+export const MODES: readonly AnyMode[] = [fsTreeMode, importGraphMode, callFlowMode]
 
 /** The mode the workspace opens with. */
 export const DEFAULT_MODE_ID = fsTreeMode.id
