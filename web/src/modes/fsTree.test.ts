@@ -10,7 +10,8 @@ import type {
   SymbolKind,
   SymbolRegistry,
 } from '../data/types'
-import { fileOnlyDirIds, fileRows, fsTreeMode, layoutContainer, minimalScopeForTarget } from './fsTree'
+import { fileRows, layoutContainer } from './fileDetail'
+import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './fsTree'
 import { renderMode, resolveGoto } from './types'
 
 /**

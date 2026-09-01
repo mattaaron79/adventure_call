@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildFsTree,
   deriveExternalImports,
+  deriveFileImporters,
   deriveFileImports,
   deriveStronglyConnectedComponents,
   deriveWorkspace,
@@ -584,6 +585,73 @@ describe('deriveStronglyConnectedComponents', () => {
     expect(deriveStronglyConnectedComponents(edges)).toBe(deriveStronglyConnectedComponents(edges))
     expect(deriveStronglyConnectedComponents([fileImport('a', 'b')])).not.toBe(
       deriveStronglyConnectedComponents(edges),
+    )
+  })
+})
+
+// -- importers reverse index (tic-0680) ---------------------------------------
+
+describe('deriveFileImporters', () => {
+  const index = indexSymbols(NODES)
+  const forward = deriveFileImports(EDGES, index)
+
+  it('keys the importing edges by the file they import', () => {
+    const importers = deriveFileImporters(forward)
+    expect(importers.get('src/app/errors.py')?.map((e) => e.source)).toEqual([
+      'src/app/loop.py',
+    ])
+    expect(importers.get('src/app/loop.py')?.map((e) => e.source)).toEqual([
+      'src/app/cli/main.py',
+    ])
+  })
+
+  it('collects every importer of a fanned-in file', () => {
+    const importers = deriveFileImporters([
+      fileImport('a', 'shared'),
+      fileImport('b', 'shared'),
+      fileImport('c', 'shared'),
+    ])
+    expect(importers.get('shared')?.map((e) => e.source)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('is absent -- not empty -- for a file nobody imports', () => {
+    const importers = deriveFileImporters(forward)
+    // main.py imports loop.py but nothing imports main.py.
+    expect(importers.has('src/app/cli/main.py')).toBe(false)
+    expect(importers.get('src/app/cli/main.py')).toBeUndefined()
+  })
+
+  it('buckets the very same edge objects as the forward array', () => {
+    const importers = deriveFileImporters(forward)
+    const forwardEdge = forward.find(
+      (e) => e.source === 'src/app/loop.py' && e.target === 'src/app/errors.py',
+    )
+    expect(importers.get('src/app/errors.py')?.[0]).toBe(forwardEdge)
+    // So `count` and `symbolIds` come along for free.
+    expect(importers.get('src/app/errors.py')?.[0].symbolIds).toEqual([
+      'app.errors.PluginError',
+      'app.errors.Aborted',
+    ])
+  })
+
+  it('covers exactly the targets the forward edges name', () => {
+    const importers = deriveFileImporters(forward)
+    expect([...importers.keys()].sort()).toEqual(
+      [...new Set(forward.map((e) => e.target))].sort(),
+    )
+  })
+
+  it('memoises per fileImports array', () => {
+    const edges = [fileImport('a', 'b')]
+    expect(deriveFileImporters(edges)).toBe(deriveFileImporters(edges))
+    expect(deriveFileImporters([fileImport('a', 'b')])).not.toBe(deriveFileImporters(edges))
+  })
+
+  it('is exposed on the workspace, derived from its own fileImports', () => {
+    const workspace = deriveWorkspace(GRAPH, [])
+    expect(workspace.fileImporters).toBe(deriveFileImporters(workspace.fileImports))
+    expect(workspace.fileImporters.get('src/app/errors.py')?.[0].source).toBe(
+      'src/app/loop.py',
     )
   })
 })

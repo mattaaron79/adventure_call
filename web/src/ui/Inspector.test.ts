@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { FsDir, SymbolIndex, Workspace } from '../data/derive'
+import { deriveFileImporters, type FileImportEdge, type FsDir, type SymbolIndex, type Workspace } from '../data/derive'
 import type { GraphNode, SymbolKind } from '../data/types'
 import {
   Inspector,
@@ -55,21 +55,26 @@ const index: SymbolIndex = {
 
 const tree: FsDir = { type: 'dir', name: '', path: '', fileCount: 0, children: [] }
 
+const FILE_IMPORTS: FileImportEdge[] = [
+  {
+    source: 'src/app/loop.py',
+    target: 'src/app/errors.py',
+    count: 2,
+    symbolIds: ['app.errors.PluginError'],
+  },
+  { source: 'src/other.py', target: 'src/app/errors.py', count: 1, symbolIds: [] },
+]
+
 const WORKSPACE: Workspace = {
   nodes: [],
   modules: [],
   index,
   tree,
   importCycles: { componentOf: new Map(), cyclic: new Set() },
-  fileImports: [
-    {
-      source: 'src/app/loop.py',
-      target: 'src/app/errors.py',
-      count: 2,
-      symbolIds: ['app.errors.PluginError'],
-    },
-    { source: 'src/other.py', target: 'src/app/errors.py', count: 1, symbolIds: [] },
-  ],
+  fileImports: FILE_IMPORTS,
+  // Kept in step with `fileImports` by the real derivation (tic-0680) rather
+  // than hand-written, so the fixture cannot drift out of agreement with it.
+  fileImporters: deriveFileImporters(FILE_IMPORTS),
   externalImports: [
     { source: 'src/app/loop.py', target: 'collections.abc', count: 1 },
     { source: 'src/app/loop.py', target: 'typing', count: 2 },
