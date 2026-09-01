@@ -503,6 +503,7 @@ class _PythonExtractor:
             else self._params(node.child_by_field_name("parameters"))
         )
         bases = self._bases(node) if is_class else []
+        returns = None if is_class else self._returns(node)
         docstring = self._docstring_of_block(body)
         is_async = any(child.type == "async" for child in node.children)
 
@@ -518,6 +519,7 @@ class _PythonExtractor:
             start_line=(decorated or node).start_point.row + 1,
             end_line=node.end_point.row + 1,
             params=params,
+            returns=returns,
             signature=signature,
             docstring=docstring,
             decorators=decorators,
@@ -676,6 +678,24 @@ class _PythonExtractor:
         if "\n" in raw:
             raw = " ".join(raw.split())
         return raw
+
+    def _returns(self, node: Node) -> str | None:
+        """The return annotation as written, or None when there is none.
+
+        Taken from the ``return_type`` field rather than picked out of the
+        signature text, so a wrapped or commented annotation needs no parsing
+        to recover.  Whitespace inside a multi-line annotation is flattened
+        the same way :meth:`_signature` flattens wrapped parameters, so
+        ``-> tuple[
+    int,
+    str,
+]`` reads back as one line.
+        """
+        annotation = node.child_by_field_name("return_type")
+        if annotation is None:
+            return None
+        text = self.text(annotation).strip()
+        return " ".join(text.split()) if text else None
 
     def _params(self, params_node: Node | None) -> list[Param]:
         """Destructure a ``parameters`` node into typed :class:`Param` records."""

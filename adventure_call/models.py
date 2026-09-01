@@ -55,6 +55,13 @@ class SymbolDef:
     start_line: int = 1
     end_line: int = 1
     params: list[Param] = field(default_factory=list)
+    #: Return annotation exactly as written -- ``list[ToolResult]``, the
+    #: string forward reference ``"Session"``, ``None`` the type.  Not
+    #: normalised, resolved or evaluated: what the source says is the honest
+    #: answer, and a consumer decides what to make of it.  ``None`` here means
+    #: the source carried no annotation at all, which is different from an
+    #: annotation whose text is ``"None"``.
+    returns: str | None = None
     signature: str = ""
     docstring: str | None = None
     decorators: list[str] = field(default_factory=list)
@@ -76,6 +83,7 @@ class SymbolDef:
             "start_line": self.start_line,
             "end_line": self.end_line,
             "params": [p.to_dict() for p in self.params],
+            "returns": self.returns,
             "signature": self.signature,
             "docstring": self.docstring,
             "decorators": list(self.decorators),

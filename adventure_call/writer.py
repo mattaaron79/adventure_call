@@ -20,7 +20,7 @@ import networkx as nx
 from adventure_call.models import ParsedFile
 from adventure_call.resolver import ResolutionIndex
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 GRAPH_FILENAME = "codebase_graph.json"
 REGISTRY_FILENAME = "symbol_registry.json"
 

@@ -1,12 +1,12 @@
 /**
- * TypeScript mirrors of the adventure-call JSON exports (schema_version 1).
+ * TypeScript mirrors of the adventure-call JSON exports (schema_version 2).
  *
  * Written from adventure_call/models.py and adventure_call/writer.py.  Two
  * kinds -- `variable` and `attribute` -- are declared ahead of the parser that
  * emits them (see tic-82b0); consumers must tolerate their absence.
  */
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export type SymbolKind =
   | 'module'
@@ -42,6 +42,17 @@ export interface GraphNode {
   start_line: number
   end_line: number
   params: Param[]
+  /**
+   * Return annotation exactly as written (tic-2255) -- `list[ToolResult]`,
+   * the string forward reference `"Session"`, `None` the type.  Never
+   * normalised or resolved; null means the source carried no annotation at
+   * all, which is not the same as an annotation whose text is `"None"`.
+   * Optional because the app reads whatever `out/` currently holds: a
+   * schema_version 1 export predates the field entirely, so requiring it
+   * would be a claim about data that may not be there.  Same reasoning as
+   * `root_abs` (tic-7f0b).
+   */
+  returns?: string | null
   signature: string
   docstring: string | null
   decorators: string[]

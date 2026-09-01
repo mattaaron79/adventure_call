@@ -372,3 +372,104 @@ def test_walk_skips_noise_directories_and_globs(tmp_path: Path):
 )
 def test_module_names_derive_from_paths(path, prefix, expected):
     assert module_name_for_path(path, prefix) == expected
+
+
+# -- return annotations (tic-2255) -----------------------------------------
+
+
+RETURNS_SOURCE = """
+    from __future__ import annotations
+
+
+    def annotated(x: int) -> list[str]:
+        ...
+
+
+    def bare(x):
+        ...
+
+
+    def returns_none() -> None:
+        ...
+
+
+    async def coroutine() -> "Session":
+        ...
+
+
+    def wrapped() -> tuple[
+        int,
+        str,
+    ]:
+        ...
+
+
+    class Holder:
+        def method(self) -> Holder:
+            ...
+
+        @property
+        def prop(self) -> int:
+            ...
+"""
+
+
+@pytest.fixture
+def returns(analyse):
+    _, _, idx = analyse({"src/rets.py": RETURNS_SOURCE})
+    return lambda symbol_id: idx.symbols[symbol_id].returns
+
+
+def test_return_annotation_is_captured_as_written(returns):
+    assert returns("src.rets.annotated") == "list[str]"
+
+
+def test_missing_return_annotation_is_none_not_empty(returns):
+    # None means "the source said nothing", which a consumer has to be able to
+    # tell apart from an annotation that happens to read `None`.
+    assert returns("src.rets.bare") is None
+
+
+def test_the_type_none_is_kept_as_its_text(returns):
+    assert returns("src.rets.returns_none") == "None"
+
+
+def test_async_function_return_annotation(returns):
+    assert returns("src.rets.coroutine") == '"Session"'
+
+
+def test_string_forward_reference_keeps_its_quotes(returns):
+    # Not resolved, not unquoted: what the source says is the honest answer.
+    assert returns("src.rets.coroutine").startswith('"')
+
+
+def test_wrapped_annotation_is_flattened_to_one_line(returns):
+    flattened = returns("src.rets.wrapped")
+    assert "\n" not in flattened
+    assert flattened.startswith("tuple[") and flattened.endswith("]")
+
+
+def test_method_return_annotation(returns):
+    assert returns("src.rets.Holder.method") == "Holder"
+
+
+def test_decorated_method_return_annotation(returns):
+    assert returns("src.rets.Holder.prop") == "int"
+
+
+def test_classes_have_no_return_annotation(returns):
+    assert returns("src.rets.Holder") is None
+
+
+def test_returns_is_exported_in_the_symbol_dict(analyse):
+    _, _, idx = analyse({"src/rets.py": RETURNS_SOURCE})
+    assert idx.symbols["src.rets.annotated"].to_dict()["returns"] == "list[str]"
+
+
+def test_adding_returns_did_not_reshape_any_signature(symbol):
+    # This ticket adds a field; it does not touch the signature text that
+    # every existing consumer already reads.
+    assert symbol("src.auth.login_user").signature == (
+        "def login_user(name: str, password: str) -> User:"
+    )
+    assert symbol("src.models.User.greet").signature.startswith("def greet(")

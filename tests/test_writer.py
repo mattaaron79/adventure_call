@@ -8,7 +8,12 @@ from pathlib import Path
 import networkx as nx
 
 from adventure_call.cli import main
-from adventure_call.writer import GRAPH_FILENAME, REGISTRY_FILENAME, OutputWriter
+from adventure_call.writer import (
+    GRAPH_FILENAME,
+    REGISTRY_FILENAME,
+    SCHEMA_VERSION,
+    OutputWriter,
+)
 
 
 def _write(tmp_path: Path, builder, index, parsed_files, **kwargs) -> dict[str, Path]:
@@ -47,7 +52,7 @@ def test_graph_json_carries_stubs_not_bodies(tmp_path, builder, index, parsed_fi
 def test_graph_json_records_run_metadata(tmp_path, builder, index, parsed_files):
     data = json.loads(_write(tmp_path, builder, index, parsed_files)["graph"].read_text("utf-8"))
     meta = data["graph"]
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == SCHEMA_VERSION
     assert meta["root"] == "sample"
     assert meta["root_abs"] == Path("sample").resolve().as_posix()
     assert meta["stats"]["edge_types"]["CALLS"] > 0
@@ -110,7 +115,11 @@ def test_registry_lists_variables_among_a_module_symbols(tmp_path, builder, inde
     data = json.loads(_write(tmp_path, builder, index, parsed_files)["registry"].read_text("utf-8"))
     assert "src.auth.SESSIONS" in data["modules"]["src.auth"]["symbol_ids"]
     assert data["symbols"]["src.auth.SESSIONS"]["kind"] == "variable"
-    assert data["schema_version"] == 1, "new kinds are additive; the schema is unchanged"
+    # tic-82b0 asserted here that new symbol KINDS are additive and need no
+    # bump, which is still true; the version has since moved for an unrelated
+    # reason (tic-2255 added a field), so this pins the constant rather than a
+    # literal that would go stale again on the next real schema change.
+    assert data["schema_version"] == SCHEMA_VERSION
 
 
 def test_registry_reports_unresolved_calls_and_diagnostics(
