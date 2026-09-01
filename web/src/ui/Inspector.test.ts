@@ -60,6 +60,7 @@ const WORKSPACE: Workspace = {
   modules: [],
   index,
   tree,
+  importCycles: { componentOf: new Map(), cyclic: new Set() },
   fileImports: [
     {
       source: 'src/app/loop.py',

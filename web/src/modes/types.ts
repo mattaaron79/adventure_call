@@ -95,6 +95,15 @@ export interface SpecEdge {
    * imports `to`).  The canvas animates highlighted directional edges.
    */
   directional?: boolean
+  /**
+   * Mode-private payload for the later phases; opaque to the framework, like
+   * {@link SpecNode.data}.  E.g. import-graph (tic-56b2) carries whether an
+   * edge sits inside a strongly-connected component here, so `style` can
+   * read it without changing `kind` -- which stays 'import' so cross-mode
+   * machinery keyed on it (selection highlighting, marching ants) still
+   * treats a cyclic edge as an import.
+   */
+  data?: unknown
 }
 
 /** Which nodes, groups and edges exist -- no geometry, no styling. */

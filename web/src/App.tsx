@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { deriveWorkspace } from './data/derive'
 import { DEFAULT_EXCLUDES, readExcludes, writeExcludes } from './data/filters'
 import { loadAbsoluteRoot, loadGraph, loadRegistry, onDataChanged } from './data/load'
@@ -8,6 +8,7 @@ import { lodOf } from './canvas/lod'
 import { EMPTY_SCENE } from './canvas/scene'
 import { modeById } from './modes/registry'
 import { fileOnlyDirIds, minimalScopeForTarget } from './modes/fsTree'
+import { getLayoutVersion, subscribeLayoutReady } from './modes/asyncLayout'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
 import { buildSourceLinks, Inspector } from './ui/Inspector'
@@ -117,9 +118,14 @@ export function App() {
   // Zoom LOD as a selector: a number, so this re-renders only when a
   // threshold is crossed, never per pan/zoom frame (tic-fa56).
   const lod = useWorkspace((s) => lodOf(activeMode(s).viewport.scale))
+  // A mode whose `layout` phase needs an async computation (tic-7e6d's
+  // import-graph, via elk) can't return its real result synchronously; this
+  // ticks whenever one lands in that mode's own cache, so the memo below
+  // re-runs `layout()` a second time and picks it up (see ./modes/asyncLayout).
+  const layoutVersion = useSyncExternalStore(subscribeLayoutReady, getLayoutVersion)
   const layout = useMemo(
     () => (workspace ? renderMode(mode, workspace, params, { expanded, lod, focusPath }) : null),
-    [mode, params, workspace, expanded, lod, focusPath],
+    [mode, params, workspace, expanded, lod, focusPath, layoutVersion],
   )
   const scene = layout?.scene ?? EMPTY_SCENE
 

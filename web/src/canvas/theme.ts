@@ -25,6 +25,10 @@ export const THEME = {
    *  selection/hover (tic-5393).  Same blue as the module kind: imports
    *  connect modules, so a lit line reads as "this is what I import". */
   import: '#89b4fa',
+  /** A file or edge inside an honest import cycle (tic-56b2): the one warm
+   *  colour against an otherwise cool palette, so a cycle reads as worth
+   *  noticing rather than blending into the ordinary import lines. */
+  cycle: '#f38ba8',
 } as const
 
 export const KIND_COLOR: Record<SymbolKind, string> = {

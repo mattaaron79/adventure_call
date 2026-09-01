@@ -3,9 +3,11 @@ import {
   buildFsTree,
   deriveExternalImports,
   deriveFileImports,
+  deriveStronglyConnectedComponents,
   deriveWorkspace,
   indexSymbols,
   walkFiles,
+  type FileImportEdge,
   type FsDir,
 } from './derive'
 import type {
@@ -505,5 +507,83 @@ describe('deriveWorkspace', () => {
     // A missing or different registry is a different derivation.
     expect(deriveWorkspace(GRAPH, [], '')).not.toBe(ws)
     expect(deriveWorkspace(GRAPH, [], '', makeRegistry({}, {}))).not.toBe(ws)
+  })
+})
+
+// -- import cycles (tic-56b2) -------------------------------------------------
+
+function fileImport(source: string, target: string): FileImportEdge {
+  return { source, target, count: 1, symbolIds: [] }
+}
+
+describe('deriveStronglyConnectedComponents', () => {
+  it('puts every file in its own singleton component when there is no cycle', () => {
+    const scc = deriveStronglyConnectedComponents([fileImport('a', 'b'), fileImport('b', 'c')])
+    expect(scc.cyclic.size).toBe(0)
+    expect(scc.componentOf.get('a')).not.toBe(scc.componentOf.get('b'))
+    expect(scc.componentOf.get('b')).not.toBe(scc.componentOf.get('c'))
+  })
+
+  it('finds a direct two-file cycle', () => {
+    const scc = deriveStronglyConnectedComponents([fileImport('a', 'b'), fileImport('b', 'a')])
+    const id = scc.componentOf.get('a')
+    expect(id).toBeDefined()
+    expect(scc.componentOf.get('b')).toBe(id)
+    expect(scc.cyclic.has(id!)).toBe(true)
+  })
+
+  it('finds a longer cycle (a -> b -> c -> a)', () => {
+    const scc = deriveStronglyConnectedComponents([
+      fileImport('a', 'b'),
+      fileImport('b', 'c'),
+      fileImport('c', 'a'),
+    ])
+    const id = scc.componentOf.get('a')
+    expect(scc.componentOf.get('b')).toBe(id)
+    expect(scc.componentOf.get('c')).toBe(id)
+    expect(scc.cyclic.has(id!)).toBe(true)
+  })
+
+  it('does not merge a file that only feeds into a cycle from outside it', () => {
+    // entry -> a -> b -> a (a/b cycle; entry is not part of it)
+    const scc = deriveStronglyConnectedComponents([
+      fileImport('entry', 'a'),
+      fileImport('a', 'b'),
+      fileImport('b', 'a'),
+    ])
+    const cycleId = scc.componentOf.get('a')!
+    expect(scc.componentOf.get('b')).toBe(cycleId)
+    expect(scc.cyclic.has(cycleId)).toBe(true)
+    expect(scc.componentOf.get('entry')).not.toBe(cycleId)
+    expect(scc.cyclic.has(scc.componentOf.get('entry')!)).toBe(false)
+  })
+
+  it('keeps two disjoint cycles as separate components', () => {
+    const scc = deriveStronglyConnectedComponents([
+      fileImport('a', 'b'),
+      fileImport('b', 'a'),
+      fileImport('x', 'y'),
+      fileImport('y', 'x'),
+    ])
+    const abId = scc.componentOf.get('a')!
+    const xyId = scc.componentOf.get('x')!
+    expect(abId).not.toBe(xyId)
+    expect(scc.cyclic.has(abId)).toBe(true)
+    expect(scc.cyclic.has(xyId)).toBe(true)
+  })
+
+  it('handles a graph with hundreds of files without a stack overflow', () => {
+    // A long chain -- the shape most likely to blow a naive recursive DFS.
+    const edges: FileImportEdge[] = []
+    for (let i = 0; i < 2000; i++) edges.push(fileImport(`f${i}`, `f${i + 1}`))
+    expect(() => deriveStronglyConnectedComponents(edges)).not.toThrow()
+  })
+
+  it('memoises per fileImports array', () => {
+    const edges = [fileImport('a', 'b')]
+    expect(deriveStronglyConnectedComponents(edges)).toBe(deriveStronglyConnectedComponents(edges))
+    expect(deriveStronglyConnectedComponents([fileImport('a', 'b')])).not.toBe(
+      deriveStronglyConnectedComponents(edges),
+    )
   })
 })

@@ -1,7 +1,7 @@
 ---
 id: tic-5f52
 title: 'New mode: import-relationship graph instead of folder structure'
-status: open
+status: closed
 type: feature
 tier: frontier
 domain: ui
@@ -17,8 +17,8 @@ assignee: null
 depends_on: []
 blocked_by: null
 created: '2026-08-30T20:58:23'
-updated: '2026-08-30T20:58:23'
-closed: null
+updated: '2026-08-31T16:36:36'
+closed: '2026-08-31T16:36:36'
 ---
 
 ## Description
@@ -43,3 +43,4 @@ OPEN QUESTIONS -- resolve with the user before implementing
 7. Does the existing CALLS edge set (2402 edges) belong in this mode too, or is that a third mode later?
 
 ## Notes
+- 2026-08-31T16:36:34 claude.sonnet.001: Resolved all open questions with user 2026-08-31: node=files only; no folder grouping (pure import topology); direction=importer -> imported, importer ranks above; external modules (127) excluded for v1; cycles highlighted as SCCs; whole graph shown at once (322 edges/191 nodes); CALLS edges out of scope (separate future mode). Layout engine confirmed as elkjs 'layered' in a web worker. Filed as tic-e82b (elkjs + worker layout infra), tic-7e6d (import-relationship graph VizMode, depends_on tic-e82b), tic-56b2 (SCC cycle highlighting, depends_on tic-7e6d).
