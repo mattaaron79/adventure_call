@@ -174,10 +174,18 @@ function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneS
     visibleFiles.add(file.path)
     const open = fileOpen(file)
     if (open) openFiles.add(file.path)
+    const symbols = data.index.byModule.get(file.module.id)?.length ?? 0
     children.push({
       id: file.path,
       role: 'file',
       label: file.name,
+      // An open container wears fs-tree's header: name on the first line, the
+      // symbol count under it.  Not cosmetic -- the canvas top-aligns a
+      // label only when the node has a sublabel and otherwise centres it
+      // vertically (Workspace's `labelY`), which on a container hundreds of
+      // pixels tall drops the file name into the middle of its own rows.
+      // A collapsed chip keeps just its name, where centring is what we want.
+      ...(open ? { sublabel: `${symbols} symbol${symbols === 1 ? '' : 's'}` } : {}),
       symbolId: null,
       // Double-click expands (tic-ea9d); the canvas reads this through
       // ModeOutput.expandable and the store persists it per mode.

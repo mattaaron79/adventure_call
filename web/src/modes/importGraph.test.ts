@@ -492,6 +492,14 @@ describe('importGraphMode.select with an expanded file', () => {
     expect(rows.map((n) => n.gotoTo).sort()).toEqual(['src/pkg/b.py', 'src/pkg/c.py'])
   })
 
+  it('gives the open container a sublabel, so the canvas puts its name in the header', () => {
+    // Workspace centres a label vertically unless the node has a sublabel;
+    // without one, a tall container renders its file name across its rows.
+    expect(container.sublabel).toBe('1 symbol')
+    const collapsed = spec.root.children.find((n) => n.id === 'src/pkg/b.py')!
+    expect(collapsed.sublabel).toBeUndefined()
+  })
+
   it('carries the symbol id on member rows so source links and the inspector resolve', () => {
     const member = container.children.find((n) => n.label === 'Thing')
     expect(member?.symbolId).toBe('pkg.a.Thing')
