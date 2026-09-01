@@ -18,6 +18,7 @@ from __future__ import annotations
 import builtins
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
 from adventure_call.models import (
@@ -37,6 +38,28 @@ _BUILTIN_NAMES = frozenset(dir(builtins))
 _SELF_NAMES = frozenset({"self", "cls"})
 _MAX_MRO_DEPTH = 8
 _MAX_REEXPORT_DEPTH = 6
+
+# Directory children that are never the import root of a src-layout project.
+_NON_SOURCE_DIRS = frozenset(
+    {"tests", "test", "docs", "doc", "examples", "example", "scripts", "benchmarks", "benches", "tools"}
+)
+
+
+def _load_pyproject(path: Path) -> dict:
+    """Parse ``pyproject.toml`` if present; any failure means "no config"."""
+    if not path.is_file():
+        return {}
+    try:
+        import tomllib  # Python >= 3.11
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            return {}
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # malformed TOML, encoding errors -- treat as absent
+        return {}
 
 
 @dataclass(frozen=True)
@@ -98,9 +121,18 @@ class SymbolResolver:
         parsed_files: Sequence[ParsedFile],
         *,
         resolve_module_level_calls: bool = True,
+        root: Path | str | None = None,
     ) -> None:
         self.files = list(parsed_files)
         self.resolve_module_level_calls = resolve_module_level_calls
+        # Path prefixes separating the analysed root from the import root, e.g.
+        # ``("src",)`` when packages live under ``src/``.  Empty when unknown.
+        self.import_prefixes = (
+            self._infer_import_prefixes(Path(root).resolve()) if root is not None else []
+        )
+        # import-visible module name -> path-derived module id, e.g.
+        # ``"carnot.kernel" -> "src.carnot.kernel"``.
+        self._import_aliases: dict[str, str] = {}
 
         self.symbols: dict[str, SymbolDef] = {}
         self.modules: dict[str, ParsedFile] = {}
@@ -141,9 +173,97 @@ class SymbolResolver:
                 elif symbol.parent in self.symbols and self.symbols[symbol.parent].kind == "class":
                     self.class_members[symbol.parent][symbol.name] = symbol.symbol_id
 
+        self._build_import_aliases()
+
         for parsed in self.files:
             for record in parsed.imports:
                 self._bind_import(parsed.module, record)
+
+    def _build_import_aliases(self) -> None:
+        """Index each prefixed module under its import-visible name too.
+
+        Path-derived ids (``src.carnot.kernel.types``) stay the only ids in
+        :attr:`symbols`/:attr:`modules`, so nothing downstream changes; this
+        map just lets import statements written against the import root
+        (``carnot.kernel.types``) find them.
+        """
+        if not self.import_prefixes:
+            return
+        for module in self.modules:
+            parts = module.split(".")
+            for prefix in self.import_prefixes:
+                n = len(prefix)
+                if len(parts) > n and tuple(parts[:n]) == prefix:
+                    self._import_aliases.setdefault(".".join(parts[n:]), module)
+                    break
+
+    def _canonical_module(self, name: str) -> str:
+        """Map an import-visible module name to its path-derived module id."""
+        if not name or name in self.modules:
+            return name
+        return self._import_aliases.get(name, name)
+
+    def _infer_import_prefixes(self, root: Path) -> list[tuple[str, ...]]:
+        """Guess which path prefixes separate the analysed root from imports.
+
+        Two signals, in order of trust: the project's own package
+        configuration (setuptools ``packages.find.where``, hatch ``packages``,
+        poetry ``packages``), then the conventional src-layout -- a single
+        directory child that holds packages but is not itself one.
+        """
+        prefixes: list[tuple[str, ...]] = []
+
+        def add(segments: Iterable[str]) -> None:
+            parts = tuple(p for p in segments if p and p != ".")
+            if parts and parts not in prefixes:
+                prefixes.append(parts)
+
+        def segments_of(value: str) -> list[str]:
+            return [p for p in value.replace("\\", "/").strip("/").split("/") if p and p != "."]
+
+        data = _load_pyproject(root / "pyproject.toml")
+        if data:
+            tool = data.get("tool", {})
+
+            find = tool.get("setuptools", {}).get("packages", {}).get("find", {})
+            for where in find.get("where") or ():
+                if isinstance(where, str):
+                    add(where.split("/"))
+
+            hatch_build = tool.get("hatch", {}).get("build", {})
+            for entry in [*hatch_build.get("packages", []), *hatch_build.get("targets", {}).get("wheel", {}).get("packages", [])]:
+                if not isinstance(entry, str):
+                    continue
+                parts = segments_of(entry)
+                # ``src/carnot`` names the package ``carnot`` under ``src/``;
+                # a bare non-package directory (``src``) is the root itself.
+                last = root.joinpath(*parts)
+                if parts and (last / "__init__.py").is_file():
+                    add(parts[:-1])
+                else:
+                    add(parts)
+
+            for entry in tool.get("poetry", {}).get("packages", []):
+                if isinstance(entry, dict) and isinstance(entry.get("from"), str):
+                    add(entry["from"].split("/"))
+
+        if not prefixes:
+            candidates = []
+            for child in sorted(root.iterdir()):
+                if not child.is_dir() or child.name.startswith(".") or child.name in _NON_SOURCE_DIRS:
+                    continue
+                if (child / "__init__.py").is_file():
+                    continue  # itself a package -- a flat layout, not src-layout
+                if any(
+                    (sub / "__init__.py").is_file()
+                    for sub in child.iterdir()
+                    if sub.is_dir()
+                ):
+                    candidates.append(child)
+            if len(candidates) == 1:
+                add((candidates[0].name,))
+
+        return prefixes
 
     def _bind_import(self, module: str, record: ImportRecord) -> None:
         absolute = self._absolute_module(record)
@@ -155,7 +275,7 @@ class SymbolResolver:
 
         if record.target_symbol is None:
             # `import a.b` binds `a`; `import a.b as c` binds `c` to `a.b`.
-            target = record.target_module
+            target = self._canonical_module(record.target_module)
             kind: BindingKind = "module" if target in self.modules else "external"
             self.bindings[module][record.alias] = Binding(record.alias, kind, target, record)
             return
@@ -172,7 +292,7 @@ class SymbolResolver:
     def _absolute_module(self, record: ImportRecord) -> str:
         """Resolve a possibly-relative import against the importing module."""
         if not record.is_relative:
-            return record.target_module
+            return self._canonical_module(record.target_module)
 
         parts = record.module.split(".") if record.module else []
         if record.module not in self.packages:

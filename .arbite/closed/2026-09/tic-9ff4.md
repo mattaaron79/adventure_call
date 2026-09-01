@@ -2,7 +2,7 @@
 id: tic-9ff4
 title: 'Fix: src-layout module ids don''t match import paths, so in-project calls
   resolve as external'
-status: open
+status: closed
 type: bug
 tier: medium
 domain: io
@@ -12,12 +12,12 @@ tags:
 - resolver
 - module-ids
 - src-layout
-assignee: null
+assignee: zoo
 depends_on: []
 blocked_by: null
 created: '2026-09-01T07:21:52'
-updated: '2026-09-01T07:21:52'
-closed: null
+updated: '2026-09-01T07:51:59'
+closed: '2026-09-01T07:51:59'
 ---
 
 ## Description
@@ -30,3 +30,4 @@ Every src-layout project hits this, and it silently costs ~10% of the non-builti
 Verification: re-run against ../carnot and confirm `external: carnot.*` reasons drop to zero and calls_resolved rises by roughly the 823 sites counted above; add a parser/resolver test with a fixture project in src layout asserting a cross-module call resolves; confirm a flat-layout fixture still resolves exactly as before (no regression). Run the Python test suite.
 
 ## Notes
+- 2026-09-01T07:51:59 zoo: Fixed: SymbolResolver now accepts root and infers the import-root prefix. Signal order: pyproject [tool.setuptools.packages.find] where / [tool.hatch.build(.targets.wheel)] packages / [tool.poetry] packages from, then conventional src-layout detection (single non-package dir child holding packages). Imports are canonicalised from import-visible names to path-derived module ids at bind time via _import_aliases, so ids in index.symbols/index.modules stay stable and nothing downstream changed. Wired root through build_codebase_graph, cli.main and the test index fixture. Tests: 6 new resolver tests (src-layout absolute + module imports, setuptools/hatch config roots, flat-layout regression, multi-root ambiguity). Suite: 120 passed. Verified against ../carnot: 'external: carnot.*' unresolved dropped from 823 to 0; resolved calls now 4201. Remaining externals are genuinely third-party (rich, pytest, json, ...).

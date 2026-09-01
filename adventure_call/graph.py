@@ -462,7 +462,7 @@ def build_codebase_graph(
         module_prefix=module_prefix,
     )
     parsed_files = parser.parse_tree()
-    index = SymbolResolver(parsed_files).resolve()
+    index = SymbolResolver(parsed_files, root=parser.root).resolve()
     builder = GraphBuilder(parsed_files, index, **builder_kwargs)
     builder.build()
     return builder, parsed_files, index

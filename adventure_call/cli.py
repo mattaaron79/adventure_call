@@ -130,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("found no parseable source files under %s", args.root)
         return 1
 
-    index = SymbolResolver(parsed_files).resolve()
+    index = SymbolResolver(parsed_files, root=args.root).resolve()
     builder = GraphBuilder(
         parsed_files,
         index,

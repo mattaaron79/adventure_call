@@ -32,8 +32,8 @@ def files_by_module(parsed_files: list[ParsedFile]) -> dict[str, ParsedFile]:
 
 
 @pytest.fixture(scope="session")
-def index(parsed_files: list[ParsedFile]) -> ResolutionIndex:
-    return SymbolResolver(parsed_files).resolve()
+def index(parsed_files: list[ParsedFile], sample_root: Path) -> ResolutionIndex:
+    return SymbolResolver(parsed_files, root=sample_root).resolve()
 
 
 @pytest.fixture(scope="session")

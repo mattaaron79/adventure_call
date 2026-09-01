@@ -285,3 +285,148 @@ def test_inheritance_loops_do_not_hang(analyse):
         }
     )
     assert _edge(idx, "m.A.go", "self.missing").callee_id is None
+
+
+# -- src-layout import roots (tic-9ff4) -------------------------------------
+
+
+def test_src_layout_absolute_import_resolves(analyse):
+    """Conventional src/ layout: `from kernel.types import X` finds src.kernel.types."""
+    _, _, idx = analyse(
+        {
+            "src/kernel/__init__.py": "",
+            "src/kernel/types.py": """
+            class ToolResult:
+                def ok(self) -> bool:
+                    return True
+            """,
+            "src/agent/__init__.py": "",
+            "src/agent/session.py": """
+            from kernel.types import ToolResult
+
+
+            def use() -> bool:
+                return ToolResult().ok()
+            """,
+        }
+    )
+    # Path-derived ids stay prefixed and stable.
+    assert "src.kernel.types.ToolResult" in idx.symbols
+    binding = idx.bindings["src.agent.session"]["ToolResult"]
+    assert (binding.kind, binding.target) == ("symbol", "src.kernel.types.ToolResult")
+    edge = _edge(idx, "src.agent.session.use", "ToolResult")
+    assert (edge.callee_id, edge.reason) == ("src.kernel.types.ToolResult", None)
+
+
+def test_src_layout_module_import_resolves(analyse):
+    """`import carnot.kernel` style bindings canonicalise to the path id."""
+    _, _, idx = analyse(
+        {
+            "src/carnot/__init__.py": "",
+            "src/carnot/kernel/__init__.py": "",
+            "src/carnot/kernel/types.py": """
+            def make() -> int:
+                return 1
+            """,
+            "src/carnot/agent.py": """
+            from carnot.kernel import types
+
+
+            def go() -> int:
+                return types.make()
+            """,
+        }
+    )
+    binding = idx.bindings["src.carnot.agent"]["types"]
+    assert (binding.kind, binding.target) == ("module", "src.carnot.kernel.types")
+    edge = _edge(idx, "src.carnot.agent.go", "types.make")
+    assert edge.callee_id == "src.carnot.kernel.types.make"
+
+
+def test_src_layout_root_inferred_from_setuptools_config(analyse):
+    """`[tool.setuptools.packages.find] where` names the import root."""
+    _, _, idx = analyse(
+        {
+            "pyproject.toml": '[tool.setuptools.packages.find]\nwhere = ["lib"]\n',
+            "lib/mykit/__init__.py": "",
+            "lib/mykit/core.py": """
+            def ping() -> str:
+                return "pong"
+            """,
+            "app.py": """
+            from mykit.core import ping
+
+
+            def main() -> str:
+                return ping()
+            """,
+        }
+    )
+    assert idx.bindings["app"]["ping"].target == "lib.mykit.core.ping"
+    assert _edge(idx, "app.main", "ping").callee_id == "lib.mykit.core.ping"
+
+
+def test_src_layout_root_inferred_from_hatch_config(analyse):
+    """`[tool.hatch.build.targets.wheel] packages = ["src/x"]` implies src root."""
+    _, _, idx = analyse(
+        {
+            "pyproject.toml": "[tool.hatch.build.targets.wheel]\npackages = ['src/mykit']\n",
+            "src/mykit/__init__.py": "",
+            "src/mykit/core.py": """
+            def ping() -> str:
+                return "pong"
+            """,
+            "app.py": """
+            from mykit.core import ping
+
+
+            def main() -> str:
+                return ping()
+            """,
+        }
+    )
+    assert _edge(idx, "app.main", "ping").callee_id == "src.mykit.core.ping"
+
+
+def test_flat_layout_still_resolves_without_config(analyse):
+    """A flat package layout must not be mistaken for src-layout."""
+    _, _, idx = analyse(
+        {
+            "alpha/__init__.py": "",
+            "alpha/core.py": """
+            def run() -> int:
+                return 1
+            """,
+            "alpha/tool.py": """
+            from alpha.core import run
+
+
+            def go() -> int:
+                return run()
+            """,
+        }
+    )
+    assert idx.bindings["alpha.tool"]["run"].target == "alpha.core.run"
+    edge = _edge(idx, "alpha.tool.go", "run")
+    assert (edge.callee_id, edge.confidence) == ("alpha.core.run", "exact")
+
+
+def test_multiple_package_dirs_without_config_stay_unaliased(analyse):
+    """Two candidate roots and no config: inference stays off, nothing breaks."""
+    _, _, idx = analyse(
+        {
+            "lib1/kit/__init__.py": "",
+            "lib1/kit/core.py": """
+            def a() -> int:
+                return 1
+            """,
+            "lib2/kit/__init__.py": "",
+            "lib2/kit/core.py": """
+            def b() -> int:
+                return 2
+            """,
+        }
+    )
+    assert idx.bindings == {}
+    assert "lib1.kit.core.a" in idx.symbols
+    assert "lib2.kit.core.b" in idx.symbols
