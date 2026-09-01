@@ -473,3 +473,231 @@ def test_adding_returns_did_not_reshape_any_signature(symbol):
         "def login_user(name: str, password: str) -> User:"
     )
     assert symbol("src.models.User.greet").signature.startswith("def greet(")
+
+
+# -- control-flow breadcrumbs (tic-b47a) -----------------------------------
+
+
+CONTROL_SOURCE = '''
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        type_only()
+
+
+    def f(items, flag, p):
+        plain()
+        if check():
+            in_if()
+        elif other():
+            in_elif()
+        else:
+            in_else()
+        for x in source():
+            in_for()
+        while cond():
+            in_while()
+        try:
+            in_try()
+        except ValueError:
+            in_except()
+        else:
+            in_try_else()
+        finally:
+            in_finally()
+        with open(p) as fh:
+            in_with()
+        match subject():
+            case 1:
+                in_case()
+        a = flag and short()
+        b = left() or right()
+        c = yes() if test() else no()
+        d = [each(i) for i in items if keep(i)]
+        e = [plainly(i) for i in items]
+        g = lambda: deferred()
+        assert asserted()
+
+
+    def nested_host():
+        def inner():
+            if flag:
+                deep()
+        return inner
+
+
+    def layered(flag):
+        if flag:
+            for x in flag:
+                try:
+                    pass
+                except ValueError:
+                    buried()
+'''
+
+
+@pytest.fixture
+def control(analyse):
+    _, files, _ = analyse({"src/ctrl.py": CONTROL_SOURCE})
+    calls = {c.raw_name: c for f in files for c in f.calls}
+    return lambda name: calls[name]
+
+
+def test_a_call_in_the_definition_body_has_an_empty_breadcrumb(control):
+    assert control("plain").control == []
+    assert control("plain").unguarded is True
+
+
+def test_an_if_guards_its_body_but_not_its_test(control):
+    # `if check():` runs `check` whenever the `if` is reached; only the body
+    # is conditional.  Getting this backwards would mark a large share of
+    # ordinary calls as guarded and devalue the whole signal.
+    assert control("check").control == []
+    assert control("in_if").control == ["if"]
+    assert control("in_if").guard_depth == 1
+
+
+def test_elif_and_else_branches(control):
+    # An elif's TEST is guarded too: reaching it means the earlier test failed.
+    assert control("other").control == ["if:elif"]
+    assert control("in_elif").control == ["if:elif"]
+    assert control("in_else").control == ["if:else"]
+
+
+def test_a_for_loop_guards_its_body_but_not_its_iterable(control):
+    # The iterable is evaluated once, before anything iterates.
+    assert control("source").control == []
+    assert control("in_for").control == ["for"]
+    assert control("in_for").in_loop is True
+    # A loop body IS a guard: the iterable may be empty.
+    assert control("in_for").guard_depth == 1
+
+
+def test_a_while_test_is_a_loop_position_but_not_a_guard(control):
+    assert control("cond").control == ["while:test"]
+    assert control("cond").in_loop is True
+    assert control("cond").guard_depth == 0
+    assert control("in_while").control == ["while"]
+
+
+def test_try_body_is_not_a_guard_but_except_is(control):
+    # Reaching a try body runs it; an except clause is the error path.
+    assert control("in_try").control == ["try"]
+    assert control("in_try").guard_depth == 0
+    assert control("in_except").control == ["try:except"]
+    assert control("in_except").in_except is True
+    assert control("in_except").guard_depth == 1
+
+
+def test_try_else_is_guarded_and_finally_is_not(control):
+    assert control("in_try_else").control == ["try:else"]
+    assert control("in_try_else").guard_depth == 1
+    assert control("in_finally").control == ["try:finally"]
+    assert control("in_finally").guard_depth == 0
+    assert control("in_finally").in_finally is True
+
+
+def test_a_with_body_runs_when_reached(control):
+    assert control("open").control == []
+    assert control("in_with").control == ["with"]
+    assert control("in_with").guard_depth == 0
+
+
+def test_match_guards_a_case_body_but_not_the_subject(control):
+    assert control("subject").control == []
+    assert control("in_case").control == ["match:case"]
+
+
+def test_short_circuit_operands(control):
+    # `flag and short()` may never evaluate `short`; the left operand of an
+    # `or` always evaluates.
+    assert control("short").control == ["bool"]
+    assert control("short").short_circuit is True
+    assert control("left").control == []
+    assert control("right").control == ["bool"]
+
+
+def test_ternary_branches_are_guarded_but_its_test_is_not(control):
+    assert control("yes").control == ["ternary"]
+    assert control("no").control == ["ternary"]
+    assert control("test").control == []
+
+
+def test_comprehension_body_filter_and_element(control):
+    # A filtered comprehension's element is guarded by the filter as well as
+    # by there being any items at all; the filter test itself is not.
+    assert control("each").control == ["comprehension:if"]
+    assert control("keep").control == ["comprehension:test"]
+    assert control("keep").guard_depth == 0
+    assert control("keep").in_loop is True
+    # ...and an unfiltered comprehension says so.
+    assert control("plainly").control == ["comprehension"]
+
+
+def test_a_lambda_body_is_deferred(control):
+    assert control("deferred").control == ["lambda"]
+
+
+def test_an_assert_is_recorded_without_counting_as_a_guard(control):
+    # Skipped under -O, so it is worth recording -- but marking every test
+    # assertion as guarded would drown the signal it is meant to carry.
+    assert control("asserted").control == ["assert"]
+    assert control("asserted").guard_depth == 0
+
+
+def test_type_checking_blocks_are_separable(control):
+    call = control("type_only")
+    assert call.control == ["type-checking"]
+    assert call.in_type_checking is True
+
+
+def test_a_nested_def_breadcrumb_is_relative_to_its_own_body(control):
+    # Not ["if"] from the outer function plus its own: the walk stops at the
+    # definition that owns the call.
+    assert control("deep").control == ["if"]
+
+
+def test_nesting_reads_outermost_first(control):
+    call = control("buried")
+    assert call.control == ["if", "for", "try:except"]
+    assert call.guard_depth == 3
+    assert call.in_loop is True
+    assert call.in_except is True
+    assert call.unguarded is False
+
+
+def test_breadcrumb_reaches_the_graph_edge_one_entry_per_call_site(analyse):
+    # The breadcrumb is useless if it stops at the parser: resolved calls
+    # become edges, and only `controls` carries it there.
+    builder, _, _ = analyse(
+        {
+            "src/m.py": """
+                def target():
+                    pass
+
+                def caller(flag):
+                    target()
+                    if flag:
+                        target()
+                """
+        }
+    )
+    data = builder.graph.edges["src.m.caller", "src.m.target"]
+    assert data["count"] == 2
+    # Parallel to `count`, so the mixed case is visible: one site unguarded,
+    # one guarded.
+    assert data["controls"] == [[], ["if"]]
+
+
+def test_unresolved_calls_carry_the_breadcrumb_too(analyse):
+    _, _, index = analyse(
+        {
+            "src/m.py": """
+                def caller(flag):
+                    if flag:
+                        mystery.thing()
+                """
+        }
+    )
+    unresolved = [r for r in index.unresolved if r.raw_name == "mystery.thing"]
+    assert unresolved and unresolved[0].control == ["if"]

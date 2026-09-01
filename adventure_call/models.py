@@ -126,6 +126,44 @@ class ImportRecord:
         return data
 
 
+#: Control-flow tokens that can SKIP a call (tic-b47a).
+#:
+#: The word is `guard`, and it is chosen carefully: a call at guard depth 0 is
+#: UNGUARDED, which is not the same as unconditional and much less the same as
+#: "always runs".  An early ``return`` or ``raise`` above it kills it, and the
+#: caller may itself be conditional.  Anything user-facing must say unguarded
+#: too, or the UI will repeat a claim the data does not support -- tic-3a20 is
+#: where a real "unavoidable" would come from, via a CFG and dominators.
+#:
+#: A loop body is in here because it may iterate zero times; a ``try`` body,
+#: a ``finally`` and a ``with`` body are not, because reaching them runs them.
+GUARD_TOKENS = frozenset(
+    {
+        "if",
+        "if:elif",
+        "if:else",
+        "try:else",
+        "try:except",
+        "for",
+        "for:else",
+        "while",
+        "while:else",
+        "match:case",
+        "comprehension",
+        "comprehension:if",
+        "bool",
+        "ternary",
+        "lambda",
+        "type-checking",
+    }
+)
+
+#: Tokens whose call may run more than once.
+LOOP_TOKENS = frozenset(
+    {"for", "while", "while:test", "comprehension", "comprehension:if", "comprehension:test"}
+)
+
+
 @dataclass(frozen=True)
 class CallSite:
     """A call expression, attributed to the definition that encloses it."""
@@ -136,12 +174,61 @@ class CallSite:
     root: str
     attr_path: list[str] = field(default_factory=list)
     caller_id: str | None = None
+    #: The control-flow constructs between this call and its enclosing
+    #: definition, outermost first (tic-b47a) -- e.g.
+    #: ``["if", "for", "try:except"]``.  Empty means the call sits directly in
+    #: the definition body.  See :data:`GUARD_TOKENS` for what counts as a
+    #: guard and why the word matters.
+    control: list[str] = field(default_factory=list)
     line: int = 1
     start_byte: int = 0
     end_byte: int = 0
 
+    @property
+    def guard_depth(self) -> int:
+        """How many enclosing constructs could skip this call."""
+        return sum(1 for token in self.control if token in GUARD_TOKENS)
+
+    @property
+    def unguarded(self) -> bool:
+        """Nothing between this call and its definition body could skip it.
+
+        NOT "always runs" -- see :data:`GUARD_TOKENS`.
+        """
+        return self.guard_depth == 0
+
+    @property
+    def in_loop(self) -> bool:
+        """The call may run more than once."""
+        return any(token in LOOP_TOKENS for token in self.control)
+
+    @property
+    def in_except(self) -> bool:
+        """The call is on an error-handling path."""
+        return "try:except" in self.control
+
+    @property
+    def in_finally(self) -> bool:
+        return "try:finally" in self.control
+
+    @property
+    def in_type_checking(self) -> bool:
+        """The call sits under ``if TYPE_CHECKING``, so it never runs at all."""
+        return "type-checking" in self.control
+
+    @property
+    def short_circuit(self) -> bool:
+        """Guarded by an ``and``/``or``/ternary rather than by a statement."""
+        return any(token in ("bool", "ternary") for token in self.control)
+
     def to_dict(self) -> JSONDict:
-        return asdict(self)
+        data = asdict(self)
+        # Derived, never stored twice: the chain is the source of truth and
+        # these are conveniences computed from it.
+        data["guard_depth"] = self.guard_depth
+        data["unguarded"] = self.unguarded
+        data["in_loop"] = self.in_loop
+        return data
 
 
 @dataclass(frozen=True)
@@ -192,6 +279,10 @@ class Resolution:
     call_type: CallType = "call"
     reason: str | None = None
     file_path: str = ""
+    #: The originating call site's control-flow breadcrumb (tic-b47a), carried
+    #: through so it can reach the graph edge and the unresolved-call export.
+    #: A resolution is per call SITE, so this is one chain, not a merge.
+    control: list[str] = field(default_factory=list)
 
     def to_dict(self) -> JSONDict:
         return asdict(self)

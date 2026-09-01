@@ -107,6 +107,48 @@ _CALLABLE_KINDS = frozenset({"function", "method", "class"})
 _MAX_VALUE_CHARS = 80  # assignment right-hand sides are summarised, not stored
 
 
+#: Nodes the control-flow walk stops at: a call's breadcrumb is relative to
+#: the definition that owns it (tic-b47a).  `lambda` is deliberately absent --
+#: it is not a symbol, so a call inside one still belongs to the enclosing
+#: function and merely gains a `lambda` token.
+_CONTROL_STOP = frozenset(
+    {"function_definition", "class_definition", "decorated_definition", "module"}
+)
+
+#: `except` and `except*`; both put a call on the error path.
+_EXCEPT_CLAUSES = frozenset({"except_clause", "except_group_clause"})
+
+_COMPREHENSIONS = frozenset(
+    {
+        "list_comprehension",
+        "set_comprehension",
+        "dictionary_comprehension",
+        "generator_expression",
+    }
+)
+
+#: An `else` means something different on each of its four hosts, and all four
+#: are guards: the if-else is the obvious one, try-else runs only when nothing
+#: raised, and for/while-else only when the loop was not broken out of.
+_ELSE_TOKEN = {
+    "if_statement": "if:else",
+    "try_statement": "try:else",
+    "for_statement": "for:else",
+    "while_statement": "while:else",
+}
+
+
+def _is_field(parent: Node, child: Node, field: str) -> bool:
+    """Whether ``child`` is ``parent``'s ``field``.
+
+    By node id, never by identity: tree-sitter builds a fresh Node wrapper on
+    every access, so ``child is parent.child_by_field_name(...)`` is always
+    False and would silently classify every call as unguarded.
+    """
+    target = parent.child_by_field_name(field)
+    return target is not None and target.id == child.id
+
+
 class CodebaseParser:
     """Walk a directory tree and extract graph material from every source file.
 
@@ -949,6 +991,7 @@ class _PythonExtractor:
                     root=root,
                     attr_path=attr_path,
                     caller_id=self._enclosing_symbol(site.start_byte, owners, starts),
+                    control=self._control_path(site),
                     line=site.start_point.row + 1,
                     start_byte=site.start_byte,
                     end_byte=site.end_byte,
@@ -976,6 +1019,128 @@ class _PythonExtractor:
                 return []
             return [*base, self.text(attr)]
         return []
+
+    # -- control flow ------------------------------------------------------
+
+    def _control_path(self, node: Node) -> list[str]:
+        """The control-flow constructs between ``node`` and its enclosing def.
+
+        Outermost first, so the list reads the way the source nests.  The walk
+        stops at the first definition boundary, which makes a nested
+        function's breadcrumb relative to ITS body rather than the outer one;
+        a ``lambda`` is not such a boundary, because it is not a symbol, so a
+        call inside one keeps the enclosing function's context and gains a
+        ``lambda`` token of its own.
+
+        A construct contributes a token only when the call actually sits in a
+        part of it that the construct governs.  ``if check():`` does not guard
+        ``check`` -- the test runs whenever the ``if`` is reached -- and nor
+        does ``for x in source():`` guard ``source``, which is evaluated once
+        before the loop.  Getting that wrong would mark a large share of
+        ordinary calls as conditional and quietly devalue the whole signal.
+        """
+        tokens: list[str] = []
+        child = node
+        parent = child.parent
+        while parent is not None and parent.type not in _CONTROL_STOP:
+            token = self._control_token(parent, child)
+            if token is not None:
+                tokens.append(token)
+            child = parent
+            parent = child.parent
+        tokens.reverse()
+        return tokens
+
+    def _control_token(self, parent: Node, child: Node) -> str | None:
+        """The token ``parent`` contributes for a call sitting in ``child``.
+
+        None means this construct does not govern the call at all, either
+        because the call is in a position it does not control (a test, an
+        iterable) or because another node in the chain already accounts for it
+        (an ``elif`` is reached through ``if_statement.alternative``, and the
+        ``elif_clause`` itself emits the token).
+        """
+        kind = parent.type
+
+        if kind == "if_statement":
+            if not _is_field(parent, child, "consequence"):
+                return None  # the test, or an alternative that speaks for itself
+            return "type-checking" if self._is_type_checking(parent) else "if"
+        if kind == "elif_clause":
+            # Both the test and the body are guarded: reaching either means
+            # every earlier branch's test already failed.
+            return "if:elif"
+        if kind == "else_clause":
+            return _ELSE_TOKEN.get(parent.parent.type if parent.parent else "", "if:else")
+
+        if kind == "for_statement":
+            # The iterable is evaluated once, before anything iterates.
+            return "for" if _is_field(parent, child, "body") else None
+        if kind == "while_statement":
+            if _is_field(parent, child, "body"):
+                return "while"
+            if _is_field(parent, child, "condition"):
+                # Runs at least once if the loop is reached, and again per
+                # iteration: a loop position, but not a guarded one.
+                return "while:test"
+            return None
+
+        if kind == "try_statement":
+            return "try" if _is_field(parent, child, "body") else None
+        if kind in _EXCEPT_CLAUSES:
+            return "try:except"
+        if kind == "finally_clause":
+            return "try:finally"
+
+        if kind == "with_statement":
+            return "with" if _is_field(parent, child, "body") else None
+
+        if kind == "match_statement":
+            return None  # the subject is unguarded; a case speaks for itself
+        if kind == "case_clause":
+            return "match:case" if _is_field(parent, child, "consequence") else None
+
+        if kind == "boolean_operator":
+            # `a and f()` / `a or f()`: the right operand may never evaluate.
+            return "bool" if _is_field(parent, child, "right") else None
+        if kind == "conditional_expression":
+            # The grammar gives this node no field names, so position is the
+            # only way to tell the test from the two branches: the named
+            # children are [consequence, condition, alternative].
+            named = parent.named_children
+            if len(named) == 3 and child.id == named[1].id:
+                return None
+            return "ternary"
+
+        if kind in _COMPREHENSIONS:
+            if not _is_field(parent, child, "body"):
+                return None  # a for-in clause's iterable, or a filter test
+            # A comprehension body runs once per item, so it may not run at
+            # all; a filter narrows that further.
+            filtered = any(c.type == "if_clause" for c in parent.children)
+            return "comprehension:if" if filtered else "comprehension"
+        if kind == "if_clause":
+            # Inside the filter itself: evaluated per item, but nothing about
+            # the filter guards it.
+            return "comprehension:test"
+
+        if kind == "lambda":
+            return "lambda" if _is_field(parent, child, "body") else None
+        if kind == "assert_statement":
+            return "assert"
+        if kind == "decorator":
+            return "decorator"
+        return None
+
+    def _is_type_checking(self, if_node: Node) -> bool:
+        """Whether this is an ``if TYPE_CHECKING:`` block.
+
+        Text matching rather than resolution: the name is a convention rather
+        than a semantic the parser can check, and both ``TYPE_CHECKING`` and
+        ``typing.TYPE_CHECKING`` are written in the wild.
+        """
+        condition = if_node.child_by_field_name("condition")
+        return condition is not None and "TYPE_CHECKING" in self.text(condition)
 
     @staticmethod
     def _enclosing_symbol(

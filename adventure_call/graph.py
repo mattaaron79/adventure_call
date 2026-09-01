@@ -271,6 +271,7 @@ class GraphBuilder:
                 line=resolution.line,
                 confidence=resolution.confidence,
                 call_type=resolution.call_type,
+                control=resolution.control,
             )
 
     def _add_contains_edges(self) -> None:
@@ -289,8 +290,18 @@ class GraphBuilder:
         confidence: str = "exact",
         call_type: str | None = None,
         alias: str | None = None,
+        control: Sequence[str] | None = None,
     ) -> None:
-        """Add an edge, folding repeats into a count plus a line list."""
+        """Add an edge, folding repeats into a count plus a line list.
+
+        ``control`` (tic-b47a) is the one thing here that must NOT be folded
+        into a set: every other field answers "what is true of this pair",
+        while a breadcrumb answers "how was this particular call reached", and
+        two sites reaching the same callee differently is exactly the mixed
+        case tic-5069 has to detect.  So ``controls`` keeps one entry per call
+        site, in the order the sites were resolved, and is parallel to
+        ``count`` rather than to the de-duplicated ``lines``.
+        """
         data = self.graph.edges.get((source, target))
         if data is None:
             self.graph.add_edge(
@@ -303,10 +314,13 @@ class GraphBuilder:
                 confidence=confidence,
                 call_types=[call_type] if call_type else [],
                 aliases=[alias] if alias else [],
+                controls=[list(control)] if control is not None else [],
             )
             return
 
         data["count"] += 1
+        if control is not None:
+            data.setdefault("controls", []).append(list(control))
         if line not in data["lines"]:
             data["lines"] = sorted([*data["lines"], line])
         if edge_type not in data["types"]:

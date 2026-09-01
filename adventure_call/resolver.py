@@ -357,6 +357,9 @@ class SymbolResolver:
                 call_type=call_type,  # type: ignore[arg-type]
                 reason=reason,
                 file_path=call.file_path,
+                # Carried verbatim from the call site (tic-b47a) so the graph
+                # edge and the unresolved-call export both keep it.
+                control=list(call.control),
             )
 
         if not call.root:

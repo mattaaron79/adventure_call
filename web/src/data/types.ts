@@ -1,12 +1,12 @@
 /**
- * TypeScript mirrors of the adventure-call JSON exports (schema_version 2).
+ * TypeScript mirrors of the adventure-call JSON exports (schema_version 3).
  *
  * Written from adventure_call/models.py and adventure_call/writer.py.  Two
  * kinds -- `variable` and `attribute` -- are declared ahead of the parser that
  * emits them (see tic-82b0); consumers must tolerate their absence.
  */
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export type SymbolKind =
   | 'module'
@@ -72,6 +72,57 @@ export interface GraphEdge {
   confidence: Confidence
   call_types: CallType[]
   aliases: string[]
+  /**
+   * One control-flow breadcrumb per call site behind this edge (tic-b47a),
+   * outermost construct first -- e.g. `[["if"], [], ["for", "try:except"]]`
+   * for three sites.  Parallel to `count`, NOT to the de-duplicated `lines`:
+   * an edge answers "what is true of this pair", but a breadcrumb answers
+   * "how was this particular call reached", and two sites reaching the same
+   * callee differently is the mixed case worth seeing.
+   *
+   * An empty inner array means that site sits directly in its function's
+   * body.  Absent on a schema_version < 3 export.
+   */
+  controls?: string[][]
+}
+
+/**
+ * Control-flow tokens that can SKIP a call (tic-b47a) -- the guards.
+ *
+ * The word is chosen carefully: a call at guard depth 0 is UNGUARDED, which
+ * is not "unconditional" and much less "always runs".  An early return or
+ * raise above it kills it, and the caller may itself be conditional.  Say
+ * unguarded in anything user-facing, or the UI repeats a claim the data does
+ * not support.
+ *
+ * A loop body is a guard because it may iterate zero times; a `try` body, a
+ * `finally` and a `with` body are not, because reaching them runs them.
+ * Mirrors `GUARD_TOKENS` in adventure_call/models.py.
+ */
+export const GUARD_TOKENS: ReadonlySet<string> = new Set([
+  'if',
+  'if:elif',
+  'if:else',
+  'try:else',
+  'try:except',
+  'for',
+  'for:else',
+  'while',
+  'while:else',
+  'match:case',
+  'comprehension',
+  'comprehension:if',
+  'bool',
+  'ternary',
+  'lambda',
+  'type-checking',
+])
+
+/** How many enclosing constructs could skip a call with this breadcrumb. */
+export function guardDepth(control: readonly string[]): number {
+  let depth = 0
+  for (const token of control) if (GUARD_TOKENS.has(token)) depth++
+  return depth
 }
 
 export interface GraphStats {
@@ -151,6 +202,9 @@ export interface UnresolvedCall {
   call_type: CallType
   reason: string
   file_path: string
+  /** The call site's control-flow breadcrumb (tic-b47a); see
+   *  {@link GraphEdge.controls}.  Absent on a schema_version < 3 export. */
+  control?: string[]
 }
 
 export interface Diagnostic {
