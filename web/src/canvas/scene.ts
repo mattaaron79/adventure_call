@@ -711,7 +711,7 @@ export const ANTS_DASH: number[] = [6, 6]
  * How fast the ants travel along the line, in world pixels per second.  Slow
  * enough to feel directional without demanding attention.
  */
-export const ANTS_SPEED_PX_PER_SEC = 60
+export const ANTS_SPEED_PX_PER_SEC = 10
 
 /**
  * The dash offset at a given animation time (ms).  The offset decreases with
