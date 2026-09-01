@@ -15,9 +15,10 @@ tags:
 assignee: null
 depends_on:
 - tic-a8a6
+- tic-22db
 blocked_by: null
 created: '2026-09-01T07:23:46'
-updated: '2026-09-01T07:23:46'
+updated: '2026-09-01T09:34:27'
 closed: null
 ---
 
