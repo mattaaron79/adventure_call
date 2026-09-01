@@ -231,6 +231,67 @@ class CallSite:
         return data
 
 
+#: Builtin container and scalar types a literal binds a local name to.
+#: Keyed by tree-sitter node type, so the parser never has to evaluate anything.
+LITERAL_TYPES: dict[str, str] = {
+    "list": "list",
+    "list_comprehension": "list",
+    "dictionary": "dict",
+    "dictionary_comprehension": "dict",
+    "set": "set",
+    "set_comprehension": "set",
+    "tuple": "tuple",
+    "string": "str",
+    "concatenated_string": "str",
+    "integer": "int",
+    "float": "float",
+    "true": "bool",
+    "false": "bool",
+}
+
+
+@dataclass(frozen=True)
+class LocalBinding:
+    """A local name bound to something type-bearing inside one function body.
+
+    Deliberately shallow (tic-97ce).  This is not type inference: it records
+    what a name was bound to ONCE, syntactically, so the resolver can say what
+    KIND of thing a method call on that name goes to.  A name bound twice to
+    different things is dropped by the resolver rather than guessed at, and
+    nothing here tracks flow, reassignment or container element types.
+
+    The type-bearing expression is stored as a dotted path -- ``root`` plus
+    ``attr_path`` -- exactly as :class:`CallSite` stores a callee, so the
+    resolver can walk it with the same machinery instead of a second,
+    subtly-different name lookup.
+    """
+
+    #: Symbol id of the function or method whose body contains the binding.
+    scope_id: str
+    #: The local name being bound.
+    name: str
+    #: Which syntax bound it.  ``param`` never appears here -- annotated
+    #: parameters are already on :attr:`SymbolDef.params` and the resolver
+    #: reads them from there rather than having the parser say it twice.
+    source: Literal["assign", "annotation", "with"]
+    #: First segment of the type-bearing expression: ``Foo`` for ``x = Foo()``,
+    #: ``build_app`` for ``x = build_app()``, ``a`` for ``x = a.b.Foo()``,
+    #: ``Bar`` for ``x: Bar``.  Empty when the expression names nothing that
+    #: could be a type -- an arithmetic expression, a call on a computed
+    #: callee -- in which case the binding still exists and still blocks a
+    #: second binding from being trusted.
+    root: str = ""
+    #: The remaining segments of the dotted expression.
+    attr_path: list[str] = field(default_factory=list)
+    #: The builtin type a literal binds directly, e.g. ``list`` for ``x = []``.
+    #: Mutually exclusive with :attr:`root`.
+    literal: str | None = None
+    line: int = 1
+
+    def to_dict(self) -> JSONDict:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
 class ParseDiagnostic:
     """Something the parser could not fully understand.
@@ -258,6 +319,11 @@ class ParsedFile:
     symbols: list[SymbolDef] = field(default_factory=list)
     imports: list[ImportRecord] = field(default_factory=list)
     calls: list[CallSite] = field(default_factory=list)
+    #: Local names bound to something type-bearing, per function body
+    #: (tic-97ce).  Not symbols -- a local is not indexed, addressed or
+    #: exported; this exists only so the resolver can classify method calls
+    #: on a receiver it would otherwise call an unknown name.
+    locals: list[LocalBinding] = field(default_factory=list)
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
     module_docstring: str | None = None
 

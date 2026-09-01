@@ -701,3 +701,123 @@ def test_unresolved_calls_carry_the_breadcrumb_too(analyse):
     )
     unresolved = [r for r in index.unresolved if r.raw_name == "mystery.thing"]
     assert unresolved and unresolved[0].control == ["if"]
+
+
+# -- local bindings (tic-97ce) ---------------------------------------------
+#
+# What the parser records is deliberately not a type: it is "this name was
+# bound to this expression, in this function body".  What it MEANS is the
+# resolver's business, because only the resolver knows the imports.
+
+
+def _locals(parse_source, source: str):
+    parsed = parse_source(source)
+    return {(b.scope_id, b.name): b for b in parsed.locals}
+
+
+def test_a_local_binding_records_its_scope_form_and_expression(parse_source):
+    bound = _locals(
+        parse_source,
+        "def go():\n"
+        "    engine = Engine()\n"
+        "    other: Thing = raw\n"
+        "    with Session() as s:\n"
+        "        pass\n",
+    )
+    assert (bound[("m.go", "engine")].source, bound[("m.go", "engine")].root) == (
+        "assign",
+        "Engine",
+    )
+    assert (bound[("m.go", "other")].source, bound[("m.go", "other")].root) == (
+        "annotation",
+        "Thing",
+    )
+    assert (bound[("m.go", "s")].source, bound[("m.go", "s")].root) == ("with", "Session")
+
+
+def test_module_and_class_level_names_are_not_locals(parse_source):
+    """They are already symbols; recording them again would give one name two
+    sources of truth."""
+    bound = _locals(
+        parse_source,
+        "TOP = Engine()\n"
+        "\n"
+        "class Holder:\n"
+        "    attr = Engine()\n"
+        "    def method(self):\n"
+        "        self.stored = Engine()\n"
+        "        inner = Engine()\n",
+    )
+    assert set(bound) == {("m.Holder.method", "inner")}
+
+
+def test_a_literal_binds_its_builtin_type_rather_than_a_name(parse_source):
+    bound = _locals(
+        parse_source,
+        "def go():\n"
+        "    lines = []\n"
+        "    seen = {}\n"
+        "    label = 'x'\n",
+    )
+    assert bound[("m.go", "lines")].literal == "list"
+    assert bound[("m.go", "seen")].literal == "dict"
+    assert bound[("m.go", "label")].literal == "str"
+
+
+def test_an_annotation_beats_the_assigned_value(parse_source):
+    """`x: Session = _make()` says what the author means; the factory may be
+    vaguer than the annotation."""
+    bound = _locals(parse_source, "def go():\n    x: Session = make_something()\n")
+    assert (bound[("m.go", "x")].source, bound[("m.go", "x")].root) == (
+        "annotation",
+        "Session",
+    )
+
+
+def test_a_subscripted_annotation_names_no_type(parse_source):
+    """A container of T is not a T, and stripping the wrapper here would make
+    every classification downstream a lie."""
+    bound = _locals(parse_source, "def go():\n    xs: list[Session] = []\n")
+    assert bound[("m.go", "xs")].root == ""
+
+
+def test_a_quoted_annotation_is_unwrapped(parse_source):
+    bound = _locals(parse_source, 'def go():\n    x: "pkg.Session" = raw\n')
+    binding = bound[("m.go", "x")]
+    assert (binding.root, binding.attr_path) == ("pkg", ["Session"])
+
+
+def test_an_awaited_call_binds_what_the_call_binds(parse_source):
+    bound = _locals(parse_source, "async def go():\n    x = await build()\n")
+    assert bound[("m.go", "x")].root == "build"
+
+
+def test_a_dotted_factory_keeps_its_whole_path(parse_source):
+    bound = _locals(parse_source, "def go():\n    x = pkg.sub.Factory()\n")
+    binding = bound[("m.go", "x")]
+    assert (binding.root, binding.attr_path) == ("pkg", ["sub", "Factory"])
+
+
+def test_an_unreadable_expression_still_records_a_binding(parse_source):
+    """It has to: an unusable binding is what lets the resolver refuse to
+    trust a second, usable one for the same name."""
+    bound = _locals(parse_source, "def go(a, b):\n    x = a + b\n")
+    binding = bound[("m.go", "x")]
+    assert (binding.root, binding.literal) == ("", None)
+
+
+def test_a_nested_function_gets_its_own_scope(parse_source):
+    bound = _locals(
+        parse_source,
+        "def outer():\n"
+        "    a = Engine()\n"
+        "    def inner():\n"
+        "        b = Engine()\n",
+    )
+    assert set(bound) == {("m.outer", "a"), ("m.outer.inner", "b")}
+
+
+def test_a_tuple_with_target_is_not_bound(parse_source):
+    """A destructured element's type is not the expression's type."""
+    bound = _locals(parse_source, "def go():\n    with pair() as (a, b):\n        pass\n")
+    assert bound == {}

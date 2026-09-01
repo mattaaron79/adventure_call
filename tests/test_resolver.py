@@ -254,8 +254,29 @@ def test_external_calls_name_the_package(index):
     assert resolution.reason == "external: json"
 
 
-def test_ambiguous_names_stay_unresolved(index):
+def test_a_bound_receiver_beats_an_ambiguous_method_name(index):
+    """`admin = models.Admin(...)` then `admin.greet()` (tic-97ce).
+
+    Both User and Admin define `greet`, so the unique-name fallback used to
+    give up here and report the ambiguity.  The binding says which one it is,
+    which is better than the coincidence of a name being unique -- and it is
+    the rare case where classifying a receiver also RESOLVES the call.
+    Heuristic, never exact: a local can be rebound and nothing tracks that.
+    """
     resolution = _edge(index, "src.api.handle_login", "admin.greet")
+    assert resolution.callee_id == "src.models.Admin.greet"
+    assert (resolution.confidence, resolution.reason) == ("heuristic", "local binding")
+
+
+def test_ambiguous_names_stay_unresolved_without_a_binding(analyse):
+    _, _, idx = analyse(
+        {
+            "a.py": "class One:\n    def go(self): pass\n",
+            "b.py": "class Two:\n    def go(self): pass\n",
+            "c.py": "def run(thing):\n    return thing.go()\n",
+        }
+    )
+    resolution = _edge(idx, "c.run", "thing.go")
     assert resolution.callee_id is None
     assert "ambiguous" in resolution.reason
 
@@ -430,3 +451,397 @@ def test_multiple_package_dirs_without_config_stay_unaliased(analyse):
     assert idx.bindings == {}
     assert "lib1.kit.core.a" in idx.symbols
     assert "lib2.kit.core.b" in idx.symbols
+
+
+# -- local type bindings (tic-97ce) ----------------------------------------
+#
+# This does not exist to RESOLVE receiver method calls -- measured across two
+# real codebases it resolves almost none, because the methods people call on
+# their own objects belong to a framework base class.  It exists to say what
+# KIND of thing a call goes to, so an `unknown receiver` count stops treating
+# calls out of the project as holes in the analysis.
+
+
+def _reason(idx, caller: str, raw_name: str) -> str:
+    return _edge(idx, caller, raw_name).reason
+
+
+def test_a_constructor_binds_the_local_to_that_class(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go():\n"
+                "    engine = Engine()\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    resolution = _edge(idx, "m.go", "engine.start")
+    assert resolution.callee_id == "m.Engine.start"
+    assert resolution.confidence == "heuristic"
+
+
+def test_a_factory_binds_through_its_return_annotation(analyse):
+    """`x = make()` where make declares `-> Engine` (tic-2255 earning its keep)."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def make() -> Engine:\n"
+                "    return Engine()\n"
+                "\n"
+                "def go():\n"
+                "    engine = make()\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_an_unannotated_factory_binds_nothing(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def make():\n"
+                "    return Engine()\n"
+                "\n"
+                "def go():\n"
+                "    engine = make()\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    # Falls back to the unique-name guess, unchanged from before this feature.
+    assert _edge(idx, "m.go", "engine.start").reason == "unique name in project"
+
+
+def test_a_variable_annotation_binds_and_beats_the_assigned_value(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(raw):\n"
+                "    engine: Engine = raw\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_a_quoted_forward_reference_binds(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(raw):\n"
+                '    engine: "Engine" = raw\n'
+                "    engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_a_with_as_target_binds(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go():\n"
+                "    with Engine() as engine:\n"
+                "        engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_an_annotated_parameter_binds(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(engine: Engine):\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_a_rebound_name_is_dropped_rather_than_guessed(analyse):
+    """The ticket's own rule: two bindings, no answer."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "class Other:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(flag):\n"
+                "    engine = Engine()\n"
+                "    if flag:\n"
+                "        engine = Other()\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    resolution = _edge(idx, "m.go", "engine.start")
+    assert resolution.callee_id is None
+    assert "ambiguous" in resolution.reason
+
+
+def test_a_name_rebound_to_something_unreadable_is_also_dropped(analyse):
+    """An unusable binding still has to be able to veto a usable one."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(flag, raw):\n"
+                "    engine = Engine()\n"
+                "    if flag:\n"
+                "        engine = raw.pick() + 1\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").reason == "unique name in project"
+
+
+def test_a_call_on_a_literal_is_named_as_a_stdlib_method(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Report:\n"
+                "    def append(self, x): pass\n"
+                "\n"
+                "def go():\n"
+                "    lines = []\n"
+                "    lines.append('x')\n"
+            )
+        }
+    )
+    # Without the binding, `append` is a unique project name and this drew a
+    # wrong edge to Report.append.
+    resolution = _edge(idx, "m.go", "lines.append")
+    assert resolution.callee_id is None
+    assert resolution.reason == "stdlib method on list"
+
+
+def test_a_builtin_annotation_is_named_as_a_stdlib_method(analyse):
+    _, _, idx = analyse(
+        {"m.py": "def go(name: str):\n    return name.strip()\n"}
+    )
+    assert _reason(idx, "m.go", "name.strip") == "stdlib method on str"
+
+
+def test_a_container_annotation_does_not_become_its_element(analyse):
+    """`list[Engine]` is a list.  Unwrapping it would make the answer a lie."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(engines: list[Engine]):\n"
+                "    engines.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engines.start").reason != "local binding"
+
+
+def test_an_external_class_binds_and_names_its_package(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "from rich.console import Console\n"
+                "\n"
+                "def go():\n"
+                "    console = Console()\n"
+                "    console.print('x')\n"
+            )
+        }
+    )
+    assert _reason(idx, "m.go", "console.print") == "external: rich.console.Console"
+
+
+def test_an_external_FUNCTION_call_binds_nothing(analyse):
+    """django's `get_object_or_404(Location, ...)` returns a Location.
+
+    Treating any external call as producing an external object dropped three
+    correct hypermenu edges and five carnot ones.  We hold no definition of an
+    external name, so the only signal for "is this a class" is how it is
+    spelled -- and when it is not spelled like one, we record nothing rather
+    than replace one guess with another.
+    """
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "from shortcuts import get_object_or_404\n"
+                "\n"
+                "class Location:\n"
+                "    def set_manual(self): pass\n"
+                "\n"
+                "def go(pk):\n"
+                "    location = get_object_or_404(Location, pk=pk)\n"
+                "    location.set_manual()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "location.set_manual").callee_id == "m.Location.set_manual"
+
+
+def test_a_method_on_a_foreign_base_is_named_as_such(analyse):
+    """The category the original ticket did not anticipate, and where nearly
+    every classifiable receiver call actually lands."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "from textual.app import App\n"
+                "\n"
+                "class MyApp(App):\n"
+                "    def action_go(self): pass\n"
+                "\n"
+                "def go():\n"
+                "    app = MyApp()\n"
+                "    app.query_one('#x')\n"
+            )
+        }
+    )
+    assert _reason(idx, "m.go", "app.query_one") == "foreign base: textual.app.App"
+
+
+def test_a_members_own_method_still_resolves_through_the_binding(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "from textual.app import App\n"
+                "\n"
+                "class MyApp(App):\n"
+                "    def action_go(self): pass\n"
+                "\n"
+                "def go():\n"
+                "    app = MyApp()\n"
+                "    app.action_go()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "app.action_go").callee_id == "m.MyApp.action_go"
+
+
+def test_a_missing_member_with_no_foreign_base_is_a_finding(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go():\n"
+                "    engine = Engine()\n"
+                "    engine.stop()\n"
+            )
+        }
+    )
+    assert _reason(idx, "m.go", "engine.stop") == "no member 'stop' on m.Engine"
+
+
+def test_an_Any_annotation_binds_nothing(analyse):
+    """`Any` is the explicit spelling of "unknown"; binding it to typing.Any
+    reported every method call on the name as a call out to typing."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "from typing import Any\n"
+                "\n"
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def go(engine: Any):\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_a_longer_attribute_chain_is_not_claimed_by_the_receiver(analyse):
+    """`app.session.transcript.index_of()` is a call on the transcript, not on
+    the app -- neither its member nor its foreign base gets to answer."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "from textual.app import App\n"
+                "\n"
+                "class MyApp(App):\n"
+                "    pass\n"
+                "\n"
+                "class Inner:\n"
+                "    def index_of(self): pass\n"
+                "\n"
+                "def go():\n"
+                "    app = MyApp()\n"
+                "    app.session.index_of()\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.go", "app.session.index_of").callee_id == "m.Inner.index_of"
+
+
+def test_a_closure_sees_the_enclosing_functions_locals(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def outer():\n"
+                "    engine = Engine()\n"
+                "    def inner():\n"
+                "        engine.start()\n"
+                "    return inner\n"
+            )
+        }
+    )
+    assert _edge(idx, "m.outer.inner", "engine.start").callee_id == "m.Engine.start"
+
+
+def test_one_functions_locals_do_not_leak_into_a_sibling(analyse):
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Engine:\n"
+                "    def start(self): pass\n"
+                "\n"
+                "def one():\n"
+                "    engine = Engine()\n"
+                "\n"
+                "def two(engine):\n"
+                "    engine.start()\n"
+            )
+        }
+    )
+    # `two` knows nothing about `one`'s local, so this is the old fallback.
+    assert _edge(idx, "m.two", "engine.start").reason == "unique name in project"

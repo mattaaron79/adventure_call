@@ -43,6 +43,18 @@
 (assignment
   left: (identifier) @assign.name) @assign.site
 
+;; --------------------------------------------------------------------------
+;; `with expr() as name:` / `async with expr() as name:` (tic-97ce).
+;; The bound name is what a later `name.method()` call has as its receiver, and
+;; the context expression is the only thing that says what it is.  Tuple
+;; targets (`with open(a) as (x, y)`) have an `as_pattern_target` holding a
+;; pattern rather than an identifier and are deliberately not matched: a
+;; destructured element's type is not the expression's type.
+;; --------------------------------------------------------------------------
+(with_item
+  value: (as_pattern
+           alias: (as_pattern_target (identifier) @with.name))) @with.item
+
 ;; `self.x = ...` inside a method.  Requiring a plain identifier as the object
 ;; keeps deeper chains such as `self.a.b = ...` out -- only a one-level
 ;; attribute is a name worth indexing.  The receiver is captured rather than

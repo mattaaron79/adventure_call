@@ -28,8 +28,10 @@ from adventure_call.languages import (
     spec_for_path,
 )
 from adventure_call.models import (
+    LITERAL_TYPES,
     CallSite,
     ImportRecord,
+    LocalBinding,
     Param,
     ParseDiagnostic,
     ParsedFile,
@@ -397,6 +399,7 @@ class _PythonExtractor:
 
         def_matches: list[tuple[Node, dict[str, list[Node]]]] = []
         assign_matches: list[tuple[Node, dict[str, list[Node]]]] = []
+        with_matches: list[tuple[Node, dict[str, list[Node]]]] = []
         import_nodes: list[tuple[str, Node]] = []
         call_matches: list[dict[str, list[Node]]] = []
 
@@ -409,6 +412,10 @@ class _PythonExtractor:
                 node = caps["assign.site"][0]
                 if not self._inside_error(node):
                     assign_matches.append((node, caps))
+            elif "with.item" in caps:
+                node = caps["with.item"][0]
+                if not self._inside_error(node):
+                    with_matches.append((node, caps))
             elif "import.plain" in caps:
                 import_nodes.append(("plain", caps["import.plain"][0]))
             elif "import.from" in caps:
@@ -419,6 +426,7 @@ class _PythonExtractor:
         symbols = self._build_symbols(def_matches, assign_matches)
         imports = self._build_imports(import_nodes)
         calls = self._build_calls(call_matches, symbols)
+        local_bindings = self._build_locals(assign_matches, with_matches, symbols)
 
         return ParsedFile(
             file_path=self.file_path,
@@ -427,6 +435,7 @@ class _PythonExtractor:
             symbols=symbols,
             imports=imports,
             calls=calls,
+            locals=local_bindings,
             diagnostics=self.diagnostics,
             module_docstring=self._docstring_of_block(root),
         )
@@ -1000,6 +1009,156 @@ class _PythonExtractor:
 
         calls.sort(key=lambda c: c.start_byte)
         return calls
+
+    # -- local bindings ----------------------------------------------------
+
+    def _build_locals(
+        self,
+        assign_matches: Sequence[tuple[Node, dict[str, list[Node]]]],
+        with_matches: Sequence[tuple[Node, dict[str, list[Node]]]],
+        symbols: Sequence[SymbolDef],
+    ) -> list[LocalBinding]:
+        """Local names bound to something type-bearing, per function body.
+
+        Only bindings inside a FUNCTION are collected.  A name bound at module
+        or class level is already a symbol (see :meth:`_build_assignment`), and
+        the resolver reaches those through ``module_members``; recording them
+        again here would give the same name two sources of truth.
+
+        Nothing is resolved, evaluated or inferred at this stage -- the
+        expression is flattened to a dotted path and handed on.  What it means
+        is the resolver's business, because only the resolver knows the import
+        bindings and the symbol table.
+        """
+        owners = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+        starts = [s.start_byte for s in owners]
+        bindings: list[LocalBinding] = []
+
+        def scope_of(node: Node) -> str | None:
+            """The enclosing FUNCTION, or None for module and class level."""
+            scope_id = self._enclosing_symbol(node.start_byte, owners, starts)
+            if scope_id is None:
+                return None
+            owner = next((s for s in owners if s.symbol_id == scope_id), None)
+            return scope_id if owner is not None and owner.kind != "class" else None
+
+        for node, caps in assign_matches:
+            if caps.get("assign.receiver"):
+                continue  # `self.x = ...` is an attribute symbol, not a local
+            name_nodes = caps.get("assign.name") or []
+            if not name_nodes:
+                continue
+            scope_id = scope_of(node)
+            if scope_id is None:
+                continue
+
+            # An annotation beats the assigned value: `x: Session = _make()`
+            # says what the author means, and the value may be a factory whose
+            # return type is vaguer than the annotation.
+            annotation = node.child_by_field_name("type")
+            if annotation is not None:
+                root, attr_path = self._type_path(annotation)
+                bindings.append(
+                    LocalBinding(
+                        scope_id=scope_id,
+                        name=self.text(name_nodes[0]),
+                        source="annotation",
+                        root=root,
+                        attr_path=attr_path,
+                        line=node.start_point.row + 1,
+                    )
+                )
+                continue
+
+            value = node.child_by_field_name("right")
+            bindings.append(
+                self._value_binding(
+                    scope_id, self.text(name_nodes[0]), "assign", value, node
+                )
+            )
+
+        for node, caps in with_matches:
+            name_nodes = caps.get("with.name") or []
+            if not name_nodes:
+                continue
+            scope_id = scope_of(node)
+            if scope_id is None:
+                continue
+            pattern = node.child_by_field_name("value")
+            value = pattern.named_children[0] if pattern is not None and pattern.named_children else None
+            bindings.append(
+                self._value_binding(
+                    scope_id, self.text(name_nodes[0]), "with", value, node
+                )
+            )
+
+        bindings.sort(key=lambda b: (b.scope_id, b.name, b.line))
+        return bindings
+
+    def _value_binding(
+        self,
+        scope_id: str,
+        name: str,
+        source: str,
+        value: Node | None,
+        site: Node,
+    ) -> LocalBinding:
+        """One binding from an expression: a literal type, a call, or nothing.
+
+        A binding is recorded even when the expression says nothing useful.
+        That is deliberate: an unusable binding still means the name WAS bound
+        here, so a second binding elsewhere in the same body cannot be trusted
+        on its own, and the resolver's drop-if-ambiguous rule needs to see it.
+        """
+        line = site.start_point.row + 1
+        if value is None:
+            return LocalBinding(scope_id=scope_id, name=name, source=source, line=line)  # type: ignore[arg-type]
+
+        literal = LITERAL_TYPES.get(value.type)
+        if literal is not None:
+            return LocalBinding(
+                scope_id=scope_id, name=name, source=source, literal=literal, line=line  # type: ignore[arg-type]
+            )
+
+        # `await f()` binds whatever `f()` does; the await is not a type.
+        inner = value
+        while inner.type == "await" and inner.named_children:
+            inner = inner.named_children[0]
+
+        if inner.type == "call":
+            callee = inner.child_by_field_name("function")
+            if callee is not None:
+                path = self._attribute_path(callee)
+                if path:
+                    return LocalBinding(
+                        scope_id=scope_id,
+                        name=name,
+                        source=source,  # type: ignore[arg-type]
+                        root=path[0],
+                        attr_path=path[1:],
+                        line=line,
+                    )
+        return LocalBinding(scope_id=scope_id, name=name, source=source, line=line)  # type: ignore[arg-type]
+
+    def _type_path(self, annotation: Node) -> tuple[str, list[str]]:
+        """Flatten an annotation to a dotted path, or ("", []) if it is not one.
+
+        Shallow on purpose: a subscripted or unioned annotation names a shape
+        rather than a class, and calling a method on ``list[Session]`` is a
+        list operation, not a Session one.  Stripping the wrapper here would
+        turn a container into its element and make the classification lie.
+        A quoted forward reference is unwrapped, because that is the same
+        name written to survive an import cycle.
+        """
+        node = annotation
+        if node.type == "type" and node.named_children:
+            node = node.named_children[0]
+        if node.type == "string":
+            text = self.text(node).strip("\"'")
+            segments = [s for s in text.split(".") if s.isidentifier()]
+            return (segments[0], segments[1:]) if segments else ("", [])
+        path = self._attribute_path(node)
+        return (path[0], path[1:]) if path else ("", [])
 
     def _attribute_path(self, callee: Node) -> list[str]:
         """Flatten ``a.b.c`` into ``["a", "b", "c"]``.

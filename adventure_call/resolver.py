@@ -24,6 +24,7 @@ from typing import Iterable, Literal, Sequence
 from adventure_call.models import (
     CallSite,
     ImportRecord,
+    LocalBinding,
     ParsedFile,
     Resolution,
     SymbolDef,
@@ -38,11 +39,23 @@ _BUILTIN_NAMES = frozenset(dir(builtins))
 _SELF_NAMES = frozenset({"self", "cls"})
 _MAX_MRO_DEPTH = 8
 _MAX_REEXPORT_DEPTH = 6
+_MAX_ANNOTATION_DEPTH = 4
+_MAX_SCOPE_DEPTH = 8
 
 # Directory children that are never the import root of a src-layout project.
 _NON_SOURCE_DIRS = frozenset(
     {"tests", "test", "docs", "doc", "examples", "example", "scripts", "benchmarks", "benches", "tools"}
 )
+
+
+def _looks_like_class(name: str) -> bool:
+    """Whether a name we hold no definition for is spelled like a class.
+
+    PEP 8 CapWords, excluding SHOUTING constants.  A convention, not a fact --
+    used only where nothing better exists (an external name has no definition
+    to inspect) and only to decide whether to record a binding at all.
+    """
+    return bool(name) and name[:1].isupper() and not name.isupper()
 
 
 def _load_pyproject(path: Path) -> dict:
@@ -60,6 +73,41 @@ def _load_pyproject(path: Path) -> dict:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     except Exception:  # malformed TOML, encoding errors -- treat as absent
         return {}
+
+
+#: Builtin names that ARE types, so calling one produces a value of that type.
+#: `open()` is not in here on purpose: it is a builtin callable whose result is
+#: a file object, and naming the result "open" would be a lie.
+_BUILTIN_TYPES = frozenset(
+    {"bool", "bytes", "bytearray", "dict", "float", "frozenset", "int", "list",
+     "set", "str", "tuple"}
+)
+
+#: Annotations that name no type at all.  `Any` is the explicit spelling of
+#: "unknown", and treating it as a type cost three correct carnot edges before
+#: it was caught: `session: Any` bound `session` to `typing.Any`, so every
+#: method call on it was reported as a call out to `typing`.
+_UNINFORMATIVE_ANNOTATIONS = frozenset({"Any", "object", "None", "NoReturn", "Never"})
+
+#: Annotation wrappers whose single argument is the thing actually bound.
+#: `async def f() -> AsyncIterator[Session]` used as `async with f() as s`
+#: binds a Session.  A container is NOT in here: a `list[Session]` is a list.
+_TRANSPARENT_ANNOTATIONS = ("Optional", "Awaitable", "Coroutine")
+
+
+@dataclass(frozen=True)
+class LocalType:
+    """What kind of thing a local name holds (tic-97ce).
+
+    Not a type in any real sense -- there is no inference here, no flow
+    sensitivity and no unification.  It is the answer to one narrow question:
+    when someone calls a method on this name, whose method is it?
+    """
+
+    kind: Literal["project", "external", "builtin"]
+    #: Class symbol id for ``project``, a dotted path for ``external``, a
+    #: builtin type name for ``builtin``.
+    target: str
 
 
 @dataclass(frozen=True)
@@ -145,8 +193,13 @@ class SymbolResolver:
         self.by_name: dict[str, list[str]] = defaultdict(list)
         self.bindings: dict[str, dict[str, Binding]] = defaultdict(dict)
         self.wildcards: dict[str, list[str]] = defaultdict(list)
+        # function symbol_id -> {local name: what it holds} (tic-97ce)
+        self.local_types: dict[str, dict[str, LocalType]] = {}
 
         self._build_indexes()
+        # After the indexes, never before: resolving a binding walks the very
+        # tables _build_indexes fills.
+        self._build_local_types()
 
     # -- indexing ----------------------------------------------------------
 
@@ -422,7 +475,259 @@ class SymbolResolver:
 
         if root in _BUILTIN_NAMES:
             return outcome(None, "unresolved", reason="builtin")
+
+        # The receiver may be a local whose type we bound (tic-97ce).  Ahead of
+        # the unique-name fallback deliberately: knowing the receiver is a list
+        # is worth more than the coincidence that exactly one project symbol is
+        # called `append`, and that coincidence was producing wrong edges.
+        classified = self._classify_receiver(caller_id, root, rest, outcome)
+        if classified is not None:
+            return classified
+
         return self._fallback_by_name(segments[-1], outcome, receiver=root)
+
+    def _classify_receiver(self, caller_id: str, root: str, rest: list[str], outcome):
+        """What a method call on a bound local actually goes to (tic-97ce).
+
+        Resolution is the rare outcome and classification is the common one --
+        measured across carnot and hypermenu, near enough every call here goes
+        to a framework base class or a stdlib container.  Saying WHICH is the
+        point: an `unknown receiver` count treats those as holes in the
+        analysis, when they are calls out of the project that the export
+        already knows how to draw.
+        """
+        local = self._local_type(caller_id, root)
+        if local is None:
+            return None
+
+        if local.kind == "builtin":
+            return outcome(None, "unresolved", reason=f"stdlib method on {local.target}")
+        if local.kind == "external":
+            return outcome(None, "unresolved", reason=f"external: {local.target}")
+
+        # A project class, and only a DIRECT member access on it.  A longer
+        # chain -- `app.session.transcript.index_of()` -- is a call on
+        # whatever `app.session.transcript` is, and this knows nothing about
+        # that: claiming it lands on the receiver's class (or is swallowed by
+        # the receiver's foreign base) cost five correct carnot edges before
+        # the restriction went in.  Walking the chain properly would need
+        # attribute types, which is tic-13d7's territory, not this one's.
+        if len(rest) != 1:
+            return None
+        found = self._lookup_member(local.target, rest[0])
+        if found:
+            # Never `exact`: a local can be rebound and nothing here tracks it.
+            return outcome(found, "heuristic", reason="local binding")
+        foreign = self._foreign_base(local.target)
+        if foreign:
+            return outcome(None, "unresolved", reason=f"foreign base: {foreign}")
+        return outcome(None, "unresolved", reason=f"no member {rest[0]!r} on {local.target}")
+
+    # -- local type bindings (tic-97ce) ------------------------------------
+
+    def _build_local_types(self) -> None:
+        """Resolve each function's local bindings to a kind of thing.
+
+        A name bound more than once to different things is DROPPED, not
+        guessed at -- including the case where one of the bindings resolves to
+        nothing, because "sometimes a Session and sometimes whatever this
+        expression returns" is not a fact worth acting on.  That rule is why
+        the parser records a binding even when the expression names nothing
+        useful: an unusable binding still has to be able to veto a usable one.
+        """
+        grouped: dict[tuple[str, str], list[LocalType | None]] = defaultdict(list)
+        for parsed in self.files:
+            for binding in parsed.locals:
+                grouped[(binding.scope_id, binding.name)].append(
+                    self._binding_type(binding, parsed.module)
+                )
+
+        for (scope_id, name), resolved in grouped.items():
+            first = resolved[0]
+            if any(other != first for other in resolved[1:]):
+                continue  # rebound to something else; no honest single answer
+            if first is not None:
+                self.local_types.setdefault(scope_id, {})[name] = first
+
+        # Annotated parameters are bindings too, and the parser already
+        # recorded them on the symbol -- reading them here rather than having
+        # the parser say the same thing twice.  Locals win on a clash: a
+        # parameter rebound in the body is the body's value from then on, and
+        # the drop-if-ambiguous rule above has already vetted the local.
+        for symbol in self.symbols.values():
+            if symbol.kind not in ("function", "method"):
+                continue
+            table = self.local_types.setdefault(symbol.symbol_id, {})
+            for param in symbol.params:
+                if param.name in table or param.name in _SELF_NAMES:
+                    continue
+                found = self._annotation_type(param.annotation, symbol.module)
+                if found is not None:
+                    table[param.name] = found
+
+    def _binding_type(self, binding: LocalBinding, module: str) -> LocalType | None:
+        """The kind of thing one binding puts in a name."""
+        if binding.literal is not None:
+            return LocalType("builtin", binding.literal)
+        if not binding.root:
+            return None
+        if binding.source == "annotation":
+            return self._annotation_type(
+                ".".join([binding.root, *binding.attr_path]), module
+            )
+        return self._produced_type(binding, module)
+
+    def _annotation_type(self, text: str | None, module: str) -> LocalType | None:
+        """The kind of thing an annotation names.
+
+        Shallow by design: a union of two classes is neither of them, and a
+        container of T is not a T.  ``Optional[T]`` and the awaitable wrappers
+        are unwrapped because they name T with extra ceremony, which is not the
+        same as naming a different shape.
+        """
+        if not text:
+            return None
+        text = text.strip().strip('"').strip("'")
+        for _ in range(_MAX_ANNOTATION_DEPTH):
+            head, _, rest = text.partition("[")
+            if not rest or head.split(".")[-1] not in _TRANSPARENT_ANNOTATIONS:
+                break
+            inner = rest.rsplit("]", 1)[0]
+            # Coroutine[Any, Any, T] puts the result last; Optional[T] has one.
+            text = inner.split(",")[-1].strip()
+        if "|" in text:
+            parts = [p.strip() for p in text.split("|") if p.strip() != "None"]
+            if len(parts) != 1:
+                return None
+            text = parts[0]
+        if "[" in text or "," in text or not text:
+            return None
+
+        segments = text.split(".")
+        if segments[-1] in _UNINFORMATIVE_ANNOTATIONS:
+            return None
+        if len(segments) == 1 and segments[0] in _BUILTIN_TYPES:
+            return LocalType("builtin", segments[0])
+        return self._named_type(segments, module)
+
+    def _produced_type(self, binding: LocalBinding, module: str) -> LocalType | None:
+        """The kind of thing calling ``binding``'s expression produces."""
+        segments = [binding.root, *binding.attr_path]
+        if len(segments) == 1 and segments[0] in _BUILTIN_TYPES:
+            return LocalType("builtin", segments[0])
+
+        named = self._named_type(segments, module, want_callable=True)
+        if named is None or named.kind != "project":
+            return named
+        symbol = self.symbols.get(named.target)
+        if symbol is None:
+            return None
+        if symbol.kind == "class":
+            return named  # a constructor call produces an instance of it
+        # A function or method: its declared return type is the only honest
+        # answer, and most code does not declare one.
+        return self._annotation_type(symbol.returns, symbol.module)
+
+    def _named_type(
+        self, segments: Sequence[str], module: str, want_callable: bool = False
+    ) -> LocalType | None:
+        """Resolve a dotted name to a project symbol or an external path.
+
+        Reuses the same binding and module-member machinery a CALL goes
+        through, rather than a second name lookup that could disagree with it.
+
+        ``want_callable`` means the caller is asking "what does CALLING this
+        produce", which for an external name is a different question from
+        "what is this" -- see the constructor test below.
+        """
+        root, rest = segments[0], list(segments[1:])
+        binding = self.bindings.get(module, {}).get(root)
+        if binding is not None and binding.kind == "external":
+            path = ".".join([binding.target, *rest])
+            # Calling an external CLASS produces an instance of it; calling an
+            # external FUNCTION produces who-knows-what, and saying "external"
+            # anyway is a lie that costs real edges.  Measured: it claimed
+            # hypermenu's `location = get_object_or_404(Location, ...)` was a
+            # django object and dropped three correct Location method calls,
+            # and it claimed carnot's `app = build_app()` was external -- when
+            # build_app is a project function the resolver merely failed to
+            # link across test modules -- dropping five more.
+            #
+            # Naming convention is the only signal available: we hold no
+            # definition of an external name, so nothing can say whether it is
+            # a class except how it is spelled.  When it does not look like a
+            # class we record NOTHING, which leaves the existing fallback
+            # exactly as it was rather than replacing one guess with another.
+            if not want_callable or _looks_like_class(rest[-1] if rest else root):
+                return LocalType("external", path)
+            return None
+
+        base = self._root_target(module, module, root)
+        if base is None:
+            return None
+        found = self._walk_dotted(base, rest) if rest else base
+        if found is None:
+            # A dotted path into a module we do parse, landing on nothing --
+            # not something to invent an answer for.
+            return None
+        symbol = self.symbols.get(found)
+        if symbol is None:
+            return None
+        if want_callable:
+            return LocalType("project", found) if symbol.kind in _CALLABLE_KINDS else None
+        return LocalType("project", found) if symbol.kind == "class" else None
+
+    def _local_type(self, scope_id: str, name: str) -> LocalType | None:
+        """A local's type, searching enclosing function scopes for a closure."""
+        seen = 0
+        current: str | None = scope_id
+        while current and seen < _MAX_SCOPE_DEPTH:
+            found = self.local_types.get(current, {}).get(name)
+            if found is not None:
+                return found
+            symbol = self.symbols.get(current)
+            parent = self.symbols.get(symbol.parent) if symbol and symbol.parent else None
+            # A closure sees the enclosing FUNCTION's locals.  A class body in
+            # between does not pass them through, which is a real Python rule
+            # and not a simplification.
+            current = parent.symbol_id if parent and parent.kind in ("function", "method") else None
+            seen += 1
+        return None
+
+    def _foreign_base(self, class_id: str, depth: int = 0) -> str | None:
+        """A base class of ``class_id`` we hold no definition for, if any.
+
+        The reason an in-project receiver can still swallow a method call: you
+        subclass a framework's class and call ITS methods on your instance.
+        Measured across two codebases, this is where essentially every
+        classifiable receiver call lands -- textual's App under carnot's
+        CarnotApp, django's ModelForm under hypermenu's ItemForm.
+        """
+        if depth > _MAX_MRO_DEPTH:
+            return None
+        klass = self.symbols.get(class_id)
+        if klass is None:
+            return None
+        for base in klass.bases:
+            text = base.split("[", 1)[0].split("(", 1)[0].strip()
+            if not text or "=" in text:
+                continue
+            base_id = self._resolve_class_ref(base, klass.module)
+            if base_id is None:
+                return self._external_base_path(text, klass.module)
+            if base_id != class_id:
+                found = self._foreign_base(base_id, depth + 1)
+                if found:
+                    return found
+        return None
+
+    def _external_base_path(self, text: str, module: str) -> str:
+        """A foreign base's dotted path, using the import that brought it in."""
+        segments = text.split(".")
+        binding = self.bindings.get(module, {}).get(segments[0])
+        if binding is not None and binding.kind in ("external", "module"):
+            return ".".join([binding.target, *segments[1:]])
+        return text
 
     # -- lookup helpers ----------------------------------------------------
 

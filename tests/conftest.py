@@ -58,6 +58,23 @@ def analyse(tmp_path: Path) -> Callable[..., tuple[GraphBuilder, list[ParsedFile
 
 
 @pytest.fixture
+def parse_source() -> Callable[[str], ParsedFile]:
+    """Parse a snippet as module ``m``, without touching the filesystem.
+
+    For assertions about what the PARSER extracts, where writing a project and
+    running the whole pipeline (see ``analyse``) would answer a different and
+    larger question.
+    """
+
+    def _parse(source: str) -> ParsedFile:
+        return CodebaseParser(root=".").parse_source(
+            dedent(source).lstrip("\n").encode("utf-8"), file_path="m.py", module="m"
+        )
+
+    return _parse
+
+
+@pytest.fixture
 def symbol(index: ResolutionIndex):
     """Look a symbol up by id, failing the test with a readable message."""
 
