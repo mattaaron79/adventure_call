@@ -60,6 +60,16 @@ export interface RoleRule {
 const TEST_FILE = '(^|/)tests?/|(^|/)test_[^/]*$|_test\\.[^/]*$'
 
 /**
+ * True when this path is somewhere a test runner collects from -- the same
+ * definition {@link DEFAULT_ROLE_RULES} uses, exported so callers that ask
+ * "are all of this function's callers tests?" (tic-1ecc) share one answer
+ * rather than growing a second, drifting regex.
+ */
+export function isTestPath(filePath: string): boolean {
+  return new RegExp(TEST_FILE).test(filePath)
+}
+
+/**
  * The default rules.  Aimed at what a Python codebase actually hits: the test
  * runner, the language's own dunder protocol, and the decorator vocabularies
  * of the common web, CLI and TUI frameworks.
