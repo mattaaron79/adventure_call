@@ -7,6 +7,7 @@
  * hands back a fresh object per fetch, which is exactly the invalidation
  * signal we want: new data means new arrays means a real recompute.
  */
+import { deriveAccesses, type AccessIndex } from './dataFlow'
 import { applyExcludes, normalizePath } from './filters'
 import { fileFacts, matchFile, parseQuery } from './query'
 import type {
@@ -920,6 +921,9 @@ export interface Workspace {
   callGraph: CallGraph
   /** Who NAMES each callable without calling it (tic-89fa). */
   references: ReferenceIndex
+  /** Who reads and writes each module variable and class attribute
+   *  (tic-13d7), indexed both ways for tic-675a's impact traversal. */
+  accesses: AccessIndex
   /**
    * External imports from the registry (tic-314c), grouped per file and
    * target.  Empty until the registry has been fetched -- startup stays on
@@ -1010,6 +1014,7 @@ export function deriveWorkspace(
     importCycles: deriveStronglyConnectedComponents(fileImports),
     callGraph: deriveCallGraph(graph.edges, index),
     references: deriveReferences(graph.edges, index),
+    accesses: deriveAccesses(graph.edges, index),
     externalImports: registry ? deriveExternalImports(registry, index) : EMPTY_EXTERNAL_IMPORTS,
     externalCalls: registry ? deriveExternalCalls(registry, index) : EMPTY_EXTERNAL_CALLS,
     registry,

@@ -8,6 +8,7 @@
  * first time).
  */
 import { useEffect, useMemo, useState } from 'react'
+import { stateTouchedBy, variableImpact } from '../data/dataFlow'
 import type { SymbolIndex, Workspace } from '../data/derive'
 import { normalizePath } from '../data/filters'
 import { loadRegistry } from '../data/load'
@@ -192,6 +193,132 @@ export function buildImportedByRows(workspace: Workspace, filePath: string): Imp
   return rows
 }
 
+/**
+ * How many rows a state section renders before the rest becomes a count.
+ *
+ * The blast radius saturates: on ../carnot the deepest `throughCalls` is 111
+ * variables and a tenth of variables reach 200+ callers, so a section that
+ * rendered everything would push Source off the card entirely. Twenty is
+ * enough to recognise a pattern; the summary carries the rest.
+ */
+export const STATE_ROW_LIMIT = 20
+
+/** One titled list in the inspector's state area. */
+export interface StateSection {
+  title: string
+  rows: ImportRow[]
+}
+
+export interface StateView {
+  sections: StateSection[]
+  /** The line under the sections, or null when there is nothing left to say. */
+  summary: string | null
+}
+
+const EMPTY_STATE: StateView = { sections: [], summary: null }
+
+/** A symbol row shaped like an {@link ImportRow} so it renders through the
+ *  same markup, which is what keeps the two from drifting apart. */
+function symbolRow(workspace: Workspace, prefix: string, id: string): ImportRow {
+  const target = workspace.index.byId.get(id)
+  return {
+    key: `${prefix}:${id}`,
+    goto: target ? normalizePath(target.file_path) : null,
+    label: target ? `${target.name} · ${target.module}` : id,
+    external: false,
+    count: 1,
+  }
+}
+
+function rowsFor(workspace: Workspace, prefix: string, ids: readonly string[]): ImportRow[] {
+  return ids.slice(0, STATE_ROW_LIMIT).map((id) => symbolRow(workspace, prefix, id))
+}
+
+/**
+ * The reads/writes sections for one selection (tic-675a).
+ *
+ * Two different questions depending on what is selected, and the asymmetry is
+ * the point:
+ *
+ * - a VARIABLE or ATTRIBUTE answers "what breaks if I change this" -- who
+ *   writes it, who reads it, and how far that reaches through the call graph;
+ * - a CALLABLE answers "what state does this touch" -- what it reads and
+ *   writes itself, and what it reaches only through the things it calls.
+ *
+ * Writers come before readers, and both come before the reach, for the same
+ * reason Imported By sits above Imports: a reader wants the consequence first.
+ *
+ * Everything here is a floor, never a total. Both edge types rest on the
+ * resolved graph, so a function missing from a blast radius has not been
+ * cleared -- it has not been seen -- and the wording never says "affected".
+ */
+export function buildStateSections(workspace: Workspace, node: GraphNode): StateView {
+  if (node.kind === 'variable' || node.kind === 'attribute') {
+    return variableSections(workspace, node)
+  }
+  if (node.kind === 'function' || node.kind === 'method' || node.kind === 'class') {
+    return callableSections(workspace, node)
+  }
+  return EMPTY_STATE
+}
+
+function variableSections(workspace: Workspace, node: GraphNode): StateView {
+  const impact = variableImpact(workspace.callGraph, workspace.accesses, node.id)
+  const sections: StateSection[] = []
+  if (impact.writers.length > 0) {
+    sections.push({ title: 'Written By', rows: rowsFor(workspace, 'w', impact.writers) })
+  }
+  if (impact.readers.length > 0) {
+    sections.push({ title: 'Read By', rows: rowsFor(workspace, 'r', impact.readers) })
+  }
+  if (sections.length === 0) return EMPTY_STATE
+
+  const parts: string[] = []
+  const hidden =
+    Math.max(0, impact.writers.length - STATE_ROW_LIMIT) +
+    Math.max(0, impact.readers.length - STATE_ROW_LIMIT)
+  if (hidden > 0) parts.push(`${hidden} more not shown`)
+  if (impact.reached.length > 0) {
+    // `200+` and never `200`: the walk stopped at the budget, so the number
+    // is a floor and rendering it flat would state a total that is not one.
+    const reach = impact.truncated ? `${impact.reached.length}+` : `${impact.reached.length}`
+    parts.push(`${reach} more reached through calls`)
+  }
+  // No analysis beyond counting, and rare enough to mean something: exactly
+  // one module-level variable on each of ../carnot and hypermenu qualifies.
+  if (impact.shared) parts.push(`shared mutable state — ${impact.writers.length} writers`)
+  return { sections, summary: parts.length > 0 ? parts.join(' · ') : null }
+}
+
+function callableSections(workspace: Workspace, node: GraphNode): StateView {
+  const touched = stateTouchedBy(workspace.callGraph, workspace.accesses, node.id)
+  const sections: StateSection[] = []
+  if (touched.writes.length > 0) {
+    sections.push({ title: 'Writes', rows: rowsFor(workspace, 'sw', touched.writes) })
+  }
+  if (touched.reads.length > 0) {
+    sections.push({ title: 'Reads', rows: rowsFor(workspace, 'sr', touched.reads) })
+  }
+  // The section a reader cannot get from the function's body, and where the
+  // surprises are: on ../carnot 836 symbols touch state ONLY this way.
+  if (touched.throughCalls.length > 0) {
+    sections.push({
+      title: 'Through Calls',
+      rows: rowsFor(workspace, 'st', touched.throughCalls),
+    })
+  }
+  if (sections.length === 0) return EMPTY_STATE
+
+  const hidden =
+    Math.max(0, touched.writes.length - STATE_ROW_LIMIT) +
+    Math.max(0, touched.reads.length - STATE_ROW_LIMIT) +
+    Math.max(0, touched.throughCalls.length - STATE_ROW_LIMIT)
+  const parts: string[] = []
+  if (hidden > 0) parts.push(`${hidden} more not shown`)
+  if (touched.truncated) parts.push('call walk stopped at the budget')
+  return { sections, summary: parts.length > 0 ? parts.join(' · ') : null }
+}
+
 /** Per-kind symbol counts for a module, sorted by kind for a stable display. */
 export interface KindCount {
   kind: SymbolKind
@@ -296,6 +423,12 @@ export function Inspector({
   const importedBy = useMemo(
     () => (node && workspace ? buildImportedByRows(workspace, filePath) : []),
     [node, workspace, filePath],
+  )
+  // Reads/writes (tic-675a).  A variable answers "what breaks if I change
+  // this"; a callable answers "what state does this touch".
+  const state = useMemo(
+    () => (node && workspace ? buildStateSections(workspace, node) : null),
+    [node, workspace],
   )
   const symbolCounts = useMemo(
     () =>
@@ -461,6 +594,13 @@ export function Inspector({
 
           <ImportSection title="Imported By" rows={importedBy} />
           <ImportSection title="Imports" rows={imports} />
+
+          {state?.sections.map((section) => (
+            <ImportSection key={section.title} title={section.title} rows={section.rows} />
+          ))}
+          {state?.summary !== null && state?.summary !== undefined && (
+            <p className="inspector-dim">{state.summary}</p>
+          )}
 
           {symbolCounts.length > 0 && (
             <>

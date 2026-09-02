@@ -61,6 +61,7 @@ import {
   type EdgeTags,
   type NodeControlTags,
 } from '../data/controlFlow'
+import { type AccessIndex } from '../data/dataFlow'
 import { deriveDominators, type DominatorIndex } from '../data/dominators'
 import { deriveEntryPoints, type EntryPoints } from '../data/entryPoints'
 import { isTestPath } from '../data/roles'
@@ -128,6 +129,13 @@ export interface CallFlowParams {
    * functions all called `go` -- outranked every real entry point.
    */
   includeTests: boolean
+  /**
+   * Draw tic-675a's state-coupling lines over the call edges.  Off by
+   * default: they answer a different question from the one this mode is
+   * about, and a reader who has not asked it should not have to read past
+   * them.
+   */
+  showState: boolean
 
   // -- the rooted view (tic-7a5e) -------------------------------------------
 
@@ -707,6 +715,163 @@ function callEdgesBetween(
   }))
 }
 
+/**
+ * State-coupling lines between drawn callables (tic-675a), off by default.
+ *
+ * ## Why this draws callable -> callable and not callable -> variable
+ *
+ * A READS edge points at a variable, and variables are not nodes in this mode.
+ * Adding them would change what the mode IS -- its node set, its layout, its
+ * entry-point ranking -- to show a relationship that is really between the two
+ * functions at either end. So the overlay projects the state edges onto the
+ * nodes already drawn: `writer -> reader`, labelled with the variable they
+ * share.
+ *
+ * Direction is write-to-read because that is the direction the value moves.
+ * Two functions that both merely READ the same variable are coupled too, but
+ * undirected and much more weakly -- every reader of a config constant would
+ * be joined to every other, which is a mesh rather than a finding -- so they
+ * are not drawn.
+ *
+ * ## The interesting line is the one with no call beside it
+ *
+ * A coupling that runs alongside a call edge is mostly confirmation. A
+ * coupling with no call between its endpoints is the thing the call graph
+ * cannot see at all: on ../carnot 591 method pairs are in exactly that
+ * position once constructors are excluded. `beside` records which is which so
+ * the style phase can mute the confirmations.
+ *
+ * ## It is sparse in the overview and dense where it matters
+ *
+ * Measured: the ../carnot overview draws 9 couplings across 156 chips (4 with
+ * no call beside them) and hypermenu's draws NONE. That is not a fault -- the
+ * overview draws entry points and their frontier, and state coupling lives
+ * among the sibling methods of one class. Rooted on `PromptStore._load`,
+ * hypermenu draws 3 chips, 2 call edges and 3 couplings, one of which is
+ * `__init__` and `_persist` sharing `_lock` and `_prompts` with no call
+ * between them. This is a rooted-view feature that happens to be harmless in
+ * the overview, which is why one toggle covers both.
+ */
+export interface StateEdgeData {
+  /** The variables the two ends share, in scene order; at least one. */
+  through: readonly string[]
+  /** Whether a CALLS edge already joins these two elements either way. */
+  beside: boolean
+  /**
+   * Each end writes something the other reads, so the value moves both ways
+   * and the line is drawn once, undirected.  Common enough to be worth
+   * folding: 4 of ../carnot's 10 overview couplings are mutual, and drawing
+   * them as two opposed arrows doubled the lines while saying nothing more.
+   */
+  mutual: boolean
+  /**
+   * The shared variables as one short string, for a consumer that can show
+   * it.  The canvas draws no edge labels today, so nothing renders this yet
+   * -- it rides on the data rather than being recomputed by whatever
+   * eventually does.
+   */
+  via: string
+}
+
+/** How many variables a coupling line names before the rest becomes a count. */
+const COUPLING_LABEL_LIMIT = 2
+
+/** The sublabel a coupling line carries: what the two ends share. */
+export function couplingLabel(through: readonly string[], index: Workspace['index']): string {
+  const names = through.map((id) => index.byId.get(id)?.name ?? id)
+  if (names.length <= COUPLING_LABEL_LIMIT) return names.join(', ')
+  return `${names.slice(0, COUPLING_LABEL_LIMIT).join(', ')} +${names.length - COUPLING_LABEL_LIMIT}`
+}
+
+/**
+ * One line per (writer element, reader element) pair among the drawn nodes.
+ *
+ * Collapsed onto ELEMENTS rather than symbols, exactly as `callEdgesBetween`
+ * collapses calls: a drawn chip can stand for a whole condensed knot, and two
+ * of its members writing the same variable is one line, not two.
+ */
+export function stateEdgesBetween(
+  accesses: AccessIndex,
+  elementOf: ReadonlyMap<string, string>,
+  callEdges: readonly SpecEdge[],
+  index: Workspace['index'],
+): SpecEdge[] {
+  const called = new Set<string>()
+  for (const edge of callEdges) {
+    called.add(`${edge.from}\u0000${edge.to}`)
+    called.add(`${edge.to}\u0000${edge.from}`)
+  }
+
+  const coupled = new Map<string, { from: string; to: string; through: string[] }>()
+  for (const [variable, writers] of accesses.writersOf) {
+    const readers = accesses.readersOf.get(variable)
+    if (!readers) continue
+    for (const writer of writers) {
+      const from = elementOf.get(writer)
+      if (from === undefined) continue
+      for (const reader of readers) {
+        const to = elementOf.get(reader)
+        // A function that both writes and reads one variable is not coupled
+        // to anything; it is just using it.
+        if (to === undefined || to === from) continue
+        const id = `state:${from}->${to}`
+        const known = coupled.get(id)
+        if (known) {
+          if (!known.through.includes(variable)) known.through.push(variable)
+        } else {
+          coupled.set(id, { from, to, through: [variable] })
+        }
+      }
+    }
+  }
+
+  // Fold a pair coupled in both directions into ONE undirected line.  Two
+  // functions that each write and read the same variable would otherwise draw
+  // two opposed arrows, doubling the lines while saying nothing more.
+  const drawn: SpecEdge[] = []
+  const done = new Set<string>()
+  for (const [id, edge] of coupled) {
+    const key = [edge.from, edge.to].sort().join('\u0000')
+    if (done.has(key)) continue
+    done.add(key)
+    const reverse = coupled.get(`state:${edge.to}->${edge.from}`)
+    const through = reverse ? [...new Set([...edge.through, ...reverse.through])] : edge.through
+    drawn.push({
+      id: reverse ? `state:${[edge.from, edge.to].sort().join('--')}` : id,
+      from: edge.from,
+      to: edge.to,
+      kind: 'state',
+      route: 'center',
+      directional: reverse === undefined,
+      data: {
+        through,
+        beside: called.has(`${edge.from}\u0000${edge.to}`),
+        mutual: reverse !== undefined,
+        via: couplingLabel(through, index),
+      } satisfies StateEdgeData,
+    })
+  }
+  return drawn
+}
+
+/**
+ * The overlay's voice: a dotted line in the accent colour, distinct from every
+ * call-edge treatment in tic-171f's and tic-5069's vocabulary at a glance.
+ *
+ * A coupling that runs beside a call is muted, because it mostly repeats what
+ * the call already says. The one with no call beside it is the finding, and it
+ * gets the full weight.
+ */
+export function stateEdgeStyleFor(data: StateEdgeData | undefined): EdgeStyle {
+  const beside = data?.beside ?? false
+  return {
+    stroke: THEME.accent,
+    strokeWidth: beside ? 1 : 1.6,
+    dash: [1, 3],
+    opacity: beside ? 0.35 : 0.8,
+  }
+}
+
 function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec {
   const graph = data.callGraph
   const entryPoints = deriveEntryPoints(graph, data.index, undefined, data.references)
@@ -786,6 +951,11 @@ function selectOverview(
 
   const edges = callEdgesBetween(graph, elementOf)
   if (params.showExternals) appendExternalSinks(data.externalCalls, elementOf, children, edges)
+  // After the call edges exist, so a coupling knows whether a call already
+  // joins its two ends (tic-675a).
+  if (params.showState) {
+    edges.push(...stateEdgesBetween(data.accesses, elementOf, edges, data.index))
+  }
 
   const spec: SceneSpec = {
     root: { id: 'root', role: 'root', label: '', symbolId: null, expandable: false, children },
@@ -866,6 +1036,11 @@ function selectRooted(
 
   const edges = callEdgesBetween(graph, elementOf)
   if (params.showExternals) appendExternalSinks(data.externalCalls, elementOf, children, edges)
+  // After the call edges exist, so a coupling knows whether a call already
+  // joins its two ends (tic-675a).
+  if (params.showState) {
+    edges.push(...stateEdgesBetween(data.accesses, elementOf, edges, data.index))
+  }
 
   const spec: SceneSpec = {
     root: {
@@ -1299,7 +1474,12 @@ function style(spec: SceneSpec): StyleMap {
   }
   const edges = new Map<string, EdgeStyle>()
   for (const edge of spec.edges) {
-    edges.set(edge.id, edgeStyleFor(edge.data as FlowEdgeData | undefined))
+    edges.set(
+      edge.id,
+      edge.kind === 'state'
+        ? stateEdgeStyleFor(edge.data as StateEdgeData | undefined)
+        : edgeStyleFor(edge.data as FlowEdgeData | undefined),
+    )
   }
   return { nodes, groups: new Map(), edges }
 }
@@ -1516,6 +1696,7 @@ export const callFlowMode: VizMode<CallFlowParams> = {
     entryLimit: 25,
     showExternals: true,
     includeTests: false,
+    showState: false,
     rootDepth: 2,
     direction: 'both',
     expandCycles: false,
@@ -1523,6 +1704,7 @@ export const callFlowMode: VizMode<CallFlowParams> = {
   paramToggles: [
     { key: 'showExternals', label: 'External calls' },
     { key: 'includeTests', label: 'Test entry points' },
+    { key: 'showState', label: 'State coupling' },
     { key: 'expandCycles', label: 'Expand cycles' },
   ],
   paramOptions: [

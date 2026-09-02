@@ -10,13 +10,17 @@ import {
   type SymbolIndex,
   type Workspace,
 } from '../data/derive'
-import type { GraphNode, SymbolKind } from '../data/types'
+import { CLOSURE_BUDGET, deriveAccesses } from '../data/dataFlow'
+import { indexSymbols } from '../data/derive'
+import type { EdgeType, GraphEdge, GraphNode, SymbolKind } from '../data/types'
 import {
   Inspector,
   buildImportRows,
   buildImportedByRows,
   buildSourceLinks,
+  buildStateSections,
   countSymbolsByKind,
+  STATE_ROW_LIMIT,
   launchVscodeLink,
   lineRange,
   vscodeFileLink,
@@ -89,6 +93,8 @@ const WORKSPACE: Workspace = {
   callGraph: deriveCallGraph([], index),
   // Likewise real (tic-89fa); no REFERENCES edges here either.
   references: deriveReferences([], index),
+  // Likewise real (tic-13d7); no READS/WRITES edges here either.
+  accesses: deriveAccesses([], index),
   // No registry-derived call data in this fixture (tic-d8a8).  The registry
   // itself rides on the workspace since tic-171f; null keeps this fixture on
   // the codebase_graph.json-only footing it has always modelled.
@@ -480,5 +486,143 @@ describe('Inspector trace call flow (tic-d6af)', () => {
     for (const kind of ['module', 'class', 'variable', 'attribute'] as SymbolKind[]) {
       expect(render(node('app.errors.PluginError', kind))).not.toContain('Trace call flow')
     }
+  })
+})
+
+/** A symbol in its own module, for the state sections (tic-675a). */
+function symbolNode(id: string, kind: SymbolKind): GraphNode {
+  return {
+    ...node(id, kind),
+    module: id.split('.').slice(0, -1).join('.'),
+    file_path: 'src/app/thing.py',
+  }
+}
+
+function stateEdge(source: string, target: string, type: EdgeType): GraphEdge {
+  return {
+    source,
+    target,
+    type,
+    types: [type],
+    count: 1,
+    lines: [1],
+    confidence: 'exact',
+    call_types: [],
+    aliases: [],
+  }
+}
+
+describe('buildStateSections (tic-675a)', () => {
+  const NODES: GraphNode[] = [
+    symbolNode('app.store.POOL', 'variable'),
+    symbolNode('app.store.open_pool', 'function'),
+    symbolNode('app.store.close_pool', 'function'),
+    symbolNode('app.store.query', 'function'),
+    symbolNode('app.api.handler', 'function'),
+    symbolNode('app.store.LIMIT', 'variable'),
+  ]
+  const stateIndex = indexSymbols(NODES)
+  const EDGES: GraphEdge[] = [
+    stateEdge('app.store.open_pool', 'app.store.POOL', 'WRITES'),
+    stateEdge('app.store.close_pool', 'app.store.POOL', 'WRITES'),
+    stateEdge('app.store.query', 'app.store.POOL', 'READS'),
+    stateEdge('app.api.handler', 'app.store.query', 'CALLS'),
+  ]
+  const stateWorkspace: Workspace = {
+    ...WORKSPACE,
+    index: stateIndex,
+    callGraph: deriveCallGraph(EDGES, stateIndex),
+    accesses: deriveAccesses(EDGES, stateIndex),
+  }
+  const sectionsFor = (id: string) =>
+    buildStateSections(stateWorkspace, stateIndex.byId.get(id)!)
+
+  it('answers "what breaks if I change this" for a variable', () => {
+    const view = sectionsFor('app.store.POOL')
+    expect(view.sections.map((s) => s.title)).toEqual(['Written By', 'Read By'])
+    expect(view.sections[0].rows.map((r) => r.label)).toEqual([
+      'open_pool · app.store',
+      'close_pool · app.store',
+    ])
+    expect(view.sections[1].rows.map((r) => r.label)).toEqual(['query · app.store'])
+  })
+
+  it('puts writers above readers, as Imported By sits above Imports', () => {
+    // A reader wants the consequence first.
+    expect(sectionsFor('app.store.POOL').sections[0].title).toBe('Written By')
+  })
+
+  it('counts what the composition reaches but no single edge type names', () => {
+    // `handler` calls `query`, which reads POOL.  It never mentions POOL.
+    expect(sectionsFor('app.store.POOL').summary).toContain('1 more reached through calls')
+  })
+
+  it('flags shared mutable state, which needs no analysis beyond counting', () => {
+    expect(sectionsFor('app.store.POOL').summary).toContain('shared mutable state — 2 writers')
+  })
+
+  it('answers "what state does this touch" for a callable', () => {
+    const view = sectionsFor('app.store.query')
+    expect(view.sections.map((s) => s.title)).toEqual(['Reads'])
+    expect(view.sections[0].rows.map((r) => r.label)).toEqual(['POOL · app.store'])
+  })
+
+  it('shows a callable the state it only reaches through what it calls', () => {
+    // The section a reader cannot get from the function body: `handler`
+    // touches nothing itself.
+    const view = sectionsFor('app.api.handler')
+    expect(view.sections.map((s) => s.title)).toEqual(['Through Calls'])
+    expect(view.sections[0].rows.map((r) => r.label)).toEqual(['POOL · app.store'])
+  })
+
+  it('renders nothing at all for a variable nothing touches', () => {
+    expect(sectionsFor('app.store.LIMIT')).toEqual({ sections: [], summary: null })
+  })
+
+  it('renders nothing for a module, which has no state of its own to report', () => {
+    expect(buildStateSections(stateWorkspace, symbolNode('app.store', 'module')).sections).toEqual([])
+  })
+
+  it('gives every row a goto target, so the card can fly to the symbol', () => {
+    for (const section of sectionsFor('app.store.POOL').sections) {
+      for (const row of section.rows) expect(row.goto).toBe('src/app/thing.py')
+    }
+  })
+
+  it('caps a long list and puts the rest in the summary', () => {
+    const many = Array.from({ length: STATE_ROW_LIMIT + 5 }, (_, i) =>
+      symbolNode(`app.store.r${i}`, 'function'),
+    )
+    const wide = indexSymbols([...NODES, ...many])
+    const edges = many.map((n) => stateEdge(n.id, 'app.store.POOL', 'READS'))
+    const workspace: Workspace = {
+      ...WORKSPACE,
+      index: wide,
+      callGraph: deriveCallGraph(edges, wide),
+      accesses: deriveAccesses(edges, wide),
+    }
+    const view = buildStateSections(workspace, wide.byId.get('app.store.POOL')!)
+    expect(view.sections[0].rows).toHaveLength(STATE_ROW_LIMIT)
+    expect(view.summary).toContain('5 more not shown')
+  })
+
+  it('writes a truncated reach as a floor and never as a total', () => {
+    // The budget is reached in earnest on ../carnot -- 68 of 496 variables
+    // saturate it -- so `200` would state a total that is not one.
+    const chain: GraphEdge[] = [stateEdge('c0', 'app.store.POOL', 'READS')]
+    const nodes: GraphNode[] = [symbolNode('app.store.POOL', 'variable'), symbolNode('c0', 'function')]
+    for (let i = 0; i < CLOSURE_BUDGET + 5; i++) {
+      nodes.push(symbolNode(`c${i + 1}`, 'function'))
+      chain.push(stateEdge(`c${i + 1}`, `c${i}`, 'CALLS'))
+    }
+    const deep = indexSymbols(nodes)
+    const workspace: Workspace = {
+      ...WORKSPACE,
+      index: deep,
+      callGraph: deriveCallGraph(chain, deep),
+      accesses: deriveAccesses(chain, deep),
+    }
+    const view = buildStateSections(workspace, deep.byId.get('app.store.POOL')!)
+    expect(view.summary).toContain(`${CLOSURE_BUDGET}+ more reached through calls`)
   })
 })

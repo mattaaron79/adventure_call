@@ -32,7 +32,10 @@ import {
   groupControl,
   rootedElementIds,
   rootSublabelFor,
+  couplingLabel,
+  stateEdgeStyleFor,
   sublabelFor,
+  type StateEdgeData,
   toElkGraphInput,
   edgeStyleFor,
 } from './callFlow'
@@ -1354,5 +1357,139 @@ describe('complexity proxy (tic-d7d1)', () => {
     const knotted = nodeStyleFor({ role: 'internal', size: 2, recursive: false, rank: null, complexity: 12 })
     expect(knotted.stroke).toBe(THEME.hairy)
     expect(knotted.accent).toBe(THEME.cycle)
+  })
+})
+
+describe('state coupling overlay (tic-675a)', () => {
+  // m.set and m.show both touch m.K.cursor and never call each other -- the
+  // shape a call graph is structurally blind to.  m.wide calls m.set so the
+  // overlay has something to sit beside.
+  const STATE_NODES: GraphNode[] = [
+    ...NODES,
+    node('m.K', 'class'),
+    node('m.K.cursor', 'attribute', { parent: 'm.K' }),
+    node('m.set', 'function'),
+    node('m.show', 'function'),
+    node('m.both', 'function'),
+  ]
+  const STATE_EDGES: GraphEdge[] = [
+    ...EDGES,
+    calls('m.wide', 'm.set'),
+    calls('m.wide', 'm.show'),
+    { ...calls('m.set', 'm.K.cursor'), type: 'WRITES', types: ['WRITES'] },
+    { ...calls('m.show', 'm.K.cursor'), type: 'READS', types: ['READS'] },
+  ]
+  const STATE_GRAPH = { ...GRAPH, nodes: STATE_NODES, edges: STATE_EDGES } as CodebaseGraph
+  const stateWorkspace = deriveWorkspace(STATE_GRAPH, [])
+
+  const scene = (over = {}) =>
+    callFlowMode.select(stateWorkspace, params({ entryLimit: 8, depth: 4, ...over }), {
+      expanded: {},
+    })
+  const stateEdges = (spec: ReturnType<typeof scene>) =>
+    spec.edges.filter((edge) => edge.kind === 'state')
+
+  it('draws nothing at all until asked', () => {
+    // Off by default: it answers a different question from the one this mode
+    // is about, and a reader who has not asked should not read past it.
+    expect(callFlowMode.defaultParams.showState).toBe(false)
+    expect(stateEdges(scene())).toEqual([])
+  })
+
+  it('joins two callables that share state and never call each other', () => {
+    const edges = stateEdges(scene({ showState: true }))
+    const coupling = edges.find((edge) => edge.from === 'm.set' && edge.to === 'm.show')!
+    expect(coupling).toBeDefined()
+    expect((coupling.data as StateEdgeData).through).toEqual(['m.K.cursor'])
+  })
+
+  it('runs writer to reader, because that is the way the value moves', () => {
+    const edges = stateEdges(scene({ showState: true }))
+    expect(edges.map((edge) => [edge.from, edge.to])).toEqual([['m.set', 'm.show']])
+  })
+
+  it('is a different edge kind, so nothing mistakes it for flow', () => {
+    // `kind` is what the cross-mode machinery keys on; a coupling is not a
+    // call and must not answer to code that walks calls.
+    for (const edge of stateEdges(scene({ showState: true }))) {
+      expect(edge.kind).toBe('state')
+    }
+  })
+
+  it('marks a coupling that merely repeats a call it sits beside', () => {
+    const beside = deriveWorkspace(
+      {
+        ...STATE_GRAPH,
+        edges: [...STATE_EDGES, calls('m.set', 'm.show')],
+      } as CodebaseGraph,
+      [],
+    )
+    const spec = callFlowMode.select(beside, params({ entryLimit: 8, depth: 4, showState: true }), {
+      expanded: {},
+    })
+    const coupling = spec.edges.find((edge) => edge.kind === 'state')!
+    expect((coupling.data as StateEdgeData).beside).toBe(true)
+    expect(stateEdgeStyleFor(coupling.data as StateEdgeData).opacity).toBeLessThan(
+      stateEdgeStyleFor({ through: [], beside: false, mutual: false, via: '' }).opacity!,
+    )
+  })
+
+  it('folds a pair coupled both ways into one undirected line', () => {
+    // Two functions that each write and read the variable would otherwise
+    // draw two opposed arrows, doubling the lines and saying nothing more.
+    const mutualWorkspace = deriveWorkspace(
+      {
+        ...STATE_GRAPH,
+        edges: [
+          ...EDGES,
+          calls('m.wide', 'm.set'),
+          calls('m.wide', 'm.show'),
+          { ...calls('m.set', 'm.K.cursor'), type: 'READS', types: ['READS', 'WRITES'] },
+          { ...calls('m.show', 'm.K.cursor'), type: 'READS', types: ['READS', 'WRITES'] },
+        ],
+      } as CodebaseGraph,
+      [],
+    )
+    const spec = callFlowMode.select(
+      mutualWorkspace,
+      params({ entryLimit: 8, depth: 4, showState: true }),
+      { expanded: {} },
+    )
+    const edges = spec.edges.filter((edge) => edge.kind === 'state')
+    expect(edges).toHaveLength(1)
+    expect((edges[0].data as StateEdgeData).mutual).toBe(true)
+    expect(edges[0].directional).toBe(false)
+  })
+
+  it('never couples a function to itself, however much state it touches', () => {
+    const selfish = deriveWorkspace(
+      {
+        ...STATE_GRAPH,
+        edges: [
+          ...EDGES,
+          calls('m.wide', 'm.both'),
+          { ...calls('m.both', 'm.K.cursor'), type: 'READS', types: ['READS', 'WRITES'] },
+        ],
+      } as CodebaseGraph,
+      [],
+    )
+    const spec = callFlowMode.select(selfish, params({ entryLimit: 8, depth: 4, showState: true }), {
+      expanded: {},
+    })
+    expect(spec.edges.filter((edge) => edge.kind === 'state')).toEqual([])
+  })
+
+  it('carries the shared names for a consumer that can show them', () => {
+    const index = stateWorkspace.index
+    expect(couplingLabel(['m.K.cursor'], index)).toBe('cursor')
+    expect(couplingLabel(['m.K.cursor', 'm.shared', 'm.deep', 'm.deeper'], index)).toBe(
+      'cursor, shared +2',
+    )
+  })
+
+  it('gives the overlay a voice of its own, not a call-edge treatment', () => {
+    const style = stateEdgeStyleFor({ through: [], beside: false, mutual: false, via: '' })
+    expect(style.dash).toBeDefined()
+    expect(style.stroke).not.toBe(edgeStyleFor(undefined).stroke)
   })
 })
