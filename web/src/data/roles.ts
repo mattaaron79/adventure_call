@@ -54,10 +54,27 @@ export interface RoleRule {
 }
 
 /**
- * Where a test runner collects tests from.  Kept as one constant because two
- * rules share it and they must not drift apart.
+ * Where a test runner collects tests from.  Kept as one constant because
+ * several rules share it and they must not drift apart.
+ *
+ * Four shapes, and the fourth is not optional if this is to meet a Django
+ * project (tic-f9f7).  Django's default layout puts a whole app's tests in a
+ * single `tests.py` beside the code -- not in a `tests/` directory and not in
+ * a `test_*.py` file -- so the first three alternatives, tuned on a pytest
+ * codebase, matched ZERO of ../hypermenu's tests, and the `test` role rescued
+ * nothing at all there against 982 rescues on ../carnot.
+ *
+ * The version suffix accepts a hyphen as well as an underscore because that
+ * is what is on disk: ../hypermenu keeps `tests-v1.py` beside `tests.py`.
+ * The module id normalises that hyphen to `_`, but a rule's `file` is matched
+ * against the FILE PATH, which does not -- a detail that silently costs the
+ * rule half its matches whichever way it is assumed.
+ *
+ * Every alternative is anchored to a path segment with `(^|/)`, so `latest.py`
+ * and `contest.py` are not test files.
  */
-const TEST_FILE = '(^|/)tests?/|(^|/)test_[^/]*$|_test\\.[^/]*$'
+const TEST_FILE =
+  '(^|/)tests?/|(^|/)test_[^/]*$|_test\\.[^/]*$|(^|/)tests?([-_]v\\d+)?\\.[^/]*$'
 
 /**
  * True when this path is somewhere a test runner collects from -- the same
@@ -91,6 +108,10 @@ export const DEFAULT_ROLE_RULES: readonly RoleRule[] = [
   { role: 'test', name: '^test_', file: TEST_FILE },
   { role: 'fixture', decorator: 'pytest.fixture' },
   { role: 'fixture', name: '^(setup|teardown)(_module|_function|_class|_method)?$', file: TEST_FILE },
+  // unittest's camelCase equivalents, which Django's TestCase inherits and
+  // which pytest also collects.  Conventional rather than framework-specific,
+  // so they belong in the defaults on the same footing as the pytest names.
+  { role: 'fixture', name: '^(setUp|tearDown)(Class|Module)?$', file: TEST_FILE },
 
   // The language calls these itself: `__enter__`, `__repr__`, `__eq__` and
   // the rest of the protocol are invoked by syntax, never by a call the
