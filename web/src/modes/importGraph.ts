@@ -22,13 +22,18 @@
  * `layout()` call -- for the same graph, so the same cache key -- returns
  * the real result synchronously.
  *
- * "Local View" (tic-d7d7) narrows the whole graph to one file's immediate
+ * "Local View" (tic-d7d7) narrows the whole graph to one file's
  * neighbourhood -- the centre, everything it imports, everything that imports
  * it, and every import edge running between those neighbours -- so a change's
- * blast radius can be read without the rest of the codebase in the way.  It
- * reuses the per-mode `ui.focusPath` the fs-tree scopes with rather than
- * inventing state of its own, with one difference the rest of the app has to
- * respect: here a focus path names a FILE, not a directory.
+ * blast radius can be read without the rest of the codebase in the way.  How
+ * far that neighbourhood reaches is a knob: {@link ImportGraphParams.localDepth}
+ * import hops in both directions from the centre file, default one -- the
+ * same "Trace depth" idea call flow's rooted view already has -- so a Local
+ * View can stay a tight "what does this change immediately touch" or widen
+ * into a deeper dependency-chain trace.  It reuses the per-mode `ui.focusPath`
+ * the fs-tree scopes with rather than inventing state of its own, with one
+ * difference the rest of the app has to respect: here a focus path names a
+ * FILE, not a directory.
  *
  * A file expands into its detail container on a double-click (tic-ea9d),
  * showing the same rows an fs-tree container does -- with "Imported By"
@@ -68,7 +73,7 @@ import type {
 /**
  * Mode params.  tic-5f52 fixed the layout direction and tic-56b2 made cycle
  * highlighting unconditional -- a cycle is a fact about the code, not a
- * display preference -- so the only knob here is how the lines are routed.
+ * display preference -- so the remaining knobs are display choices.
  */
 export interface ImportGraphParams {
   /**
@@ -82,6 +87,19 @@ export interface ImportGraphParams {
    * choice, hence a param rather than something the data decides.
    */
   mergeLines: boolean
+  /**
+   * How many import hops a Local View (tic-d7d7) walks from its centre file,
+   * in each direction.
+   *
+   * The Local View started as a fixed one-hop neighbourhood (confirmed with
+   * the user 2026-08-31) and this ticket turns that hop count into a knob,
+   * mirroring call flow's Trace depth (`rootDepth`): at depth 1 the view is
+   * "the centre, what it imports, what imports it"; at depth 2 it reaches
+   * files two import hops out in each direction.  Unfocused the mode draws
+   * the whole graph, which has no depth at all -- only the focused state
+   * reads this.
+   */
+  localDepth: number
 }
 
 /** The cycle-membership payload {@link select} carries on `SpecNode.data`
@@ -203,12 +221,15 @@ export function localViewCentre(spec: SceneSpec): string {
 }
 
 /**
- * The files a Local View of `centre` shows (tic-d7d7): the centre itself,
- * every file it imports, and every file that imports it.  One hop in BOTH
- * directions, confirmed with the user 2026-08-31 -- "which files does a
- * change here immediately affect" is as much about the importers above as
- * the imports below, and two hops is the whole graph again on anything but a
- * leaf.
+ * The files a Local View of `centre` shows (tic-d7d7): the centre itself and
+ * every file within `depth` import hops of it, in BOTH directions -- what it
+ * imports (downstream) and what imports it (upstream).  The default of one
+ * hop was confirmed with the user 2026-08-31 -- "which files does a change
+ * here immediately affect" is as much about the importers above as the
+ * imports below, and two hops is the whole graph again on anything but a
+ * leaf; this ticket made the hop count a knob (`ImportGraphParams.localDepth`)
+ * so a Local View can also trace a deeper chain, at the cost of a bigger
+ * picture.
  *
  * Only the node set is computed here.  The edges follow from it for free:
  * `select` keeps every import edge with both ends in the set, so a dependency
@@ -218,19 +239,35 @@ export function localViewCentre(spec: SceneSpec): string {
  * `visible` is the file set the current exclude/file-query scope leaves in
  * the tree; a neighbour outside it is dropped here rather than becoming a
  * node this mode never creates (the unresolved-shape crash tic-56b2 fixed).
- * One pass over `fileImports` covers both directions -- `data.fileImporters`
+ *
+ * The walk fans out one hop at a time from the frontier the previous hop
+ * found, scanning `fileImports` once per hop -- `data.fileImporters`
  * (tic-0680) indexes the incoming half, but there is no forward index, so a
- * single scan is both simpler and cheaper than an index lookup plus a scan.
+ * scan is cheaper than building one.  A file is added at most once, so an
+ * import cycle cannot make the walk loop; `visible.has` guards both
+ * directions, and depth 0 is just the centre.
  */
 export function neighbourhoodOf(
   data: Workspace,
   centre: string,
   visible: ReadonlySet<string>,
+  depth = 1,
 ): Set<string> {
   const files = new Set<string>([centre])
-  for (const edge of data.fileImports) {
-    if (edge.source === centre && visible.has(edge.target)) files.add(edge.target)
-    if (edge.target === centre && visible.has(edge.source)) files.add(edge.source)
+  let frontier = new Set<string>([centre])
+  for (let hop = 0; hop < depth; hop++) {
+    const next = new Set<string>()
+    for (const edge of data.fileImports) {
+      if (frontier.has(edge.source) && visible.has(edge.target) && !files.has(edge.target)) {
+        next.add(edge.target)
+      }
+      if (frontier.has(edge.target) && visible.has(edge.source) && !files.has(edge.source)) {
+        next.add(edge.source)
+      }
+    }
+    if (next.size === 0) break
+    for (const file of next) files.add(file)
+    frontier = next
   }
   return files
 }
@@ -268,7 +305,9 @@ function select(data: Workspace, params: ImportGraphParams, ui: UiState): SceneS
   const focusPath = ui.focusPath ?? ''
   const centre = focusPath !== '' && inWorkspace.has(focusPath) ? focusPath : ''
   const visibleFiles =
-    centre === '' ? inWorkspace : neighbourhoodOf(data, centre, inWorkspace)
+    centre === ''
+      ? inWorkspace
+      : neighbourhoodOf(data, centre, inWorkspace, Math.max(0, params.localDepth))
 
   const children: SpecNode[] = []
   const goto = new Map<string, string>()
@@ -672,7 +711,7 @@ function style(spec: SceneSpec, _params: ImportGraphParams): StyleMap {
 export const importGraphMode: VizMode<ImportGraphParams> = {
   id: IMPORT_GRAPH_MODE_ID,
   label: 'Import graph',
-  defaultParams: { mergeLines: false },
+  defaultParams: { mergeLines: false, localDepth: 1 },
   // Rendered as a checkbox by ModePicker's generic paramToggles handling
   // (tic-83ec), so merging needs no UI code of its own (tic-531b).
   paramToggles: [
@@ -683,6 +722,24 @@ export const importGraphMode: VizMode<ImportGraphParams> = {
         'Bundles the import lines into shared trunks with visible junction dots, instead of ' +
         'drawing one separate line per import. A module everything imports wears a fan of ' +
         'dozens of lines otherwise. Only how it is drawn -- no import appears or disappears.',
+    },
+  ],
+  // Rendered as a small number input by ModePicker's generic paramNumbers
+  // handling.  A focused-only knob (call flow's "Trace depth" is the same
+  // shape), so the help says where it acts rather than implying it changes
+  // the whole-graph view.
+  paramNumbers: [
+    {
+      key: 'localDepth',
+      label: 'Trace depth',
+      help:
+        'How many import hops a Local View walks from its centre file, in each direction: ' +
+        '1 is the file, what it imports and what imports it; 2 reaches files two hops out. ' +
+        'Only a focused Local View reads it -- the unfocused whole-graph view is always ' +
+        'complete, whatever this is set to.',
+      min: 0,
+      max: 4,
+      step: 1,
     },
   ],
   select,

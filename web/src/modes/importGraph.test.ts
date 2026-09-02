@@ -226,12 +226,12 @@ describe('cacheKeyOf', () => {
   it('differs when the params differ, even though every id is identical', () => {
     const spec = specOf()
     const sizes = sizesOf(spec)
-    const unmerged = cacheKeyOf(spec, sizes, { mergeLines: false })
-    const merged = cacheKeyOf(spec, sizes, { mergeLines: true })
+    const unmerged = cacheKeyOf(spec, sizes, { mergeLines: false, localDepth: 1 })
+    const merged = cacheKeyOf(spec, sizes, { mergeLines: true, localDepth: 1 })
     expect(merged).not.toBe(unmerged)
     // ...and toggling back returns to exactly the first key, so the cached
     // unmerged layout is reused rather than recomputed.
-    expect(cacheKeyOf(spec, sizes, { mergeLines: false })).toBe(unmerged)
+    expect(cacheKeyOf(spec, sizes, { mergeLines: false, localDepth: 1 })).toBe(unmerged)
   })
 
   // The same trap waits for anything that resizes a chip without renaming it
@@ -281,8 +281,8 @@ describe('flattenJunctions', () => {
 })
 
 describe('mode params', () => {
-  it('defaults to unmerged import lines', () => {
-    expect(importGraphMode.defaultParams).toEqual({ mergeLines: false })
+  it('defaults to a one-hop Local View, preserving the pre-knob behaviour', () => {
+    expect(importGraphMode.defaultParams).toEqual({ mergeLines: false, localDepth: 1 })
   })
 
   it('declares mergeLines as a toggle so ModePicker renders it generically', () => {
@@ -294,6 +294,17 @@ describe('mode params', () => {
     // on every control of every mode; pinning its wording here would make an
     // edit to the prose fail a test about the toggle.
     expect(toggle.help).toBeTruthy()
+  })
+
+  it('declares localDepth as a "Trace depth" number control', () => {
+    expect(importGraphMode.paramNumbers).toHaveLength(1)
+    const [number] = importGraphMode.paramNumbers!
+    expect(number.key).toBe('localDepth')
+    expect(number.label).toBe('Trace depth')
+    expect(number.min).toBe(0)
+    expect(number.max).toBe(4)
+    expect(number.step).toBe(1)
+    expect(number.help).toBeTruthy()
   })
 })
 
@@ -553,7 +564,11 @@ describe('importGraphMode.select with an expanded file', () => {
   })
 
   it('leaves both ends on the files when the lines are merged', () => {
-    const merged = importGraphMode.select(WORKSPACE, { mergeLines: true }, A_OPEN)
+    const merged = importGraphMode.select(
+      WORKSPACE,
+      { mergeLines: true, localDepth: 1 },
+      A_OPEN,
+    )
     const edge = merged.edges.find((e) => e.id === 'imp:src/pkg/b.py->src/pkg/a.py')!
     expect(edge.from).toBe('src/pkg/b.py')
     expect(edge.to).toBe('src/pkg/a.py')
@@ -731,6 +746,14 @@ const localSpec = (focusPath: string) =>
     focusPath,
   })
 
+/** A Local View at an explicit trace depth, for the depth knob (tic-0416). */
+const localSpecAt = (focusPath: string, depth: number) =>
+  importGraphMode.select(
+    LOCAL_WORKSPACE,
+    { ...importGraphMode.defaultParams, localDepth: depth },
+    { expanded: {}, focusPath },
+  )
+
 describe('neighbourhoodOf (tic-d7d7)', () => {
   const everything = new Set(['hub', 'up1', 'up2', 'down1', 'down2', 'far', 'lonely'].map(path))
 
@@ -753,6 +776,26 @@ describe('neighbourhoodOf (tic-d7d7)', () => {
     const files = neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), withoutUp2)
     expect(files.has(path('up2'))).toBe(false)
     expect(files.has(path('up1'))).toBe(true)
+  })
+
+  it('is just the centre at trace depth 0', () => {
+    expect([...neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), everything, 0)]).toEqual([
+      path('hub'),
+    ])
+  })
+
+  it('walks two hops out in each direction at trace depth 2', () => {
+    // far imports up1 which imports hub, so far sits two hops upstream; lonely
+    // has no edges at all and never enters the picture at any depth.
+    expect([...neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), everything, 2)].sort()).toEqual(
+      [path('down1'), path('down2'), path('far'), path('hub'), path('up1'), path('up2')].sort(),
+    )
+  })
+
+  it('stops growing once the reachable neighbourhood is exhausted', () => {
+    const at2 = neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), everything, 2)
+    const at3 = neighbourhoodOf(LOCAL_WORKSPACE, path('hub'), everything, 3)
+    expect([...at3].sort()).toEqual([...at2].sort())
   })
 })
 
@@ -816,6 +859,28 @@ describe('importGraphMode.select with a Local View', () => {
     }
     expect(localSpec('').root.children).toHaveLength(7)
   })
+
+  it('scopes to just the centre file at trace depth 0', () => {
+    const at0 = localSpecAt(path('hub'), 0)
+    expect(at0.root.children.map((n) => n.id)).toEqual([path('hub')])
+    expect(at0.edges).toEqual([])
+  })
+
+  it('reaches files two hops out when the trace depth is raised to 2', () => {
+    const deep = localSpecAt(path('hub'), 2)
+    const deepIds = deep.root.children.map((n) => n.id)
+    expect(deepIds).toContain(path('far'))
+    expect(deepIds).not.toContain(path('lonely'))
+    // The two-hop edge depth 1 had to leave out is drawn once its file is in.
+    expect(deep.edges.map((e) => e.id)).toContain(`imp:${path('far')}->${path('up1')}`)
+  })
+
+  it('draws the same one-hop scene whether depth is defaulted or explicit', () => {
+    // The knob defaults to 1, so the parameterised path must reproduce the
+    // exact Local View scope the mode shipped with (tic-d7d7).
+    const at1 = localSpecAt(path('hub'), 1).root.children.map((n) => n.id).sort()
+    expect(at1).toEqual(ids)
+  })
 })
 
 describe('importGraphMode Local View affordance', () => {
@@ -873,6 +938,18 @@ describe('cacheKeyOf with a Local View', () => {
     expect(cacheKeyOf(specOf(path('p')), sizes, PARAMS)).not.toBe(
       cacheKeyOf(specOf(path('q')), sizes, PARAMS),
     )
+  })
+
+  it('differs between two trace depths that draw the same node set', () => {
+    // One layer deeper than tic-531b's trap: on a two-file graph a Local View
+    // of either file IS the whole graph, so raising the depth from 1 to 2
+    // changes no node id, no edge id and no size -- only the depth param that
+    // cacheKeyOf serialises whole.  Without it, the depth-1 layout would be
+    // served for the depth-2 request and the knob would appear to do nothing.
+    const sizes = importGraphMode.measure(specOf(''), { expanded: {} })
+    const at1 = cacheKeyOf(specOf(path('p')), sizes, { mergeLines: false, localDepth: 1 })
+    const at2 = cacheKeyOf(specOf(path('p')), sizes, { mergeLines: false, localDepth: 2 })
+    expect(at2).not.toBe(at1)
   })
 })
 
