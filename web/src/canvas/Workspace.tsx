@@ -194,6 +194,13 @@ export function Workspace({
     y: number
   } | null>(null)
 
+  // Whether Shift is held (tic-0961): while the near-pointer popup is up it
+  // flips the nearest line's '>' prefix to '<', signalling that a
+  // double-click would now fly to the line's source.  Tracked globally via
+  // keydown/keyup because the modifier can change while the pointer is still,
+  // with no pointermove to re-probe.
+  const [shiftHeld, setShiftHeld] = useState(false)
+
   const overrides = useWorkspace(selectOverrides)
   const selection = useWorkspace((s) => s.selection)
   const hovered = useWorkspace((s) => s.hovered)
@@ -325,11 +332,13 @@ export function Workspace({
   const onEmptyClick = useCallback(() => useWorkspace.getState().clearSelection(), [])
 
   // Double-clicking empty canvas flies the camera to the nearest line's target
-  // (tic-1250): the same goto event the import-row button emits, so the flight
-  // and its drag-override handling are reused.  An edge without a resolvable
-  // `to` endpoint (or no line under the cursor at all) no-ops.
-  const onEmptyDoubleClick = useCallback(() => {
-    const target = nearestTargetRef.current
+  // (tic-1250); with Shift held it flies to the line's SOURCE instead
+  // (tic-0961).  The same goto event the import-row button emits, so the
+  // flight and its drag-override handling are reused.  An edge without a
+  // resolvable endpoint for the chosen direction (or no line under the cursor
+  // at all) no-ops.
+  const onEmptyDoubleClick = useCallback((shift: boolean) => {
+    const target = shift ? nearestSourceRef.current : nearestTargetRef.current
     if (target === null) return
     emitGoto(target)
   }, [])
@@ -777,6 +786,10 @@ export function Workspace({
   // re-rendering.  Null while nothing is near, so a double-click over empty
   // canvas with no line under it no-ops.
   const nearestTargetRef = useRef<string | null>(null)
+  // The `from` element id of the same line (tic-0961): what the shift+double-
+  // click flies to.  Null while nothing is near, so a shift+double-click over
+  // empty canvas with no line under it no-ops.
+  const nearestSourceRef = useRef<string | null>(null)
 
   // The summary answers a question about EMPTY canvas, so it stays out of the
   // way of everything else the pointer can be doing: the user's explicit
@@ -804,15 +817,18 @@ export function Workspace({
       setEdgePopup(null)
       setNearestEdgeId(null)
       nearestTargetRef.current = null
+      nearestSourceRef.current = null
       return
     }
     // The nearest line is the first of the nearest-first result (tic-1250): the
     // one line that reads as "the one under the cursor" over a bundle, and the
-    // target of the empty-canvas double-click.  Its `to` endpoint is what the
-    // double-click flies to; an edge without one no-ops.
+    // target of the empty-canvas double-click.  Its `to` endpoint is where the
+    // double-click flies, its `from` where the shift+double-click flies
+    // (tic-0961); an edge without the chosen endpoint no-ops.
     const nearest = found.edges[0].edge
     setNearestEdgeId(nearest.id)
     nearestTargetRef.current = nearest.to ?? null
+    nearestSourceRef.current = nearest.from ?? null
     // Named off the FULL scene, not the culled one: a line can cross the
     // viewport with both of its files scrolled off it, and the summary should
     // still be able to say what it connects.  Identical lines are collapsed --
@@ -830,6 +846,7 @@ export function Workspace({
         setEdgePopup(null)
         setNearestEdgeId(null)
         nearestTargetRef.current = null
+        nearestSourceRef.current = null
         return
       }
       probe.current.at = { x: e.evt.clientX, y: e.evt.clientY }
@@ -859,6 +876,7 @@ export function Workspace({
     setEdgePopup(null)
     setNearestEdgeId(null)
     nearestTargetRef.current = null
+    nearestSourceRef.current = null
   }, [])
 
   // Down the moment a node comes under the pointer or a gesture starts, rather
@@ -871,6 +889,7 @@ export function Workspace({
       setEdgePopup(null)
       setNearestEdgeId(null)
       nearestTargetRef.current = null
+      nearestSourceRef.current = null
     }
   }, [suppressed])
 
@@ -881,7 +900,30 @@ export function Workspace({
     setEdgePopup(null)
     setNearestEdgeId(null)
     nearestTargetRef.current = null
+    nearestSourceRef.current = null
   }, [viewport])
+
+  // The Shift modifier, tracked so the popup's direction arrow can flip while
+  // the pointer is still (tic-0961).  Reset when the window loses focus, so a
+  // Shift released elsewhere never leaves the arrow pointing the wrong way.
+  useEffect(() => {
+    const apply = (held: boolean) => setShiftHeld(held)
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') apply(true)
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') apply(false)
+    }
+    const onBlur = () => apply(false)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
 
   // Keyboard: f = fit to content, e = expand/collapse selection,
   // Esc = deselect, / = focus the file filter.  Ignored while typing.
@@ -1096,8 +1138,12 @@ export function Workspace({
           raised cap the box is over twice the height the old fixed guess
           assumed and would have run off the bottom. */}
       {edgePopup && (
+        // The `.shift` class flips the nearest line's leading '>' to '<'
+        // (styles.css): the arrow reads which way the next double-click takes
+        // the view -- destination by default, source while Shift is held
+        // (tic-0961).
         <div
-          className="edge-popup"
+          className={`edge-popup${shiftHeld ? ' shift' : ''}`}
           style={{
             left: edgePopup.x,
             top: edgePopup.y,

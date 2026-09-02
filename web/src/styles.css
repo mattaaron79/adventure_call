@@ -731,11 +731,20 @@ html, body, #root {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* The nearest line under the cursor (tic-1250): the first line of the summary
-   is the one the double-click will fly to, so it is bolded to mark it as the
-   line the pointer is actually over. */
+/* The nearest line under the cursor (tic-1250 / tic-0961): the first line of
+   the summary is the one the double-click will fly to, so it is bolded to
+   mark it as the line the pointer is actually over, and prefixed with the
+   direction that double-click will take the view.  The Workspace adds a
+   `shift` class to the popup while Shift is held; the arrow then reads '<',
+   because a shift+double-click flies to the line's source instead. */
 .edge-popup-line-nearest {
-  font-weight: 600;
+  font-weight: 800;
+}
+.edge-popup-line-nearest::before {
+  content: '> ';
+}
+.edge-popup.shift .edge-popup-line-nearest::before {
+  content: '< ';
 }
 /* The tail that keeps a dense trunk from papering the canvas over. */
 .edge-popup-more {
