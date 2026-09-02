@@ -257,11 +257,13 @@ export function Workspace({
     useWorkspace.getState().expandAllFolders(expandTargets)
   }, [expandTargets])
 
-  // Edges incident to the selection or hover light up in the import colour
-  // (tic-5393).  Incidence runs off the scene's edge anchors, which the mode
-  // has already shaped to the expand state: a collapsed file's imports anchor
-  // to its chip, an expanded file's to the contributing rows.  Hover and
-  // multi-selection union into one set, so every touching edge is lit.
+  // Edges incident to the selection or hover light up (tic-5393): they keep
+  // their own stroke colour but draw thicker, at full opacity, and (where
+  // directional) marching (tic-b864).  Incidence runs off the scene's edge
+  // anchors, which the mode has already shaped to the expand state: a
+  // collapsed file's imports anchor to its chip, an expanded file's to the
+  // contributing rows.  Hover and multi-selection union into one set, so every
+  // touching edge is lit.
   const highlightIds = useMemo(() => {
     const ids = new Set<string>()
     if (hovered !== null) ids.add(hovered)
@@ -509,13 +511,16 @@ export function Workspace({
   // one Konva.Animation drives every registered line, started only while at
   // least one is active so the idle scene never pays for a running loop.  The
   // line is looked up by id each frame, so an edge re-created on a re-layout
-  // (or drag re-route) is picked up automatically.
-  const antsIds = useRef(new Set<string>())
+  // (or drag re-route) is picked up automatically.  The map value says whether
+  // that line marches in REVERSE (tic-b864): the nearest line under a held
+  // Shift points back toward its source, because a shift+double-click flies
+  // there.
+  const antsIds = useRef(new Map<string, boolean>())
   const antsAnim = useRef<Konva.Animation | null>(null)
 
-  const registerAnts = useCallback((id: string, active: boolean) => {
+  const registerAnts = useCallback((id: string, active: boolean, reverse: boolean) => {
     if (active) {
-      antsIds.current.add(id)
+      antsIds.current.set(id, reverse)
     } else {
       antsIds.current.delete(id)
       // Reset the offset when the line unlights, so a non-highlighted edge
@@ -531,8 +536,8 @@ export function Workspace({
     if (antsAnim.current) return
     antsAnim.current = new Konva.Animation((frame) => {
       const offset = antsDashOffset(frame?.time ?? 0)
-      for (const antsId of antsIds.current) {
-        edgeShapes.current.get(antsId)?.dashOffset(offset)
+      for (const [antsId, reverse] of antsIds.current) {
+        edgeShapes.current.get(antsId)?.dashOffset(reverse ? -offset : offset)
       }
       edgeLayer.current?.batchDraw()
     })
@@ -1043,6 +1048,10 @@ export function Workspace({
                 edge={edge}
                 highlighted={highlightIds.has(edge.id)}
                 nearest={nearestEdgeId === edge.id}
+                // While Shift is held the nearest line marches backwards (tic-b864),
+                // mirroring its popup '<' arrow: a shift+double-click flies to the
+                // line's source.
+                reverseAnts={nearestEdgeId === edge.id && shiftHeld}
                 animateAll={animateAllEdges}
                 register={registerEdge}
                 registerAnts={registerAnts}
@@ -1299,6 +1308,7 @@ const EdgeLine = memo(function EdgeLine({
   edge,
   highlighted,
   nearest,
+  reverseAnts,
   animateAll,
   register,
   registerAnts,
@@ -1308,16 +1318,24 @@ const EdgeLine = memo(function EdgeLine({
   highlighted: boolean
   /**
    * Whether this is the single nearest connection line under the cursor on
-   * empty canvas (tic-1250): drawn in the nearest colour and on top, so it
-   * reads as "the one under the pointer" over a bundle.  Never true while a
-   * node is under the pointer or a gesture owns the canvas.
+   * empty canvas (tic-1250): drawn on top and a touch thicker, so it reads as
+   * "the one under the pointer" over a bundle.  Like any other lit line it
+   * keeps the edge's own stroke colour.  Never true while a node is under the
+   * pointer or a gesture owns the canvas.
    */
   nearest: boolean
+  /**
+   * Whether to march the nearest line's ants in REVERSE (tic-b864): while
+   * Shift is held the popup arrow flips to '<' and a shift+double-click flies
+   * to the line's SOURCE, so the flow indicator points back toward that end.
+   * Only ever true for the single nearest line, and only while its ants run.
+   */
+  reverseAnts: boolean
   /** Exploratory: march ants on every edge, highlighted or not (tic-5196). */
   animateAll: boolean
   register: (id: string, line: Konva.Line | null) => void
   /** Opt the edge's line into/out of the marching-ants animation. */
-  registerAnts: (id: string, active: boolean) => void
+  registerAnts: (id: string, active: boolean, reverse: boolean) => void
 }) {
   const width = edge.strokeWidth ?? 1
   // The nearest line under the cursor (tic-1250) counts as highlighted for the
@@ -1328,20 +1346,23 @@ const EdgeLine = memo(function EdgeLine({
   // in while it is lit AND directional, out (and back to its base offset)
   // otherwise.  Runs on mount too, so a line that starts lit starts marching.
   useEffect(() => {
-    registerAnts(edge.id, ants)
-    return () => registerAnts(edge.id, false)
-  }, [registerAnts, edge.id, ants])
-  // The nearest line outranks a plain highlight (a lit selection line under
-  // the cursor reads as "the one under the pointer" too), but a node's own
-  // hover/selection never coexists with it -- the nearest line only exists on
-  // empty canvas.  It draws a touch thicker than a lit line so it is legible
-  // over a bundle without being mistaken for a selected node.
+    registerAnts(edge.id, ants, reverseAnts)
+    return () => registerAnts(edge.id, false, false)
+  }, [registerAnts, edge.id, ants, reverseAnts])
+  // A lit line -- highlighted for any reason, whether incident to a node's
+  // hover/selection (tic-5393) or the nearest line under the cursor (tic-1250)
+  // -- keeps the edge's OWN stroke colour (tic-b864): the mode already colours
+  // lines semantically, so lighting reads as the same line made prominent
+  // (thicker, full opacity, drawn on top, marching where directional), not as
+  // a recoloured one.  The nearest line draws a touch thicker than a plain lit
+  // line so it stays legible over a bundle without being mistaken for a
+  // selected node.
   const lit = highlighted || nearest
   return (
     <Line
       ref={(instance) => register(edge.id, instance)}
       points={edge.points}
-      stroke={nearest ? THEME.nearest : highlighted ? THEME.import : edge.stroke}
+      stroke={edge.stroke}
       strokeWidth={lit ? width * 2 : width}
       dash={ants ? ANTS_DASH : edge.dash}
       opacity={lit ? 1 : edge.opacity ?? 1}
