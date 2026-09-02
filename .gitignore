@@ -18,6 +18,8 @@ symbol_registry.json
 out/
 
 # Web frontend
+# Unanchored: a stray `npx vitest` from the repo root creates one here too.
+node_modules/
 web/node_modules/
 web/dist/
 web/.vite/
