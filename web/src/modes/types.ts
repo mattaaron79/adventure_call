@@ -11,7 +11,14 @@
  * Every phase is a pure function of its arguments, so React and Konva stay
  * outside and the whole pipeline is trivially testable.
  */
-import type { EdgeRoute, Scene, SceneEdge, SceneGroup, SceneNode } from '../canvas/scene'
+import type {
+  EdgeRoute,
+  Scene,
+  SceneEdge,
+  SceneGroup,
+  SceneNode,
+  WedgeGeom,
+} from '../canvas/scene'
 import type { Point, Rect, Size } from '../canvas/viewport'
 import type { Workspace } from '../data/derive'
 
@@ -218,6 +225,14 @@ export interface Positioned {
   edgePipes?: ReadonlyMap<string, { dx: number } | { dy: number }>
   /** The layout orientation, so reproject re-routes elbows in the right axis. */
   orientation?: 'lr' | 'tb'
+  /**
+   * Optional wedge geometry per element id (tic-70f9): a mode whose nodes are
+   * annular sectors -- the sunburst -- fills this instead of a meaningful
+   * `Size`, and `assemble` hands each wedge to its scene node so the canvas
+   * draws a sector.  Absent unless a mode produces wedges; the rect-based
+   * modes return no map and render exactly as they always did.
+   */
+  wedges?: ReadonlyMap<string, WedgeGeom>
 }
 
 export interface NodeStyle {
@@ -415,6 +430,9 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
         // Containment (tic-2697): the spec node this one lives inside, so
         // reproject can translate it by its ancestors' drag offsets.
         parent: parentId,
+        // Wedge geometry (tic-70f9): when the layout cut this node as an
+        // annular sector, the canvas draws that instead of a rectangle.
+        wedge: positioned.wedges?.get(node.id),
       })
     }
     if (node.symbolId !== null) symbolOf.set(node.id, node.symbolId)

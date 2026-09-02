@@ -17,7 +17,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
-import { Circle, Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
+import { Arc, Circle, Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import {
   DBLCLICK_MS,
   EDGE_HOVER_RADIUS_PX,
@@ -1079,18 +1079,45 @@ export function Workspace({
           <Layer {...world}>
             {visible.nodes.map((node) => {
               const at = placed?.get(node.id)
-              return (
+              const x = at ? at.x : node.x
+              const y = at ? at.y : node.y
+              const selected = selection.has(node.id)
+              const isHovered = hovered === node.id
+              const connected = connectedIds.has(node.id)
+              const showLabel = lod < 2
+              const showGoIn = lod < 2
+              // A node the mode cut as an annular sector (tic-70f9) is drawn
+              // as a wedge by WedgeNode; everything else stays the rectangle
+              // chip it has always been.
+              return node.wedge ? (
+                <WedgeNode
+                  key={node.id}
+                  node={node}
+                  x={x}
+                  y={y}
+                  selected={selected}
+                  hovered={isHovered}
+                  connected={connected}
+                  showLabel={showLabel}
+                  showGoIn={showGoIn}
+                  focusPath={focusPath}
+                  onTooltip={handleIconTooltip}
+                  handlers={handlers}
+                  register={register}
+                  onGoIn={onGoIn}
+                />
+              ) : (
                 <NodeChip
                   key={node.id}
                   node={node}
-                  x={at ? at.x : node.x}
-                  y={at ? at.y : node.y}
-                  selected={selection.has(node.id)}
-                  hovered={hovered === node.id}
-                  connected={connectedIds.has(node.id)}
-                  showLabel={lod < 2}
+                  x={x}
+                  y={y}
+                  selected={selected}
+                  hovered={isHovered}
+                  connected={connected}
+                  showLabel={showLabel}
                   showSublabel={lod === 0}
-                  showGoIn={lod < 2}
+                  showGoIn={showGoIn}
                   focusPath={focusPath}
                   sourceLinks={sourceLinks}
                   onTooltip={handleIconTooltip}
@@ -1626,6 +1653,180 @@ const NodeChip = memo(function NodeChip({
           tooltip={`Go to ${node.gotoTo}`}
           onTooltip={onTooltip}
           onClick={() => onGoto(node.gotoTo!)}
+        />
+      )}
+    </Group>
+  )
+})
+
+interface WedgeProps {
+  node: SceneNode
+  x: number
+  y: number
+  selected: boolean
+  hovered: boolean
+  /** At one end of a currently lit import line (tic-ece1); see ChipProps. */
+  connected: boolean
+  /** Zoom LOD (tic-fa56): labels thin out as the camera pulls back. */
+  showLabel: boolean
+  /** Zoom LOD for the icon buttons; dropped when labels go. */
+  showGoIn: boolean
+  /** The active focus path: a folder never offers to go into itself
+   *  (tic-4d7c). */
+  focusPath: string
+  /** Reports icon-button hover tooltips in client coords (tic-1d9a). */
+  onTooltip: (text: string | null, clientX: number, clientY: number) => void
+  handlers: NodeHandlers
+  register: (id: string, node: Konva.Group | null) => void
+  onGoIn: (target: string) => void
+}
+
+/**
+ * The annular-sector node a mode draws in place of a rectangular chip
+ * (tic-70f9) -- the sunburst's per-ring slices.
+ *
+ * The node's own rect is the sector's bounding box and the group sits at that
+ * rect's corner exactly like a chip, so selection, hover, double-click and the
+ * position tween behave identically; only the drawn shape differs, an `Arc`
+ * cut from the wedge's annulus.  Konva's Arc draws from `rotation` (degrees,
+ * clockwise on screen) sweeping `angle` further clockwise, which is precisely
+ * the `start`/`end` convention the mode used to build the geometry (0 = +x,
+ * increasing clockwise), so the shape is a direct mapping rather than a guess.
+ *
+ * Slices are pinned (not draggable): a sunburst is one rigid object, and
+ * letting a slice drag away would tear the chart apart rather than rearrange
+ * it.  A directory slice carries the same 'go into' affordance a folder chip
+ * does (drawn at the slice's midpoint), so the mode stays navigable from the
+ * canvas; a slice big enough to host text shows its label instead, so the two
+ * never collide.
+ */
+const WedgeNode = memo(function WedgeNode({
+  node,
+  x,
+  y,
+  selected,
+  hovered,
+  connected,
+  showLabel,
+  showGoIn,
+  focusPath,
+  onTooltip,
+  handlers,
+  register,
+  onGoIn,
+}: WedgeProps) {
+  // Border precedence is the same as a chip's (tic-ece1): selection, then the
+  // pointer, then "at the end of a lit line", then the mode's own stroke.
+  const stroke = selected
+    ? THEME.selected
+    : hovered
+      ? THEME.hovered
+      : connected
+        ? THEME.hovered
+        : node.stroke
+
+  const groupRef = useRef<Konva.Group | null>(null)
+  const placed = useRef(false)
+  useLayoutEffect(() => {
+    const group = groupRef.current
+    if (!group) return
+    if (!placed.current) {
+      placed.current = true
+      group.position({ x, y })
+      return
+    }
+    if (group.isDragging() || (group.x() === x && group.y() === y)) return
+    const tween = new Konva.Tween({
+      node: group,
+      x,
+      y,
+      duration: TWEEN_DURATION,
+      easing: Konva.Easings.EaseOut,
+    })
+    tween.play()
+    return () => tween.destroy()
+  }, [x, y])
+
+  const wedge = node.wedge!
+  // The wedge geometry is world-space and the group sits at the sector's
+  // bounding-box corner, so every child shape is drawn in the group's local
+  // space, offset by that corner.
+  const lcx = wedge.cx - x
+  const lcy = wedge.cy - y
+  const span = wedge.end - wedge.start
+  const midAngle = (wedge.start + wedge.end) / 2
+  const midRadius = (wedge.innerRadius + wedge.outerRadius) / 2
+  const thickness = wedge.outerRadius - wedge.innerRadius
+
+  // A slice is labelled only when it can actually host text: a wide enough
+  // angle for a readable chord at the mid radius, and a ring thick enough for
+  // a line of it.  The text is centred on the slice's midpoint.
+  const chord = 2 * midRadius * Math.sin(span / 2)
+  const canLabel = span >= 0.16 && thickness >= 26 && chord >= 60
+  const labelX = lcx + Math.cos(midAngle) * midRadius
+  const labelY = lcy + Math.sin(midAngle) * midRadius
+
+  // A directory slice offers the same drill-down a folder chip does, at the
+  // slice's midpoint, and only when the slice is not the scope it would drill
+  // into (a focused folder never offers to go into itself, tic-4d7c) and is
+  // big enough to host the icon.  When it shows, it owns the midpoint, so the
+  // label stays off.
+  const hasFocus = node.focusTo !== undefined && node.focusTo !== focusPath
+  const showButton = showGoIn && hasFocus && span >= 0.32 && thickness >= 34
+
+  return (
+    <Group
+      id={node.id}
+      draggable={false}
+      ref={(instance) => {
+        groupRef.current = instance
+        register(node.id, instance)
+      }}
+      onPointerDown={handlers.onPointerDown}
+      onPointerUp={handlers.onPointerUp}
+      onDragStart={handlers.onDragStart}
+      onDragMove={handlers.onDragMove}
+      onDragEnd={handlers.onDragEnd}
+      onMouseEnter={handlers.onMouseEnter}
+      onMouseLeave={handlers.onMouseLeave}
+    >
+      <Arc
+        x={lcx}
+        y={lcy}
+        innerRadius={wedge.innerRadius}
+        outerRadius={wedge.outerRadius}
+        rotation={(wedge.start * 180) / Math.PI}
+        angle={(span * 180) / Math.PI}
+        fill={node.fill}
+        stroke={stroke}
+        strokeWidth={selected ? 2 : 1}
+        perfectDrawEnabled={false}
+        shadowForStrokeEnabled={false}
+      />
+      {showLabel && canLabel && !showButton && (
+        <Text
+          x={labelX - Math.min(chord, 220) / 2}
+          y={labelY - 5}
+          width={Math.min(chord, 220)}
+          text={node.label}
+          align="center"
+          fontFamily={FONT}
+          fontSize={11}
+          fill={THEME.text}
+          listening={false}
+          perfectDrawEnabled={false}
+          ellipsis
+          wrap="none"
+        />
+      )}
+      {showButton && (
+        <CanvasIconButton
+          x={labelX - 9}
+          y={labelY - 9}
+          paths={GO_IN_ICON_PATHS}
+          tooltip={node.focusLabel ?? `Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
+          onTooltip={onTooltip}
+          onClick={() => onGoIn(node.focusTo!)}
         />
       )}
     </Group>

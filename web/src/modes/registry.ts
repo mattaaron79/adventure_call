@@ -9,6 +9,7 @@
 import { callFlowMode } from './callFlow'
 import { fsTreeMode } from './fsTree'
 import { importGraphMode } from './importGraph'
+import { sunburstMode } from './sunburst'
 import type { VizMode } from './types'
 
 /**
@@ -20,7 +21,7 @@ import type { VizMode } from './types'
 export type AnyMode = VizMode<any>
 
 /** Every registered mode, in picker order. */
-export const MODES: readonly AnyMode[] = [fsTreeMode, importGraphMode, callFlowMode]
+export const MODES: readonly AnyMode[] = [fsTreeMode, sunburstMode, importGraphMode, callFlowMode]
 
 /** The mode the workspace opens with. */
 export const DEFAULT_MODE_ID = fsTreeMode.id

@@ -19,6 +19,30 @@ import {
   type Viewport,
 } from './viewport'
 
+/**
+ * An annular sector (tic-70f9), for modes that draw wedges -- the sunburst's
+ * concentric rings -- instead of rectangular chips.
+ *
+ * The node's own `Rect` stays the sector's axis-aligned bounding box, so the
+ * rect machinery -- culling, fit-to-content, marquee, goto, the near-pointer
+ * summary -- keeps working unchanged and only the renderer draws a sector.
+ * Angles are radians measured from the +x axis, increasing clockwise on
+ * screen (world y grows downward), so `start < end` and a full circle is
+ * `[start, start + 2*PI]`.
+ */
+export interface WedgeGeom {
+  /** Centre of the annulus the sector is cut from, in world space. */
+  cx: number
+  cy: number
+  /** Inner radius; 0 for the innermost ring, which is a disk, not a ring. */
+  innerRadius: number
+  outerRadius: number
+  /** Sector start angle, in radians (see the type docs for orientation). */
+  start: number
+  /** Sector end angle, in radians; greater than {@link WedgeGeom.start}. */
+  end: number
+}
+
 export interface SceneNode extends Rect {
   id: string
   label: string
@@ -83,7 +107,16 @@ export interface SceneNode extends Rect {
    * rows, group box and edges with it.  Absent on roots.
    */
   parent?: string
-}
+  /**
+   * When present, the node draws as an annular sector (tic-70f9) rather than
+   * as a rectangle.  The node's own rect is the sector's bounding box, set by
+   * the same layout phase that produced this geometry, so the sector renders
+   * wherever the scene says the node is and the rect-based machinery above
+   * works unchanged.  Absent on every pre-existing scene, which renders its
+   * rectangles exactly as it always did.
+   */
+  wedge?: WedgeGeom
+ }
 
 /** How an edge's polyline is derived from its endpoint rects. */
 export type EdgeRoute = 'elbow' | 'center'

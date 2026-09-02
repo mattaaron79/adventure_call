@@ -16,5 +16,6 @@
  */
 
 export const FS_TREE_MODE_ID = 'fs-tree'
+export const SUNBURST_MODE_ID = 'sunburst'
 export const IMPORT_GRAPH_MODE_ID = 'import-graph'
 export const CALL_FLOW_MODE_ID = 'call-flow'
