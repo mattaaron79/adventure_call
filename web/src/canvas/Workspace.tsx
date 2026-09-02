@@ -19,6 +19,7 @@ import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Circle, Group, Layer, Line, Rect, Stage, Text } from 'react-konva'
 import {
+  DBLCLICK_MS,
   EDGE_HOVER_RADIUS_PX,
   EDGE_POPUP_MAX_LINES,
   GOTO_DURATION_MS,
@@ -73,10 +74,6 @@ import { useViewport } from './useViewport'
 import { centerOn, screenToWorld, type Point, type Rect as WorldRect } from './viewport'
 
 const FONT = 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif'
-
-/** Two clicks on the same node inside this window count as a double-click,
- *  which is what expands/contracts a workspace object (tic-3430). */
-const DBLCLICK_MS = 350
 
 /** World-space radius of a junction dot (tic-531b).  Small enough to read as
  *  a joint on a 1px trunk rather than a node of its own, and it scales with
@@ -327,12 +324,23 @@ export function Workspace({
 
   const onEmptyClick = useCallback(() => useWorkspace.getState().clearSelection(), [])
 
+  // Double-clicking empty canvas flies the camera to the nearest line's target
+  // (tic-1250): the same goto event the import-row button emits, so the flight
+  // and its drag-override handling are reused.  An edge without a resolvable
+  // `to` endpoint (or no line under the cursor at all) no-ops.
+  const onEmptyDoubleClick = useCallback(() => {
+    const target = nearestTargetRef.current
+    if (target === null) return
+    emitGoto(target)
+  }, [])
+
   const { viewport, marquee, panning, fit, stageProps } = useViewport({
     container: host,
     size,
     getBounds,
     onMarquee,
     onEmptyClick,
+    onEmptyDoubleClick,
   })
 
   // Camera goto (tic-bee0): any surface can emitGoto(target); the canvas owns
@@ -704,14 +712,26 @@ export function Workspace({
     () => (Object.keys(overrides).length > 0 ? placedRects(scene, overrides) : null),
     [scene, overrides],
   )
+  // The single nearest connection line under the cursor on empty canvas
+  // (tic-1250): the one line that reads as "the one under the pointer", drawn
+  // in the nearest colour and the target of the empty-canvas double-click.
+  // Null while the pointer is over a node or a gesture owns the canvas, so it
+  // never competes with node hover/selection.  Declared before the edge
+  // ordering below, which draws it on top of the bundle it is picked out of.
+  const [nearestEdgeId, setNearestEdgeId] = useState<string | null>(null)
   // Highlighted edges draw above the grey neighbours (tic-5393): reorder so
-  // the lit lines come last.  Memoised on `projected` + `highlightIds`, both
-  // stable across a pan, so pan/zoom pays only the cull below -- never a
-  // per-frame re-sort, and never a scene rebuild.
-  const orderedEdges = useMemo(
-    () => highlightedEdgesLast(projected.edges, highlightIds),
-    [projected, highlightIds],
-  )
+  // the lit lines come last.  The nearest line under the cursor (tic-1250)
+  // joins the set so it draws on top of the bundle it is being picked out of.
+  // Memoised on `projected` + `highlightIds` + `nearestEdgeId`, all stable
+  // across a pan, so pan/zoom pays only the cull below -- never a per-frame
+  // re-sort, and never a scene rebuild.
+  const orderedEdges = useMemo(() => {
+    const ids =
+      nearestEdgeId === null
+        ? highlightIds
+        : new Set<string>(highlightIds).add(nearestEdgeId)
+    return highlightedEdgesLast(projected.edges, ids)
+  }, [projected, highlightIds, nearestEdgeId])
   // Render-time culling (tic-fa56): filter the computed scene to what the
   // camera can see, plus a margin.  Selection, marquee and fit keep using the
   // full scene through the refs above.
@@ -752,6 +772,11 @@ export function Workspace({
   const viewportRef = useRef(viewport)
   viewportRef.current = viewport
   const probe = useRef<{ frame: number | null; at: Point | null }>({ frame: null, at: null })
+  // The `to` element id of the nearest line under the cursor (tic-1250), kept
+  // in a ref so the empty-canvas double-click handler can resolve it without
+  // re-rendering.  Null while nothing is near, so a double-click over empty
+  // canvas with no line under it no-ops.
+  const nearestTargetRef = useRef<string | null>(null)
 
   // The summary answers a question about EMPTY canvas, so it stays out of the
   // way of everything else the pointer can be doing: the user's explicit
@@ -777,8 +802,17 @@ export function Workspace({
     )
     if (found.edges.length === 0) {
       setEdgePopup(null)
+      setNearestEdgeId(null)
+      nearestTargetRef.current = null
       return
     }
+    // The nearest line is the first of the nearest-first result (tic-1250): the
+    // one line that reads as "the one under the cursor" over a bundle, and the
+    // target of the empty-canvas double-click.  Its `to` endpoint is what the
+    // double-click flies to; an edge without one no-ops.
+    const nearest = found.edges[0].edge
+    setNearestEdgeId(nearest.id)
+    nearestTargetRef.current = nearest.to ?? null
     // Named off the FULL scene, not the culled one: a line can cross the
     // viewport with both of its files scrolled off it, and the summary should
     // still be able to say what it connects.  Identical lines are collapsed --
@@ -794,6 +828,8 @@ export function Workspace({
     (e: KonvaEventObject<PointerEvent>) => {
       if (suppressedRef.current || drag.current !== null) {
         setEdgePopup(null)
+        setNearestEdgeId(null)
+        nearestTargetRef.current = null
         return
       }
       probe.current.at = { x: e.evt.clientX, y: e.evt.clientY }
@@ -817,11 +853,25 @@ export function Workspace({
     }
   }, [])
 
+  // The pointer leaving the workspace (or the canvas for the HUD floating over
+  // it) takes down both the summary and the nearest-line highlight (tic-1250).
+  const clearNearPointer = useCallback(() => {
+    setEdgePopup(null)
+    setNearestEdgeId(null)
+    nearestTargetRef.current = null
+  }, [])
+
   // Down the moment a node comes under the pointer or a gesture starts, rather
   // than waiting for the next pointer move -- a drag that begins on a line the
-  // popup is describing would otherwise carry it along.
+  // popup is describing would otherwise carry it along.  The nearest-line
+  // highlight clears on the same gates, so it never competes with a node's own
+  // hover border or rides along on a pan/marquee.
   useEffect(() => {
-    if (suppressed) setEdgePopup(null)
+    if (suppressed) {
+      setEdgePopup(null)
+      setNearestEdgeId(null)
+      nearestTargetRef.current = null
+    }
   }, [suppressed])
 
   // A wheel zoom moves the world under a stationary pointer, so whatever the
@@ -829,6 +879,8 @@ export function Workspace({
   // next pointer move, measured against the new camera.
   useEffect(() => {
     setEdgePopup(null)
+    setNearestEdgeId(null)
+    nearestTargetRef.current = null
   }, [viewport])
 
   // Keyboard: f = fit to content, e = expand/collapse selection,
@@ -913,7 +965,7 @@ export function Workspace({
       ref={host}
       className="workspace"
       style={{ cursor }}
-      onPointerLeave={() => setEdgePopup(null)}
+      onPointerLeave={clearNearPointer}
     >
       {size.width > 0 && size.height > 0 && (
         <Stage
@@ -924,7 +976,7 @@ export function Workspace({
           // The host's own pointerleave covers the pointer leaving the
           // workspace; this covers it leaving the CANVAS for the HUD floating
           // over it, which is still inside the host.
-          onPointerLeave={() => setEdgePopup(null)}
+          onPointerLeave={clearNearPointer}
         >
           <Layer listening={false}>
             <Grid
@@ -948,6 +1000,7 @@ export function Workspace({
                 key={edge.id}
                 edge={edge}
                 highlighted={highlightIds.has(edge.id)}
+                nearest={nearestEdgeId === edge.id}
                 animateAll={animateAllEdges}
                 register={registerEdge}
                 registerAnts={registerAnts}
@@ -1057,8 +1110,15 @@ export function Workspace({
             })`,
           }}
         >
-          {edgePopup.lines.map((line) => (
-            <div key={line} className="edge-popup-line">
+          {edgePopup.lines.map((line, index) => (
+            // The first line is the nearest one under the cursor (tic-1250):
+            // edgesNearPoint returns nearest-first and describeConnections
+            // preserves that order, so bolding index 0 marks the line the
+            // double-click will fly to.
+            <div
+              key={line}
+              className={`edge-popup-line${index === 0 ? ' edge-popup-line-nearest' : ''}`}
+            >
               {line}
             </div>
           ))}
@@ -1192,6 +1252,7 @@ const GroupBox = memo(function GroupBox({
 const EdgeLine = memo(function EdgeLine({
   edge,
   highlighted,
+  nearest,
   animateAll,
   register,
   registerAnts,
@@ -1199,6 +1260,13 @@ const EdgeLine = memo(function EdgeLine({
   edge: SceneEdge
   /** Whether the edge is incident to the selection/hover (tic-5393). */
   highlighted: boolean
+  /**
+   * Whether this is the single nearest connection line under the cursor on
+   * empty canvas (tic-1250): drawn in the nearest colour and on top, so it
+   * reads as "the one under the pointer" over a bundle.  Never true while a
+   * node is under the pointer or a gesture owns the canvas.
+   */
+  nearest: boolean
   /** Exploratory: march ants on every edge, highlighted or not (tic-5196). */
   animateAll: boolean
   register: (id: string, line: Konva.Line | null) => void
@@ -1206,7 +1274,10 @@ const EdgeLine = memo(function EdgeLine({
   registerAnts: (id: string, active: boolean) => void
 }) {
   const width = edge.strokeWidth ?? 1
-  const ants = isAntsEdge(edge, highlighted, animateAll)
+  // The nearest line under the cursor (tic-1250) counts as highlighted for the
+  // marching ants too: it reads as a lit connection, so a directional one
+  // marches exactly as it would over a hovered or selected node.
+  const ants = isAntsEdge(edge, highlighted || nearest, animateAll)
   // Keep the animation registry in step with the highlight state: opt the line
   // in while it is lit AND directional, out (and back to its base offset)
   // otherwise.  Runs on mount too, so a line that starts lit starts marching.
@@ -1214,14 +1285,20 @@ const EdgeLine = memo(function EdgeLine({
     registerAnts(edge.id, ants)
     return () => registerAnts(edge.id, false)
   }, [registerAnts, edge.id, ants])
+  // The nearest line outranks a plain highlight (a lit selection line under
+  // the cursor reads as "the one under the pointer" too), but a node's own
+  // hover/selection never coexists with it -- the nearest line only exists on
+  // empty canvas.  It draws a touch thicker than a lit line so it is legible
+  // over a bundle without being mistaken for a selected node.
+  const lit = highlighted || nearest
   return (
     <Line
       ref={(instance) => register(edge.id, instance)}
       points={edge.points}
-      stroke={highlighted ? THEME.import : edge.stroke}
-      strokeWidth={highlighted ? width * 2 : width}
+      stroke={nearest ? THEME.nearest : highlighted ? THEME.import : edge.stroke}
+      strokeWidth={lit ? width * 2 : width}
       dash={ants ? ANTS_DASH : edge.dash}
-      opacity={highlighted ? 1 : edge.opacity ?? 1}
+      opacity={lit ? 1 : edge.opacity ?? 1}
       listening={false}
       perfectDrawEnabled={false}
       shadowForStrokeEnabled={false}

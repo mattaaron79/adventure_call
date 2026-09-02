@@ -731,6 +731,12 @@ html, body, #root {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* The nearest line under the cursor (tic-1250): the first line of the summary
+   is the one the double-click will fly to, so it is bolded to mark it as the
+   line the pointer is actually over. */
+.edge-popup-line-nearest {
+  font-weight: 600;
+}
 /* The tail that keeps a dense trunk from papering the canvas over. */
 .edge-popup-more {
   margin-top: 2px;

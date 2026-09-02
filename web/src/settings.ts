@@ -16,6 +16,14 @@
 export const GOTO_DURATION_MS = 250
 
 /**
+ * Two clicks on the same thing inside this window count as a double-click
+ * (tic-1250).  Shared by the node double-click that expands/contracts a
+ * workspace object (tic-3430) and the empty-canvas double-click that flies the
+ * camera to the nearest line's target.
+ */
+export const DBLCLICK_MS = 350
+
+/**
  * How far a goto zooms in relative to a full fit-to-rect scale.
  *
  * A goto used to rise to the full fit scale, which fills the viewport with a

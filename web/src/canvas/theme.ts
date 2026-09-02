@@ -25,6 +25,14 @@ export const THEME = {
    *  selection/hover (tic-5393).  Same blue as the module kind: imports
    *  connect modules, so a lit line reads as "this is what I import". */
   import: '#89b4fa',
+  /**
+   * The single nearest connection line under the cursor on empty canvas
+   * (tic-1250): a brighter lavender than the import blue, so the line the
+   * pointer is actually over reads as "the one under the cursor" rather than
+   * blending into a lit selection.  Only ever drawn while the pointer is over
+   * empty canvas, so it never competes with a node's own hover border.
+   */
+  nearest: '#b4befe',
   /** A file or edge inside an honest import cycle (tic-56b2): the one warm
    *  colour against an otherwise cool palette, so a cycle reads as worth
    *  noticing rather than blending into the ordinary import lines. */

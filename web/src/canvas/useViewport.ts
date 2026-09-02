@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { KonvaEventObject } from 'konva/lib/Node'
-import { DRAG_THRESHOLD } from '../settings'
+import { DBLCLICK_MS, DRAG_THRESHOLD } from '../settings'
 import { selectViewport, useWorkspace } from '../state/store'
 import {
   rectFromCorners,
@@ -31,6 +31,18 @@ type Gesture =
   | { kind: 'pan'; last: Point; moved: boolean }
   | { kind: 'marquee'; origin: Point; current: Point; moved: boolean }
 
+/**
+ * Whether an empty-canvas click is the second of a double-click (tic-1250).
+ *
+ * Pure so the gesture logic is unit-testable without a canvas: given the
+ * previous empty-canvas click time and the current one, it says whether the
+ * pair counts as a double-click (which flies the camera to the nearest line's
+ * target) or as two ordinary deselects.
+ */
+export function isEmptyDoubleClick(prev: number | null, now: number): boolean {
+  return prev !== null && now - prev <= DBLCLICK_MS
+}
+
 interface Options {
   /** The element the Stage fills, for page -> stage coordinate maths. */
   container: RefObject<HTMLDivElement | null>
@@ -40,14 +52,38 @@ interface Options {
   /** The world rect a marquee covered. */
   onMarquee: (world: Rect) => void
   onEmptyClick: () => void
+  /**
+   * Two empty-canvas clicks inside {@link DBLCLICK_MS} (tic-1250): the
+   * workspace flies the camera to the nearest line's target.  The empty-canvas
+   * click that clears the selection fires first; this is the second click of a
+   * pair, so the caller can tell a double-click apart from two ordinary
+   * deselects.
+   */
+  onEmptyDoubleClick: () => void
 }
 
-export function useViewport({ container, size, getBounds, onMarquee, onEmptyClick }: Options) {
+export function useViewport({
+  container,
+  size,
+  getBounds,
+  onMarquee,
+  onEmptyClick,
+  onEmptyDoubleClick,
+}: Options) {
   const viewport = useWorkspace(selectViewport)
   const gesture = useRef<Gesture | null>(null)
   /** Screen-space marquee, in state only because the overlay draws it. */
   const [marquee, setMarquee] = useState<Rect | null>(null)
+  // "Panning" means a pan is ACTUALLY moving the camera, not that a button is
+  // simply down on empty space (tic-1250).  Setting it on the press would hide
+  // the nearest-line highlight before the release of the first click of a
+  // double-click, so the second click would have no target left to fly to.  It
+  // flips true only once the pointer crosses the drag threshold and the pan
+  // really starts -- the moment the highlight should clear anyway.
   const [panning, setPanning] = useState(false)
+  /** The previous empty-canvas click, to recognise the double-click that flies
+   *  the camera to the nearest line's target (tic-1250). */
+  const lastEmptyClick = useRef<{ time: number } | null>(null)
 
   const onWheel = useCallback((e: KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault()
@@ -72,8 +108,11 @@ export function useViewport({ container, size, getBounds, onMarquee, onEmptyClic
       gesture.current = { kind: 'marquee', origin: pointer, current: pointer, moved: false }
       setMarquee({ ...pointer, width: 0, height: 0 })
     } else {
+      // A press alone is not yet a pan: it may be the first click of the
+      // empty-canvas double-click (tic-1250), whose nearest-line highlight and
+      // target must survive until the release.  `panning` (which suppresses
+      // that highlight) flips when the drag actually starts, in `move`.
       gesture.current = { kind: 'pan', last: pointer, moved: false }
-      setPanning(true)
     }
   }, [])
 
@@ -95,6 +134,10 @@ export function useViewport({ container, size, getBounds, onMarquee, onEmptyClic
         const dx = pointer.x - active.last.x
         const dy = pointer.y - active.last.y
         if (!active.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+        // The pan is real now -- the camera moves with the next `panBy` -- so
+        // the nearest-line highlight (which never rides along on a drag) is
+        // suppressed from here on (tic-1250).
+        setPanning(true)
         active.moved = true
         active.last = pointer
         useWorkspace.getState().panBy(dx, dy)
@@ -112,7 +155,21 @@ export function useViewport({ container, size, getBounds, onMarquee, onEmptyClic
       if (!active) return
 
       if (active.kind === 'pan') {
-        if (!active.moved) onEmptyClick()
+        if (!active.moved) {
+          // A click on empty canvas clears the selection; a second one inside
+          // the window is the double-click that flies the camera to the
+          // nearest line's target (tic-1250).  The deselect still fires first,
+          // so the flight starts from a clean selection.
+          const now = performance.now()
+          const prev = lastEmptyClick.current
+          lastEmptyClick.current = { time: now }
+          if (isEmptyDoubleClick(prev?.time ?? null, now)) {
+            lastEmptyClick.current = null
+            onEmptyDoubleClick()
+          } else {
+            onEmptyClick()
+          }
+        }
         return
       }
       setMarquee(null)
@@ -136,7 +193,7 @@ export function useViewport({ container, size, getBounds, onMarquee, onEmptyClic
       window.removeEventListener('pointerup', end)
       window.removeEventListener('pointercancel', end)
     }
-  }, [container, onMarquee, onEmptyClick])
+  }, [container, onMarquee, onEmptyClick, onEmptyDoubleClick])
 
   const fit = useCallback(() => {
     const bounds = getBounds()

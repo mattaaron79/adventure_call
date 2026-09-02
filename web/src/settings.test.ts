@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DBLCLICK_MS,
   DRAG_THRESHOLD,
   EDGE_POPUP_MAX_LINES,
   FIT_PADDING,
@@ -31,6 +32,14 @@ describe('interaction settings (tic-8ff7)', () => {
     expect(DRAG_THRESHOLD).toBeGreaterThan(0)
     expect(NODE_DRAG_THRESHOLD).toBeGreaterThan(0)
     expect(TWEEN_DURATION).toBeGreaterThan(0)
+  })
+
+  it('keeps the double-click window short enough to feel like a double-click (tic-1250)', () => {
+    // Shared by the node double-click that expands a workspace object and the
+    // empty-canvas double-click that flies to the nearest line's target.  A
+    // window too long would make two deliberate clicks read as one gesture.
+    expect(DBLCLICK_MS).toBeGreaterThan(0)
+    expect(DBLCLICK_MS).toBeLessThan(1000)
   })
 })
 
