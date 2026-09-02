@@ -34,6 +34,10 @@ import {
   rootSublabelFor,
   couplingLabel,
   stateEdgeStyleFor,
+  formatTypeCoverageHud,
+  typeEdgeStyleFor,
+  TYPE_NEIGHBOUR_LIMIT,
+  type TypeEdgeData,
   sublabelFor,
   type StateEdgeData,
   toElkGraphInput,
@@ -42,6 +46,7 @@ import {
 import { shouldShowGoIn } from '../canvas/iconButtonLogic'
 import { THEME } from '../canvas/theme'
 import { edgeTagsOf, type EdgeTags } from '../data/controlFlow'
+import { deriveTypeFlow } from '../data/typeFlow'
 import { CALL_FLOW_MODE_ID } from './ids'
 import { modeById, MODES } from './registry'
 
@@ -1491,5 +1496,144 @@ describe('state coupling overlay (tic-675a)', () => {
     const style = stateEdgeStyleFor({ through: [], beside: false, mutual: false, via: '' })
     expect(style.dash).toBeDefined()
     expect(style.stroke).not.toBe(edgeStyleFor(undefined).stroke)
+  })
+})
+
+describe('type flow overlay (tic-59b1)', () => {
+  // m.parse returns Rule, m.apply accepts Rule, and neither calls the other --
+  // the shape a call cone can never contain both halves of.  m.wide calls
+  // m.parse so the rooted view has somewhere to start.
+  const withReturns = (id: string, returns: string): GraphNode => ({
+    ...node(id, 'function'),
+    returns,
+  })
+  const withParam = (id: string, annotation: string): GraphNode => ({
+    ...node(id, 'function'),
+    params: [
+      { name: 'value', annotation, kind: 'positional', default: null },
+    ] as GraphNode['params'],
+  })
+
+  const TYPE_NODES: GraphNode[] = [
+    ...NODES,
+    node('m.Rule', 'class'),
+    withReturns('m.parse', 'list[Rule]'),
+    withParam('m.apply', 'Rule'),
+    withParam('m.also', 'Optional[Rule]'),
+  ]
+  const TYPE_EDGES: GraphEdge[] = [...EDGES, calls('m.wide', 'm.parse')]
+  const TYPE_GRAPH = { ...GRAPH, nodes: TYPE_NODES, edges: TYPE_EDGES } as CodebaseGraph
+  const typeWorkspace = deriveWorkspace(TYPE_GRAPH, [])
+
+  const at = (over = {}, focusPath?: string) =>
+    callFlowMode.select(typeWorkspace, params({ entryLimit: 8, depth: 4, ...over }), {
+      expanded: {},
+      ...(focusPath === undefined ? {} : { focusPath }),
+    })
+  const typeEdges = (spec: ReturnType<typeof at>) =>
+    spec.edges.filter((edge) => edge.kind === 'type')
+
+  it('draws nothing at all until asked', () => {
+    expect(callFlowMode.defaultParams.showTypes).toBe(false)
+    expect(typeEdges(at())).toEqual([])
+  })
+
+  it('joins a producer to a consumer that never calls it', () => {
+    // Rooted, because the overview draws entry points and a consumer nothing
+    // calls is an orphan -- which is the structural reason the overlay has to
+    // pull its neighbours in rather than wait for them to be drawn.
+    const edges = typeEdges(at({ showTypes: true }, 'm.parse'))
+    const flow = edges.find((edge) => edge.from === 'm.parse' && edge.to === 'm.apply')!
+    expect(flow).toBeDefined()
+    expect((flow.data as TypeEdgeData).through).toEqual(['m.Rule'])
+    expect((flow.data as TypeEdgeData).beside).toBe(false)
+  })
+
+  it('is its own edge kind, so nothing mistakes it for flow or for coupling', () => {
+    for (const edge of typeEdges(at({ showTypes: true }))) expect(edge.kind).toBe('type')
+  })
+
+  it('pulls the type neighbours into a rooted view, which is the whole point', () => {
+    // A producer and a consumer of one type are exactly the pair a call cone
+    // never contains both of, so an overlay confined to the cone draws
+    // nothing -- measured at zero pairs inside a rooted ../carnot view.
+    const plain = at({}, 'm.parse')
+    const pulled = at({ showTypes: true }, 'm.parse')
+    expect(pulled.root.children.length).toBeGreaterThan(plain.root.children.length)
+    expect(typeEdges(pulled).map((edge) => edge.to).sort()).toEqual(['m.also', 'm.apply'])
+  })
+
+  it('leaves the node set alone in the overview', () => {
+    // Pulling neighbours in is a rooted-view move; the overview is already a
+    // ranking of entry points and has no root to hang them off.
+    expect(at({ showTypes: true }).root.children.length).toBe(at().root.children.length)
+  })
+
+  it('does not inflate the root honesty clause with type neighbours', () => {
+    // `N not shown` is a claim about what the CALL neighbourhood left out.
+    const rooted = at({ showTypes: true }, 'm.parse')
+    const plain = at({}, 'm.parse')
+    const sub = (spec: ReturnType<typeof at>) =>
+      spec.root.children.find((child) => child.label === 'parse')!.sublabel
+    expect(sub(rooted)).toBe(sub(plain))
+  })
+
+  it('leaves out a currency type, which links nothing to nothing', () => {
+    // On ../carnot the six widest types -- Message, ToolResult, Turn, Event,
+    // ToolCall, CommandContext -- are the shapes every layer passes around,
+    // and each would drag dozens of unrelated chips into the picture.
+    const many: GraphNode[] = [node('m.Currency', 'class')]
+    for (let i = 0; i < TYPE_NEIGHBOUR_LIMIT; i++) {
+      many.push(withReturns(`m.make${i}`, 'Currency'))
+      many.push(withParam(`m.take${i}`, 'Currency'))
+    }
+    const wide = deriveWorkspace(
+      { ...TYPE_GRAPH, nodes: [...TYPE_NODES, ...many] } as CodebaseGraph,
+      [],
+    )
+    // Rooted on a producer, so the neighbour pull-in is the thing under test:
+    // without the cap this drags every make/take chip into the picture.
+    const spec = callFlowMode.select(
+      wide,
+      params({ entryLimit: 8, depth: 4, showTypes: true }),
+      { expanded: {}, focusPath: 'm.make0' },
+    )
+    expect(spec.root.children.map((child) => child.label)).toEqual(['make0'])
+    expect(spec.edges.filter((e) => e.kind === 'type')).toEqual([])
+  })
+
+  it('marks the rare line a call already joins, and draws it louder', () => {
+    // The reverse of the state overlay, and measurement is why: a call joins
+    // 8 of ../carnot's 1246 producer/consumer pairs, so agreement is the
+    // rarity worth pointing at.
+    const handoff = deriveWorkspace(
+      { ...TYPE_GRAPH, edges: [...TYPE_EDGES, calls('m.parse', 'm.apply')] } as CodebaseGraph,
+      [],
+    )
+    const spec = callFlowMode.select(
+      handoff,
+      params({ entryLimit: 8, depth: 4, showTypes: true }),
+      { expanded: {} },
+    )
+    const flow = spec.edges.find((edge) => edge.id === 'type:m.parse->m.apply')!
+    expect((flow.data as TypeEdgeData).beside).toBe(true)
+    expect(typeEdgeStyleFor(flow.data as TypeEdgeData).opacity).toBeGreaterThan(
+      typeEdgeStyleFor({ through: [], beside: false, via: '' }).opacity!,
+    )
+  })
+
+  it('states its own coverage, so a sparse picture is not read as a complete one', () => {
+    // "These are the links" and "these are the links we can see" are
+    // different claims, and only the annotations decide which one this is.
+    const hud = formatTypeCoverageHud(deriveTypeFlow(typeWorkspace.index, null))
+    expect(hud).toMatch(/^type flow: \d+% of returns annotated · \d+% of params$/)
+  })
+
+  it('has a voice of its own, distinct from calls and from state coupling', () => {
+    const style = typeEdgeStyleFor({ through: [], beside: false, via: '' })
+    expect(style.stroke).not.toBe(edgeStyleFor(undefined).stroke)
+    expect(style.stroke).not.toBe(
+      stateEdgeStyleFor({ through: [], beside: false, mutual: false, via: '' }).stroke,
+    )
   })
 })

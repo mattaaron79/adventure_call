@@ -468,6 +468,12 @@ html, body, #root {
   text-overflow: ellipsis;
   cursor: help;
 }
+/* The type-flow clause (tic-59b1) rides in the same line, one step quieter:
+   it is a second honesty figure about a different thing, and the call
+   coverage is the one always on show. */
+.coverage-hud-type {
+  color: var(--text-faint);
+}
 @keyframes fade {
   0%, 55% { opacity: 1; }
   100% { opacity: 0; }

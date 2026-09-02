@@ -62,6 +62,7 @@ import {
   type NodeControlTags,
 } from '../data/controlFlow'
 import { type AccessIndex } from '../data/dataFlow'
+import { deriveTypeFlow, type TypeFlowIndex } from '../data/typeFlow'
 import { deriveDominators, type DominatorIndex } from '../data/dominators'
 import { deriveEntryPoints, type EntryPoints } from '../data/entryPoints'
 import { isTestPath } from '../data/roles'
@@ -136,6 +137,13 @@ export interface CallFlowParams {
    * them.
    */
   showState: boolean
+  /**
+   * Draw tic-59b1's type-flow lines, and in a rooted view pull in the
+   * producers and consumers of the types the root touches.  Off by default,
+   * and it CHANGES THE NODE SET when on -- the one toggle here that does, and
+   * the module comment on {@link typeEdgesBetween} says why it has to.
+   */
+  showTypes: boolean
 
   // -- the rooted view (tic-7a5e) -------------------------------------------
 
@@ -872,6 +880,186 @@ export function stateEdgeStyleFor(data: StateEdgeData | undefined): EdgeStyle {
   }
 }
 
+/**
+ * Type-flow lines over the same nodes as the call graph (tic-59b1), off by
+ * default.
+ *
+ * `A` returns `Rule` and `B` accepts `Rule`, so data can move A -> B whether
+ * or not A ever calls B.
+ *
+ * ## The overlay has to ADD nodes, and measurement is why
+ *
+ * The ticket asked for lines between the nodes already drawn. Measured, that
+ * draws almost nothing: 17 producer/consumer pairs land inside ../carnot's
+ * whole 171-chip overview, ZERO inside a rooted view, and zero anywhere on
+ * hypermenu. The reason is structural rather than bad luck -- the scene is
+ * shaped by the call graph, and two functions that pass a type without calling
+ * each other are exactly the pair a call cone will never contain both of. An
+ * overlay confined to the existing node set cannot show the thing type flow is
+ * for.
+ *
+ * So a rooted view with the overlay on PULLS IN the producers and consumers of
+ * the types the root touches, as chips of their own. That is the feature: who
+ * else handles what you handle, that you never call.
+ *
+ * ## Currency types are excluded, and the cut is clean
+ *
+ * A type everything makes links nothing to nothing. Sorting ../carnot's 39
+ * two-ended project types by producer + consumer count puts a visible gap
+ * after six of them -- `Message` (36), `ToolResult` (53), `Turn` (26),
+ * `Event` (41), `ToolCall` (17) and `CommandContext` (53) -- and those six are
+ * precisely the currency of that codebase, the shapes every layer passes
+ * around. {@link TYPE_NEIGHBOUR_LIMIT} sits in the gap, so 33 of 39 types
+ * survive and the six that would each drag in dozens of unrelated chips do
+ * not.
+ *
+ * ## Disagreement is the rule, not the finding
+ *
+ * The ticket expected type flow and call flow to mostly agree, with the gaps
+ * as the signal. Measured, it is the other way round: of ../carnot's 1246
+ * producer/consumer pairs, a call joins EIGHT. So `beside` marks the rare
+ * agreement rather than the common disagreement, and the style emphasises the
+ * confirmed hand-off instead of muting it.
+ */
+export interface TypeEdgeData {
+  /** The project classes flowing along this line, in scene order. */
+  through: readonly string[]
+  /** A CALLS edge joins these two as well -- a confirmed hand-off, and rare:
+   *  8 of ../carnot's 1246 pairs. */
+  beside: boolean
+  /** The shared type names as one short string, for a consumer that can show
+   *  it; the canvas draws no edge labels today. */
+  via: string
+}
+
+/**
+ * Above this many producers plus consumers, a type is CURRENCY rather than a
+ * pipeline and is left out entirely. See the module comment for the measured
+ * gap this sits in.
+ */
+export const TYPE_NEIGHBOUR_LIMIT = 16
+
+/** How many extra chips the type-flow neighbours may add to a rooted view. */
+export const TYPE_NEIGHBOUR_BUDGET = 24
+
+/** Whether a type links a manageable number of functions, or is currency. */
+export function isPipelineType(types: TypeFlowIndex, typeId: string): boolean {
+  const producers = types.producersOf.get(typeId)?.length ?? 0
+  const consumers = types.consumersOf.get(typeId)?.length ?? 0
+  return producers > 0 && consumers > 0 && producers + consumers <= TYPE_NEIGHBOUR_LIMIT
+}
+
+/**
+ * The components a rooted view should draw ON TOP of its call cone: everything
+ * that produces or consumes a pipeline type the root touches.
+ *
+ * Bounded twice -- per type by {@link TYPE_NEIGHBOUR_LIMIT}, and in total by
+ * {@link TYPE_NEIGHBOUR_BUDGET} -- because a root touching four types could
+ * otherwise pull in more chips than the cone itself.
+ */
+export function typeNeighbourComponents(
+  graph: CallGraph,
+  types: TypeFlowIndex,
+  members: readonly string[],
+  already: ReadonlySet<number>,
+): number[] {
+  const wanted = new Set<string>()
+  for (const member of members) {
+    for (const typeId of [
+      ...(types.returnsOf.get(member) ?? []),
+      ...(types.acceptsOf.get(member) ?? []),
+    ]) {
+      if (!isPipelineType(types, typeId)) continue
+      for (const id of types.producersOf.get(typeId) ?? []) wanted.add(id)
+      for (const id of types.consumersOf.get(typeId) ?? []) wanted.add(id)
+    }
+  }
+
+  const extra: number[] = []
+  const seen = new Set(already)
+  for (const id of wanted) {
+    if (extra.length >= TYPE_NEIGHBOUR_BUDGET) break
+    const component = graph.componentOf.get(id)
+    if (component === undefined || seen.has(component)) continue
+    seen.add(component)
+    extra.push(component)
+  }
+  return extra
+}
+
+/**
+ * One line per (producer element, consumer element) pair among the drawn
+ * nodes, for pipeline types only.
+ *
+ * Collapsed onto ELEMENTS exactly as the call and coupling edges are: a chip
+ * can stand for a whole condensed knot, and two of its members producing the
+ * same type is one line.
+ */
+export function typeEdgesBetween(
+  types: TypeFlowIndex,
+  elementOf: ReadonlyMap<string, string>,
+  callEdges: readonly SpecEdge[],
+  index: Workspace['index'],
+): SpecEdge[] {
+  const called = new Set<string>()
+  for (const edge of callEdges) called.add(`${edge.from}->${edge.to}`)
+
+  const flows = new Map<string, { from: string; to: string; through: string[] }>()
+  for (const [typeId, producers] of types.producersOf) {
+    if (!isPipelineType(types, typeId)) continue
+    const consumers = types.consumersOf.get(typeId) ?? []
+    for (const producer of producers) {
+      const from = elementOf.get(producer)
+      if (from === undefined) continue
+      for (const consumer of consumers) {
+        const to = elementOf.get(consumer)
+        // A function that both produces and consumes a type is not a pipeline
+        // with itself.
+        if (to === undefined || to === from) continue
+        const id = `type:${from}->${to}`
+        const known = flows.get(id)
+        if (known) {
+          if (!known.through.includes(typeId)) known.through.push(typeId)
+        } else {
+          flows.set(id, { from, to, through: [typeId] })
+        }
+      }
+    }
+  }
+
+  return [...flows].map(([id, flow]) => ({
+    id,
+    from: flow.from,
+    to: flow.to,
+    kind: 'type',
+    route: 'center',
+    directional: true,
+    data: {
+      through: flow.through,
+      beside: called.has(`${flow.from}->${flow.to}`),
+      via: couplingLabel(flow.through, index),
+    } satisfies TypeEdgeData,
+  }))
+}
+
+/**
+ * The overlay's voice: a long dash in the cycle colour, distinct at a glance
+ * from both the call vocabulary and tic-675a's dotted state coupling.
+ *
+ * A line a call already joins is drawn HEAVIER, not muted -- the reverse of
+ * the state overlay, and measurement is why: agreement between type flow and
+ * call flow happens 8 times in 1246, so it is the rarity worth pointing at.
+ */
+export function typeEdgeStyleFor(data: TypeEdgeData | undefined): EdgeStyle {
+  const beside = data?.beside ?? false
+  return {
+    stroke: THEME.cycle,
+    strokeWidth: beside ? 1.8 : 1.1,
+    dash: [8, 5],
+    opacity: beside ? 0.85 : 0.5,
+  }
+}
+
 function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec {
   const graph = data.callGraph
   const entryPoints = deriveEntryPoints(graph, data.index, undefined, data.references)
@@ -881,6 +1069,7 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   const metrics = deriveCallMetrics(graph, data.index, entryPoints, data.registry)
   const control = deriveControlFlowTags(graph)
   const dominators = deriveDominators(graph, entryPoints)
+  const types = deriveTypeFlow(data.index, data.registry)
 
   // The focus path names a SYMBOL here (see the module docstring).  One the
   // call graph does not hold -- a stale id, a directory from something that
@@ -890,7 +1079,7 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   const focusPath = ui.focusPath ?? ''
   const rootComponent = focusPath === '' ? undefined : graph.componentOf.get(focusPath)
   return rootComponent === undefined
-    ? selectOverview(data, params, graph, entryPoints, metrics, control, dominators)
+    ? selectOverview(data, params, graph, entryPoints, metrics, control, dominators, types)
     : selectRooted(
         data,
         params,
@@ -899,6 +1088,7 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
         metrics,
         control,
         dominators,
+        types,
         focusPath,
         rootComponent,
       )
@@ -912,6 +1102,7 @@ function selectOverview(
   metrics: CallMetricsIndex,
   control: ControlFlowTags,
   dominators: DominatorIndex,
+  types: TypeFlowIndex,
 ): SceneSpec {
   // Filtered by FILE, not by the `test` role.  The role is name-based
   // (`^test_`), which misses the helpers a test module defines around its
@@ -956,6 +1147,9 @@ function selectOverview(
   if (params.showState) {
     edges.push(...stateEdgesBetween(data.accesses, elementOf, edges, data.index))
   }
+  if (params.showTypes) {
+    edges.push(...typeEdgesBetween(types, elementOf, edges, data.index))
+  }
 
   const spec: SceneSpec = {
     root: { id: 'root', role: 'root', label: '', symbolId: null, expandable: false, children },
@@ -984,17 +1178,33 @@ function selectRooted(
   metrics: CallMetricsIndex,
   control: ControlFlowTags,
   dominators: DominatorIndex,
+  types: TypeFlowIndex,
   focusPath: string,
   rootComponent: number,
 ): SceneSpec {
   const depth = Math.max(0, params.rootDepth)
   const cone = coneOf(graph, rootComponent, params.direction, depth)
 
+  // The type-flow overlay is the one toggle that changes the NODE set: a
+  // producer and a consumer of the same type are exactly the pair a call cone
+  // never contains both of, so confining the lines to the cone draws nothing
+  // (measured: zero pairs inside a rooted ../carnot view).  These chips are
+  // deliberately NOT counted in `cone.beyond` -- that number is a claim about
+  // what the CALL neighbourhood left out, and inflating it with type
+  // neighbours would make the root's honesty clause lie.
+  const drawnComponents = [...cone.components]
+  if (params.showTypes) {
+    const members = graph.members.get(rootComponent) ?? []
+    drawnComponents.push(
+      ...typeNeighbourComponents(graph, types, members, new Set(cone.components)),
+    )
+  }
+
   const children: SpecNode[] = []
   const goto = new Map<string, string>()
   const elementOf = new Map<string, string>()
   let rootIds: string[] = []
-  for (const component of cone.components) {
+  for (const component of drawnComponents) {
     const ids = drawComponent(
       data,
       graph,
@@ -1040,6 +1250,9 @@ function selectRooted(
   // joins its two ends (tic-675a).
   if (params.showState) {
     edges.push(...stateEdgesBetween(data.accesses, elementOf, edges, data.index))
+  }
+  if (params.showTypes) {
+    edges.push(...typeEdgesBetween(types, elementOf, edges, data.index))
   }
 
   const spec: SceneSpec = {
@@ -1478,7 +1691,9 @@ function style(spec: SceneSpec): StyleMap {
       edge.id,
       edge.kind === 'state'
         ? stateEdgeStyleFor(edge.data as StateEdgeData | undefined)
-        : edgeStyleFor(edge.data as FlowEdgeData | undefined),
+        : edge.kind === 'type'
+          ? typeEdgeStyleFor(edge.data as TypeEdgeData | undefined)
+          : edgeStyleFor(edge.data as FlowEdgeData | undefined),
     )
   }
   return { nodes, groups: new Map(), edges }
@@ -1688,6 +1903,30 @@ export function formatCoverageHud(coverage: FlowCoverage): string {
   return parts.join(' · ')
 }
 
+/**
+ * The type-flow overlay's own honesty line (tic-59b1).
+ *
+ * Shown only while the overlay is on, and always while it is: the picture it
+ * draws rests on annotations, and on ../carnot those cover 1132 of 2578
+ * returns and 1285 of 2801 parameters.  That is enough to be useful and
+ * nowhere near enough to be authoritative, and a reader looking at a sparse
+ * type graph must be able to tell "these are the links" from "these are the
+ * links we can see".
+ *
+ * The figure improves on its own as a codebase gets typed, which is the other
+ * reason to state it rather than bury it: it is a property of the SOURCE, not
+ * of this tool.
+ */
+export function formatTypeCoverageHud(types: TypeFlowIndex): string {
+  const { annotatedReturns, totalReturns, annotatedParams, totalParams } = types.coverage
+  const share = (n: number, total: number): string =>
+    total > 0 ? `${Math.round((n / total) * 100)}%` : '0%'
+  return (
+    `type flow: ${share(annotatedReturns, totalReturns)} of returns annotated` +
+    ` · ${share(annotatedParams, totalParams)} of params`
+  )
+}
+
 export const callFlowMode: VizMode<CallFlowParams> = {
   id: CALL_FLOW_MODE_ID,
   label: 'Call Flow',
@@ -1697,6 +1936,7 @@ export const callFlowMode: VizMode<CallFlowParams> = {
     showExternals: true,
     includeTests: false,
     showState: false,
+    showTypes: false,
     rootDepth: 2,
     direction: 'both',
     expandCycles: false,
@@ -1705,6 +1945,7 @@ export const callFlowMode: VizMode<CallFlowParams> = {
     { key: 'showExternals', label: 'External calls' },
     { key: 'includeTests', label: 'Test entry points' },
     { key: 'showState', label: 'State coupling' },
+    { key: 'showTypes', label: 'Type flow' },
     { key: 'expandCycles', label: 'Expand cycles' },
   ],
   paramOptions: [
