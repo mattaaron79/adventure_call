@@ -202,6 +202,59 @@ export function writeUiPrefs(prefs: UiPrefs): void {
 }
 
 /**
+ * Where a cross-mode jump came from (tic-53f7), so it can be undone.
+ *
+ * Its own key, and neither a `ModeState` nor a `UiPrefs`.  A mode slice is
+ * keyed BY mode and this is a relationship BETWEEN two of them -- storing it
+ * in either end would make the way home disappear the moment that end's slice
+ * was reset, and put a fact about the origin inside the destination's record.
+ * It is not chrome either: it describes navigation, not how the app looks.
+ * The same reasoning that gave the UI preferences their own key gives this
+ * one, and it must never reach a saved preset, which captures a view rather
+ * than the trip taken to it.
+ */
+export const EXCURSION_STORAGE_KEY = 'adventure-call:excursion'
+
+export interface Excursion {
+  /** The mode the jump started in. */
+  modeId: string
+  /** That mode's focus path at the moment of the jump; '' for its whole graph. */
+  focusPath: string
+}
+
+/** The recorded excursion, or null when there is none or it is unreadable. */
+export function readExcursion(): Excursion | null {
+  let raw: string | null | undefined
+  try {
+    raw = storage()?.getItem(EXCURSION_STORAGE_KEY)
+  } catch {
+    return null
+  }
+  if (!raw) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { modeId, focusPath } = parsed as Record<string, unknown>
+    // A mode id is required; a missing focus path is the whole graph, which is
+    // a perfectly good place to return to.
+    if (typeof modeId !== 'string' || modeId === '') return null
+    return { modeId, focusPath: typeof focusPath === 'string' ? focusPath : '' }
+  } catch {
+    return null
+  }
+}
+
+/** Record an excursion, or clear it with null. */
+export function writeExcursion(excursion: Excursion | null): void {
+  try {
+    if (excursion === null) storage()?.removeItem(EXCURSION_STORAGE_KEY)
+    else storage()?.setItem(EXCURSION_STORAGE_KEY, JSON.stringify(excursion))
+  } catch {
+    // Persistence is a convenience; the in-memory state still applies.
+  }
+}
+
+/**
  * Coalesce the writes.  A pan is one state update per pointer move, and
  * `JSON.stringify` over a few thousand position overrides is not something to
  * do at that rate.

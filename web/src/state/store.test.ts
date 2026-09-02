@@ -47,6 +47,7 @@ const RESET = {
   selection: new Set<string>(),
   hovered: null,
   inspectorCollapsed: true,
+  origin: null,
 }
 
 beforeEach(() => {
@@ -553,5 +554,131 @@ describe('cross-mode navigation (tic-e738)', () => {
     // unresolvable focus draws the whole graph, so seeding one is safe.
     useWorkspace.getState().openInMode(OTHER, 'gone/missing.py')
     expect(activeMode(useWorkspace.getState()).focusPath).toBe('gone/missing.py')
+  })
+})
+
+
+describe('cross-mode excursions (tic-53f7)', () => {
+  beforeEach(() => {
+    useWorkspace.setState({ origin: null })
+    localStorage.removeItem('adventure-call:excursion')
+  })
+
+  afterEach(() => {
+    flushWorkspaceState()
+    localStorage.removeItem(storageKey('import-graph'))
+    localStorage.removeItem(storageKey('call-flow'))
+    localStorage.removeItem('adventure-call:excursion')
+  })
+
+  it('records where a jump started, with the origin focus it had at the time', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    expect(useWorkspace.getState().origin).toEqual({
+      modeId: DEFAULT_MODE_ID,
+      focusPath: 'src/app',
+    })
+  })
+
+  it('records nothing for a re-focus inside the same mode', () => {
+    // Nothing was left, so there is nowhere to go back to.
+    useWorkspace.getState().openInMode(DEFAULT_MODE_ID, 'src/app')
+    expect(useWorkspace.getState().origin).toBeNull()
+  })
+
+  it('goes back to the origin mode AND its focus in one transition', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().returnFromExcursion()
+
+    const state = useWorkspace.getState()
+    expect(state.modeId).toBe(DEFAULT_MODE_ID)
+    expect(activeMode(state).focusPath).toBe('src/app')
+    expect(state.origin).toBeNull()
+  })
+
+  it('leaves the destination where it was, so going back out returns to it', () => {
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().returnFromExcursion()
+    expect(useWorkspace.getState().modes['import-graph'].focusPath).toBe('src/app/loop.py')
+  })
+
+  it('survives navigation INSIDE the destination, which is what that view is for', () => {
+    // Re-centring the import graph's Local View on neighbour after neighbour
+    // is the point of it (tic-d7d7); deleting the way home after one step
+    // would take the affordance away mid-walk.
+    useWorkspace.getState().setFocusPath('src/app')
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().setFocusPath('src/app/other.py')
+    useWorkspace.getState().setFocusPath('src/app/third.py')
+
+    expect(useWorkspace.getState().origin).toEqual({
+      modeId: DEFAULT_MODE_ID,
+      focusPath: 'src/app',
+    })
+    useWorkspace.getState().returnFromExcursion()
+    expect(useWorkspace.getState().modeId).toBe(DEFAULT_MODE_ID)
+  })
+
+  it('ends when a mode is chosen by hand, because that is leaving on purpose', () => {
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().setMode('call-flow')
+    expect(useWorkspace.getState().origin).toBeNull()
+  })
+
+  it('is one level deep: a second jump replaces the first', () => {
+    // "Back to where this started" is one destination.  A stack would need a
+    // UI to disambiguate several, which the toolbar does not have.
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().openInMode('call-flow', 'src.app.loop.run')
+    expect(useWorkspace.getState().origin).toEqual({
+      modeId: 'import-graph',
+      focusPath: 'src/app/loop.py',
+    })
+  })
+
+  it('does nothing when there is no excursion to return from', () => {
+    const before = useWorkspace.getState()
+    useWorkspace.getState().returnFromExcursion()
+    expect(useWorkspace.getState()).toBe(before)
+  })
+
+  it('survives a reload, because a forgotten way home is worse than none', () => {
+    useWorkspace.getState().setFocusPath('src/app')
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    expect(JSON.parse(localStorage.getItem('adventure-call:excursion')!)).toEqual({
+      modeId: DEFAULT_MODE_ID,
+      focusPath: 'src/app',
+    })
+  })
+
+  it('clears the stored excursion once it has been taken', () => {
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().returnFromExcursion()
+    expect(localStorage.getItem('adventure-call:excursion')).toBeNull()
+  })
+
+  it('clears the stored excursion when a mode is chosen by hand', () => {
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().setMode('call-flow')
+    expect(localStorage.getItem('adventure-call:excursion')).toBeNull()
+  })
+
+  it('returns to a mode whose origin focus has since become unresolvable', () => {
+    // The contract in modes/types.ts: a focus a mode cannot resolve draws its
+    // unfocused state.  This only has to restore it and let the mode degrade;
+    // refusing to navigate would strand the user in the destination.
+    useWorkspace.getState().setFocusPath('src/gone')
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    useWorkspace.getState().returnFromExcursion()
+    const state = useWorkspace.getState()
+    expect(state.modeId).toBe(DEFAULT_MODE_ID)
+    expect(activeMode(state).focusPath).toBe('src/gone')
+  })
+
+  it('names the origin by its MODE, which is what makes it a different gesture from /', () => {
+    useWorkspace.getState().openInMode('import-graph', 'src/app/loop.py')
+    const origin = useWorkspace.getState().origin!
+    expect(modeById(origin.modeId).label).toBe('Files & symbols')
   })
 })

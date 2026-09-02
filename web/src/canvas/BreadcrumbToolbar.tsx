@@ -34,6 +34,8 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
   focusPath,
   rootOnly = false,
   rootLabel,
+  origin,
+  onReturn,
   onNavigate,
 }: {
   viewport: Viewport
@@ -57,6 +59,17 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
    * and slicing it yields the whole id back.
    */
   rootLabel?: string
+  /**
+   * Where a cross-mode jump started (tic-53f7), for the return button.
+   *
+   * `label` is the origin mode's own name and `detail` the focus it will
+   * return to, so the button can be short and the tooltip specific.  Absent
+   * when the current view was not arrived at by a jump, which is the ordinary
+   * case and draws no button at all.
+   */
+  origin?: { label: string; detail: string }
+  /** Go back to where the excursion started. */
+  onReturn?: () => void
   /** Jump to a focus path -- a breadcrumb level, '..' or root (''). */
   onNavigate: (path: string) => void
 }) {
@@ -104,6 +117,22 @@ export const BreadcrumbToolbar = memo(function BreadcrumbToolbar({
       role="navigation"
       aria-label="Scope breadcrumbs"
     >
+      {/* Back to where a cross-mode jump started (tic-53f7).  Leftmost,
+          because it is the outermost step of the trail: origin, then this
+          mode's whole graph, then where you are.  It is a DIFFERENT gesture
+          from '/', which keeps meaning "the whole graph of the mode I am in"
+          -- so it is named after the mode it returns to, never after a
+          scope. */}
+      {origin && onReturn && (
+        <button
+          type="button"
+          className="crumb-return"
+          onClick={onReturn}
+          title={`Back to ${origin.label}${origin.detail ? ` at ${origin.detail}` : ''}`}
+        >
+          {`← ${origin.label}`}
+        </button>
+      )}
       {/* A file's parent directories are meaningless in a scene laid out by
           imports, so the Local View toolbar drops '..' entirely (tic-d7d7). */}
       {!rootOnly && (

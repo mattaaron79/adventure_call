@@ -2,13 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MIN_SCALE } from '../canvas/viewport'
 import { memoryStorage } from '../testing/memoryStorage'
 import {
+  EXCURSION_STORAGE_KEY,
   UI_STORAGE_KEY,
   createDebouncedWriter,
   clearModeState,
   emptyModeState,
+  readExcursion,
   readModeState,
   readUiPrefs,
   storageKey,
+  writeExcursion,
   writeModeState,
   writeUiPrefs,
 } from './persist'
@@ -209,5 +212,51 @@ describe('debounced writer', () => {
     // A flushed write must not be replayed by the pending timer.
     vi.advanceTimersByTime(250)
     expect(readModeState('fs-tree')).toEqual(STATE)
+  })
+})
+
+
+describe('excursion provenance (tic-53f7)', () => {
+  it('round-trips a recorded jump', () => {
+    writeExcursion({ modeId: 'fs-tree', focusPath: 'src/app' })
+    expect(readExcursion()).toEqual({ modeId: 'fs-tree', focusPath: 'src/app' })
+  })
+
+  it('records a jump made from a whole graph', () => {
+    writeExcursion({ modeId: 'fs-tree', focusPath: '' })
+    expect(readExcursion()).toEqual({ modeId: 'fs-tree', focusPath: '' })
+  })
+
+  it('clears with null rather than storing one', () => {
+    writeExcursion({ modeId: 'fs-tree', focusPath: 'src' })
+    writeExcursion(null)
+    expect(localStorage.getItem(EXCURSION_STORAGE_KEY)).toBeNull()
+    expect(readExcursion()).toBeNull()
+  })
+
+  it('answers null when there is nothing stored', () => {
+    expect(readExcursion()).toBeNull()
+  })
+
+  it('refuses a stored entry with no mode id, rather than returning a broken one', () => {
+    // Stored state is user-editable and outlives app versions; a mangled
+    // entry has to degrade to "no excursion", not to a return button that
+    // navigates nowhere.
+    for (const raw of ['{}', '{"modeId":""}', '{"modeId":42}', 'null', '[]', 'not json']) {
+      localStorage.setItem(EXCURSION_STORAGE_KEY, raw)
+      expect(readExcursion()).toBeNull()
+    }
+  })
+
+  it('treats a missing focus path as the whole graph', () => {
+    // Which is a perfectly good place to return to, so the entry survives.
+    localStorage.setItem(EXCURSION_STORAGE_KEY, '{"modeId":"fs-tree"}')
+    expect(readExcursion()).toEqual({ modeId: 'fs-tree', focusPath: '' })
+  })
+
+  it('lives under its own key, in neither a mode slice nor the ui prefs', () => {
+    writeExcursion({ modeId: 'fs-tree', focusPath: 'src' })
+    expect(localStorage.getItem(UI_STORAGE_KEY)).toBeNull()
+    expect(localStorage.getItem(storageKey('fs-tree'))).toBeNull()
   })
 })

@@ -1,7 +1,7 @@
 ---
 id: tic-7a5e
 title: 'Mode 3: the rooted local view -- one function''s call flow, upstream and down'
-status: in_progress
+status: closed
 type: feature
 tier: high
 domain: ui
@@ -16,8 +16,8 @@ depends_on:
 - tic-d8a8
 blocked_by: null
 created: '2026-09-01T07:24:42'
-updated: '2026-09-01T13:02:51'
-closed: null
+updated: '2026-09-01T17:42:02'
+closed: '2026-09-01T17:42:02'
 ---
 
 ## Description

@@ -569,6 +569,28 @@ html, body, #root {
   color: var(--accent);
   font-weight: 600;
 }
+/* Back to where a cross-mode jump started (tic-53f7).  Deliberately not
+   styled like '..' or '/': those move within the mode you are in, this leaves
+   it, and the two must not read as the same kind of step.  A filled accent
+   chip against their outlined surface, so the eye can tell "out of here" from
+   "up one" without reading either. */
+.breadcrumb-toolbar .crumb-return {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.breadcrumb-toolbar .crumb-return:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
 /* A subtle '/' that reads the crumb trail as a path (tic-9f02). */
 .breadcrumb-toolbar .crumb-sep {
   padding: 0 2px;

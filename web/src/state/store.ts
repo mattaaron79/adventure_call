@@ -23,9 +23,12 @@ import {
 import {
   createDebouncedWriter,
   emptyModeState,
+  readExcursion,
   readModeState,
   readUiPrefs,
+  writeExcursion,
   writeUiPrefs,
+  type Excursion,
   type ModeState,
 } from './persist'
 
@@ -46,6 +49,23 @@ export interface WorkspaceState {
   inspectorCollapsed: boolean
   /** Exploratory marching-ants on every edge (tic-5196), not just lit imports. */
   animateAllEdges: boolean
+  /**
+   * Where the current cross-mode excursion started (tic-53f7), or null.
+   *
+   * One level deep, not a stack.  A second jump REPLACES it: "back to where
+   * this started" is one destination, and a stack would need a UI to
+   * disambiguate several, which the deliberately minimal toolbar does not
+   * have and which nothing has asked for.
+   *
+   * It survives navigation INSIDE the destination mode, and that is the
+   * decision worth stating.  Re-centring the import graph's Local View on
+   * neighbour after neighbour is exactly what that view is for (tic-d7d7),
+   * and deleting the way home after the first step would take the affordance
+   * away mid-walk -- a worse surprise than one that stays put.  What ends an
+   * excursion is leaving on purpose: picking a mode by hand, or taking the
+   * return itself.
+   */
+  origin: Excursion | null
 
   setMode: (modeId: string) => void
   /** Replace the active mode's params (a preset load, a picker toggle). */
@@ -78,6 +98,16 @@ export interface WorkspaceState {
    * would.
    */
   openInMode: (modeId: string, target: string) => void
+  /**
+   * Go back where a cross-mode jump started (tic-53f7): the origin mode, at
+   * the focus it had at the time, in one transition.
+   *
+   * A no-op when there is no excursion.  The origin's focus is restored
+   * through the same `enterFocus` everything else uses, so a path that mode
+   * can no longer resolve degrades to its unfocused state -- the contract in
+   * modes/types.ts -- rather than refusing to navigate.
+   */
+  returnFromExcursion: () => void
   setViewport: (viewport: Viewport) => void
   zoomAtPointer: (pointer: Point, factor: number) => void
   panBy: (dx: number, dy: number) => void
@@ -161,18 +191,26 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     hovered: null,
     inspectorCollapsed: readUiPrefs().inspectorCollapsed,
     animateAllEdges: readUiPrefs().animateAllEdges,
+    // Restored, because a return target silently forgotten across a refresh
+    // is worse than one that was never offered.
+    origin: readExcursion(),
 
     setMode: (modeId) =>
       set((state) => {
         if (state.modeId === modeId) return state
         const known = state.modes[modeId]
         const saved = known ? null : readModeState(modeId)
+        // Choosing a mode by hand ends the excursion (tic-53f7).  The user has
+        // left deliberately, so an offer to go back to a trip they abandoned
+        // would be pointing at somewhere they have already decided not to be.
+        if (state.origin !== null) writeExcursion(null)
         return {
           modeId,
           modes: known ? state.modes : { ...state.modes, [modeId]: saved ?? emptyModeState() },
           restored: known ? true : saved !== null,
           selection: EMPTY_SELECTION,
           hovered: null,
+          origin: null,
         }
       }),
 
@@ -221,9 +259,18 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
         if (state.modeId === modeId) {
           // Same mode: this is a re-focus, and the selection/hover reset a
-          // mode SWITCH performs would be gratuitous.
+          // mode SWITCH performs would be gratuitous.  It is not an excursion
+          // either -- nothing was left, so there is nowhere to go back to.
           return focused === current ? { modes: state.modes } : { modes }
         }
+        // Record where this started (tic-53f7), reading the origin mode's
+        // focus BEFORE anything moves.  A jump made mid-excursion replaces
+        // the record rather than stacking on it; see `origin`.
+        const origin: Excursion = {
+          modeId: state.modeId,
+          focusPath: (state.modes[state.modeId] ?? emptyModeState()).focusPath,
+        }
+        writeExcursion(origin)
         return {
           modeId,
           modes,
@@ -233,6 +280,34 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
           // the one being entered.
           selection: EMPTY_SELECTION,
           hovered: null,
+          origin,
+        }
+      }),
+
+    returnFromExcursion: () =>
+      set((state) => {
+        const origin = state.origin
+        if (origin === null) return state
+        writeExcursion(null)
+
+        const known = state.modes[origin.modeId]
+        const saved = known ? null : readModeState(origin.modeId)
+        const current = known ?? saved ?? emptyModeState()
+        // Restored through `enterFocus` like every other focus change, so an
+        // origin path the mode can no longer resolve -- excluded, filtered
+        // out, or gone from a refetched /out -- lands on that mode unfocused
+        // rather than refusing to navigate.
+        const restoredMode = enterFocus(current, origin.focusPath) ?? current
+        const modes = { ...state.modes, [origin.modeId]: restoredMode }
+
+        if (state.modeId === origin.modeId) return { modes, origin: null }
+        return {
+          modeId: origin.modeId,
+          modes,
+          restored: known ? true : saved !== null,
+          selection: EMPTY_SELECTION,
+          hovered: null,
+          origin: null,
         }
       }),
 

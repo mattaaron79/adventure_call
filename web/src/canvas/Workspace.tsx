@@ -26,6 +26,7 @@ import {
   TWEEN_DURATION,
 } from '../settings'
 import { emitGoto, onGoto } from '../data/goto'
+import { modeById } from '../modes/registry'
 import { resolveGoto, type ModeOutput } from '../modes/types'
 import {
   relayout,
@@ -892,6 +893,19 @@ export function Workspace({
     return { rect: own, rootOnly: true, label }
   }, [output, focusPath, scene])
 
+  // Where a cross-mode jump started (tic-53f7), named by the origin MODE
+  // rather than by a scope -- "back to Files & symbols" is the gesture, and
+  // it is a different one from '/'.  The registry is the only place a mode id
+  // becomes a label, so the lookup happens here rather than in the store.
+  const origin = useWorkspace((s) => s.origin)
+  const returnTo = useMemo(
+    () =>
+      origin === null
+        ? undefined
+        : { label: modeById(origin.modeId).label, detail: origin.focusPath },
+    [origin],
+  )
+
   return (
     <div
       ref={host}
@@ -1013,6 +1027,8 @@ export function Workspace({
           focusPath={focusPath}
           rootOnly={focus.rootOnly}
           rootLabel={focus.label}
+          origin={returnTo}
+          onReturn={() => useWorkspace.getState().returnFromExcursion()}
           onNavigate={(path) => useWorkspace.getState().setFocusPath(path)}
         />
       )}
