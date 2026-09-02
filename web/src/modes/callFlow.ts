@@ -719,19 +719,23 @@ function callEdgesBetween(
       })
     }
   }
-  return [...collapsed].map(([id, edge]) => ({
-    id,
-    from: edge.from,
-    to: edge.to,
-    kind: 'call',
-    route: 'center',
-    directional: true,
-    data: {
+  return [...collapsed].map(([id, edge]) => {
+    const data: FlowEdgeData = {
       external: false,
       heuristic: edge.heuristic,
       tags: edgeTagsOf(edge.controls, edge.certains),
-    } satisfies FlowEdgeData,
-  }))
+    }
+    return {
+      id,
+      from: edge.from,
+      to: edge.to,
+      kind: 'call',
+      route: 'center',
+      directional: true,
+      detail: callDetail(data),
+      data,
+    }
+  })
 }
 
 /**
@@ -869,6 +873,9 @@ export function stateEdgesBetween(
         via: couplingLabel(through, index),
       } satisfies StateEdgeData,
     })
+    drawn[drawn.length - 1].detail = stateDetail(
+      drawn[drawn.length - 1].data as StateEdgeData,
+    )
   }
   return drawn
 }
@@ -1038,19 +1045,23 @@ export function typeEdgesBetween(
     }
   }
 
-  return [...flows].map(([id, flow]) => ({
-    id,
-    from: flow.from,
-    to: flow.to,
-    kind: 'type',
-    route: 'center',
-    directional: true,
-    data: {
+  return [...flows].map(([id, flow]) => {
+    const data: TypeEdgeData = {
       through: flow.through,
       beside: called.has(`${flow.from}->${flow.to}`),
       via: couplingLabel(flow.through, index),
-    } satisfies TypeEdgeData,
-  }))
+    }
+    return {
+      id,
+      from: flow.from,
+      to: flow.to,
+      kind: 'type',
+      route: 'center',
+      directional: true,
+      detail: typeDetail(data),
+      data,
+    }
+  })
 }
 
 /**
@@ -1554,6 +1565,7 @@ function appendExternalSinks(
       // External calls are unresolved by definition, not by conjecture, so
       // they never wear the heuristic marking; their own faint dashed style
       // already says what they are.
+      detail: callDetail({ external: true, heuristic: false, tags: null }),
       data: { external: true, heuristic: false, tags: null } satisfies FlowEdgeData,
     })
   }
@@ -1711,6 +1723,84 @@ function style(spec: SceneSpec): StyleMap {
 }
 
 /**
+ * What a call line says about itself in the near-pointer summary (tic-260c).
+ *
+ * The chips at each end already name the two functions, so this answers the
+ * question the picture leaves open: how many calls stand behind this one
+ * line, and what the style channels are claiming about them.  It is the same
+ * vocabulary as {@link EDGE_LEGEND}, read off the same tags -- a reader who
+ * has met the legend meets no new words here, and one who has not gets the
+ * words instead of having to decode a dash width.
+ *
+ * Deliberately short.  The popup gives each connection one ellipsised line,
+ * and it can be showing twenty of them at once, so this is a clause rather
+ * than a sentence.
+ *
+ * ## Where tic-3a20's `certain` finally lands
+ *
+ * The style phase declined it -- {@link edgeStyleFor} already spends its
+ * channels on the tags tic-23eb measured, and a fifth would have displaced
+ * one of them -- and the note there said the honest home was a badge or a
+ * filter.  This is that home: a popup is asked for, one line at a time, so it
+ * can afford a claim the drawn line cannot.
+ *
+ * It is said only on an UNGUARDED line, where it is the whole question and
+ * the answer is close to a coin toss.  Measured on the ../carnot export, of
+ * the unguarded call edges the overview draws 60 always run and 62 do not; at
+ * depth 3 it is 413 against 342.  Neither side is a noisy majority, so both
+ * are worth naming.  On a guarded line it is redundant -- `certain` is a
+ * strict subset of unguarded by construction, so the answer is always no --
+ * and on a pre-v9 export it is `null`, meaning the export could not say,
+ * which must not be reported as "no".
+ */
+export function callDetail(data: FlowEdgeData | undefined): string {
+  if (data?.external) return 'external'
+  const parts: string[] = []
+  const tags = data?.tags ?? null
+  if (tags) parts.push(tags.sites === 1 ? '1 call' : `${tags.sites} calls`)
+  // Guard first: it is the loudest visual channel (a dash across the whole
+  // line) and the one most likely to be what the reader is asking about.
+  if (tags?.guard === 'guarded') parts.push('guarded')
+  else if (tags?.guard === 'mixed') parts.push('guarded at some sites')
+  if (tags?.looped) parts.push(tags.allLooped ? 'always in a loop' : 'in a loop')
+  if (tags?.errorPath) parts.push('error handling')
+  if (data?.heuristic) parts.push('resolved by name guess')
+  if (tags?.guard === 'unguarded' && tags.certain !== null) {
+    parts.push(tags.certain ? 'always runs' : 'not always reached')
+  }
+  return parts.join(', ')
+}
+
+/**
+ * What a state-coupling line says about itself (tic-260c).
+ *
+ * `via` is the shared-variable list the overlay has carried since tic-675a
+ * for "a consumer that can show it"; this is that consumer.  The wording says
+ * `shares` rather than `writes` because the line is drawn once for a pair
+ * that may read and write in either combination, and naming a direction the
+ * edge does not have would be worse than naming none.
+ */
+export function stateDetail(data: StateEdgeData | undefined): string {
+  if (!data) return 'shared state'
+  const shape = data.mutual ? 'both write' : 'shares'
+  return data.via ? `${shape}: ${data.via}` : shape
+}
+
+/**
+ * What a type-flow line says about itself (tic-260c).
+ *
+ * `beside` is worth saying out loud rather than leaving to the brightness
+ * channel: a type line that a real call agrees with is 8 of ../carnot's 1246
+ * pairs, and "and calls it" is the difference between "these two COULD hand
+ * this over" and "these two do".
+ */
+export function typeDetail(data: TypeEdgeData | undefined): string {
+  if (!data) return 'type flow'
+  const passes = data.via ? `passes ${data.via}` : 'type flow'
+  return data.beside ? `${passes}, and calls it` : passes
+}
+
+/**
  * The visual treatment of one call edge, from its mode-private payload.
  * Exported for the tests, which build payloads directly rather than standing
  * up whole graphs per tag.
@@ -1769,6 +1859,7 @@ export const EDGE_LEGEND =
   'Faint dash: an external module, outside the parsed codebase. ' +
   'Thicker: looped -- it can fire more than once. ' +
   'Warm colour: an error path -- the call is inside an exception handler. ' +
+  'Hover a line to read what it carries, or a function to light everything it touches. ' +
   'Coverage below is read live from the export.'
 
 export function edgeStyleFor(data: FlowEdgeData | undefined): EdgeStyle {

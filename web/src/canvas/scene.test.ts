@@ -9,8 +9,12 @@ import {
   edgesNearPoint,
   endpointNodesOf,
   highlightedEdgesLast,
-  importEdgesIncidentTo,
+  CONNECTION_KINDS,
+  STRUCTURAL_KINDS,
+  connectionEdgesIncidentTo,
+  edgePopupHeight,
   isAntsEdge,
+  isConnection,
   nodesInRect,
   placedRect,
   placedRects,
@@ -282,32 +286,72 @@ const HIGHLIGHT: Scene = {
   ],
 }
 
-describe('importEdgesIncidentTo', () => {
+describe('connectionEdgesIncidentTo', () => {
   it('lights the import edges touching the element, either end', () => {
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['a']))).toEqual(new Set(['imp:a->b']))
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['b']))).toEqual(
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set(['a']))).toEqual(new Set(['imp:a->b']))
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set(['b']))).toEqual(
       new Set(['imp:a->b', 'imp:b->row']),
     )
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['row']))).toEqual(new Set(['imp:b->row']))
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set(['row']))).toEqual(new Set(['imp:b->row']))
   })
 
   it('ignores nesting edges and edges without a kind', () => {
     // 'a' is incident to nest:a->b and no-kind too, but only the import is lit.
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['a']))).toEqual(new Set(['imp:a->b']))
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['row']))).toEqual(new Set(['imp:b->row']))
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set(['a']))).toEqual(new Set(['imp:a->b']))
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set(['row']))).toEqual(new Set(['imp:b->row']))
   })
 
   it('unions the result across a multi-selection', () => {
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set(['a', 'row']))).toEqual(
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set(['a', 'row']))).toEqual(
       new Set(['imp:a->b', 'imp:b->row']),
     )
   })
 
   it('is empty for an empty element set or a scene with no import edges', () => {
-    expect(importEdgesIncidentTo(HIGHLIGHT, new Set())).toEqual(new Set())
-    expect(importEdgesIncidentTo({ groups: [], nodes: [], edges: [] }, new Set(['a']))).toEqual(
+    expect(connectionEdgesIncidentTo(HIGHLIGHT, new Set())).toEqual(new Set())
+    expect(connectionEdgesIncidentTo({ groups: [], nodes: [], edges: [] }, new Set(['a']))).toEqual(
       new Set(),
     )
+  })
+
+  it('lights a call-flow line the same way it lights an import (tic-260c)', () => {
+    // The whole point of the generalisation: this used to return an empty set
+    // for every call-flow scene, so hovering a function lit nothing.
+    const flow: Scene = {
+      groups: [],
+      nodes: [node('f', 0, 0), node('g', 200, 100)],
+      edges: [
+        { id: 'call', points: [0, 0, 200, 100], stroke: '#45475a', kind: 'call', from: 'f', to: 'g' },
+        { id: 'state', points: [0, 0, 200, 100], stroke: '#45475a', kind: 'state', from: 'f', to: 'g' },
+        { id: 'type', points: [0, 0, 200, 100], stroke: '#45475a', kind: 'type', from: 'f', to: 'g' },
+      ],
+    }
+    expect(connectionEdgesIncidentTo(flow, new Set(['f']))).toEqual(
+      new Set(['call', 'state', 'type']),
+    )
+  })
+})
+
+describe('CONNECTION_KINDS / STRUCTURAL_KINDS (tic-260c)', () => {
+  it('classifies a kind as one thing or the other, never both', () => {
+    for (const kind of CONNECTION_KINDS) {
+      expect(STRUCTURAL_KINDS.has(kind), kind).toBe(false)
+    }
+  })
+
+  it('treats an edge with no kind at all as structure', () => {
+    // A mode that never labelled its edges gets the old behaviour rather than
+    // an animated, popup-bearing line it never asked for.
+    expect(isConnection({ id: 'x', points: [], stroke: '#000' })).toBe(false)
+  })
+
+  it('names the kinds the shipping modes actually draw', () => {
+    for (const kind of ['import', 'call', 'state', 'type']) {
+      expect(isConnection({ id: 'x', points: [], stroke: '#000', kind })).toBe(true)
+    }
+    for (const kind of ['nesting', 'stub', 'section', 'module']) {
+      expect(isConnection({ id: 'x', points: [], stroke: '#000', kind })).toBe(false)
+    }
   })
 })
 
@@ -431,6 +475,64 @@ describe('isAntsEdge', () => {
     expect(isAntsEdge(nesting, true, true)).toBe(false)
     expect(isAntsEdge(nesting, false, true)).toBe(false)
     expect(isAntsEdge(unkinded, true, true)).toBe(false)
+  })
+
+  it('marches a highlighted call line exactly as it marches an import (tic-260c)', () => {
+    // The default path already read `directional`, so call lines were always
+    // going to animate ONCE they could be highlighted at all -- which is what
+    // connectionEdgesIncidentTo now makes possible.
+    const call: SceneEdge = {
+      id: 'call',
+      points: [0, 0, 100, 0],
+      stroke: '#222',
+      kind: 'call',
+      directional: true,
+    }
+    expect(isAntsEdge(call, true, false)).toBe(true)
+    expect(isAntsEdge(call, false, false)).toBe(false)
+  })
+
+  it('animate-all covers every connection kind, not only imports (tic-260c)', () => {
+    for (const kind of ['import', 'call', 'state', 'type']) {
+      const edge: SceneEdge = { id: kind, points: [0, 0, 100, 0], stroke: '#222', kind }
+      expect(isAntsEdge(edge, false, true), kind).toBe(true)
+    }
+  })
+
+  it('leaves a mutual coupling still, because it has no direction to march', () => {
+    // tic-675a draws a two-way state coupling once and undirected.  It lights
+    // like any other connection; ants would claim a flow direction the line
+    // deliberately does not have.
+    const mutual: SceneEdge = {
+      id: 'state',
+      points: [0, 0, 100, 0],
+      stroke: '#222',
+      kind: 'state',
+      directional: false,
+    }
+    expect(isAntsEdge(mutual, true, false)).toBe(false)
+  })
+})
+
+describe('edgePopupHeight (tic-260c)', () => {
+  it('grows with the lines, so the flip threshold tracks the real box', () => {
+    // The threshold was a fixed 160 while the cap was 8.  At the raised cap a
+    // fixed guess would let the popup run off the bottom of the canvas in
+    // exactly the dense case the raise was for.
+    expect(edgePopupHeight(20, 0)).toBeGreaterThan(edgePopupHeight(8, 0) * 2)
+    expect(edgePopupHeight(1, 0)).toBeLessThan(40)
+  })
+
+  it('counts the "+N more" tail as a line of its own', () => {
+    expect(edgePopupHeight(3, 5)).toBeGreaterThan(edgePopupHeight(3, 0))
+    expect(edgePopupHeight(3, 5)).toBe(edgePopupHeight(4, 0))
+  })
+
+  it('predicts at least the height 20 lines actually take', () => {
+    // Over-estimating flips the popup a little early, which nobody notices;
+    // under-estimating is the bug.  11px text at line-height 1.5 is 16.5px a
+    // line, so 20 lines cannot be under 330px of text.
+    expect(edgePopupHeight(20, 0)).toBeGreaterThanOrEqual(330)
   })
 })
 
@@ -649,5 +751,40 @@ describe('describeConnections', () => {
 
   it('is empty for no edges', () => {
     expect(describeConnections(scene, [])).toEqual([])
+  })
+
+  it("appends the mode's detail, which is what the line MEANS (tic-260c)", () => {
+    // Over an import line the endpoints say the whole thing.  Over a
+    // call-flow scene they do not: three kinds of line join the same two
+    // chips, and which kind this one is is the reader's actual question.
+    const line = {
+      id: 'e',
+      points: [0, 0, 1, 1],
+      stroke: '',
+      from: 'src/a.py',
+      to: 'src/b.py',
+      detail: '3 calls, guarded',
+    }
+    expect(describeConnections(scene, [line])).toEqual(['a.py → b.py  3 calls, guarded'])
+  })
+
+  it('reads exactly as before when the mode wrote no detail', () => {
+    const line = { id: 'e', points: [0, 0, 1, 1], stroke: '', from: 'src/a.py', to: 'src/b.py' }
+    expect(describeConnections(scene, [line])).toEqual(['a.py → b.py'])
+    expect(describeConnections(scene, [{ ...line, detail: '' }])).toEqual(['a.py → b.py'])
+  })
+
+  it('draws a two-headed arrow for a connection with no direction', () => {
+    // A mutual state coupling (tic-675a) is two functions writing the same
+    // variable; a one-way arrow would name a source that does not exist.
+    const line = {
+      id: 'e',
+      points: [0, 0, 1, 1],
+      stroke: '',
+      from: 'src/a.py',
+      to: 'src/b.py',
+      directional: false,
+    }
+    expect(describeConnections(scene, [line])).toEqual(['a.py ↔ b.py'])
   })
 })

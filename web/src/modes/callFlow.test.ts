@@ -12,6 +12,9 @@ import type {
 } from '../data/types'
 import { COMPUTED_CALLEE_REASON } from '../data/callMetrics'
 import {
+  callDetail,
+  stateDetail,
+  typeDetail,
   EDGE_LEGEND,
   cacheKeyOf,
   callFlowCoverage,
@@ -46,6 +49,7 @@ import {
 } from './callFlow'
 import { shouldShowGoIn } from '../canvas/iconButtonLogic'
 import { THEME } from '../canvas/theme'
+import { CONNECTION_KINDS, STRUCTURAL_KINDS } from '../canvas/scene'
 import { edgeTagsOf, type EdgeTags } from '../data/controlFlow'
 import { deriveTypeFlow } from '../data/typeFlow'
 import { CALL_FLOW_MODE_ID } from './ids'
@@ -1667,6 +1671,13 @@ describe('EDGE_LEGEND (tic-ec97)', () => {
     }
   })
 
+  it('points at the hover, which is where the rest of the meaning lives', () => {
+    // The dashes are the half a reader can decode standing still; the popup
+    // and the lit neighbourhood are the other half (tic-260c), and a legend
+    // that only described paint would leave them undiscovered.
+    expect(EDGE_LEGEND.toLowerCase()).toContain('hover')
+  })
+
   it('leaves out the tag the style phase declines to draw', () => {
     // `typeCheckingOnly` fired zero times on both measured codebases and gets
     // no styling; a legend entry for it would send a reader looking for
@@ -1681,5 +1692,146 @@ describe('EDGE_LEGEND (tic-ec97)', () => {
     expect(plain.dash).toBeUndefined()
     expect(EDGE_LEGEND).toMatch(/^Solid: /)
     expect(EDGE_LEGEND.toLowerCase()).toContain('always happens')
+  })
+})
+
+
+describe('edge kinds are classified for the canvas (tic-260c)', () => {
+  // Not a checklist: the kinds come from a real spec this suite already
+  // builds, so a kind added to the mode and forgotten in scene.ts fails here.
+  // The overlays are included because they are exactly the kinds most likely
+  // to be added and forgotten -- both arrived after the classification did.
+  it('classifies every kind call flow emits, overlays included', () => {
+    const spec = select({ showState: true, showTypes: true, showExternals: true })
+    const kinds = new Set(spec.edges.map((e) => e.kind))
+    expect(kinds.size).toBeGreaterThan(0)
+    for (const kind of kinds) {
+      expect(CONNECTION_KINDS.has(kind) || STRUCTURAL_KINDS.has(kind), kind).toBe(true)
+    }
+  })
+
+  it('puts all three of its line kinds on the connection side', () => {
+    // Hovering a function has to light its calls, its couplings and its type
+    // hand-offs alike; leaving any one structural would make that line the
+    // odd one out for no reason a reader could infer.
+    for (const kind of ['call', 'state', 'type']) {
+      expect(CONNECTION_KINDS.has(kind), kind).toBe(true)
+    }
+  })
+})
+
+
+describe('edge detail: what the popup says a line is (tic-260c)', () => {
+  const call = (tags: EdgeTags | null, over: Partial<{ external: boolean; heuristic: boolean }> = {}) =>
+    callDetail({ external: false, heuristic: false, tags, ...over })
+
+  it('leads with the number of calls behind the line', () => {
+    // One drawn line can stand for many call sites -- that is what
+    // `callEdgesBetween` collapses -- and the count is the fact the picture
+    // cannot show at all.
+    expect(call(edgeTagsOf([[]]))).toBe('1 call')
+    expect(call(edgeTagsOf([[], [], []]))).toBe('3 calls')
+  })
+
+  it('says nothing extra about the plain case', () => {
+    // 78% of edges are unguarded, unlooped and exact.  A detail that appended
+    // "unguarded, exact, not looped" to three lines in four would bury the
+    // one line that has something to say.
+    expect(call(edgeTagsOf([[]]))).toBe('1 call')
+  })
+
+  it("uses the legend's words for the channels a reader can see", () => {
+    expect(call(edgeTagsOf([['if']]))).toBe('1 call, guarded')
+    expect(call(edgeTagsOf([['try:except']]))).toBe('1 call, guarded, error handling')
+    expect(call(edgeTagsOf([[]]), { heuristic: true })).toBe('1 call, resolved by name guess')
+    // `while:test` is the one loop position that is not also a guard: the
+    // condition runs whenever the loop is reached.  It is what makes "in a
+    // loop" separable from "guarded" at all.
+    expect(call(edgeTagsOf([['while:test']]))).toBe('1 call, always in a loop')
+  })
+
+  it('stacks the channels a line really carries, in the order it wears them', () => {
+    // A `for` body is BOTH: it may run many times and it may run none, so it
+    // is a loop position and a guard.  The detail says both, guard first,
+    // because the dash is the louder of the two on the drawn line.
+    expect(call(edgeTagsOf([['for']]))).toBe('1 call, guarded, always in a loop')
+  })
+
+  it('separates mixed from guarded in words, though they share a dash', () => {
+    // The style phase gives `mixed` the guarded dash on purpose (tic-23eb):
+    // it is 2% of edges and does not deserve a channel of its own.  The popup
+    // has room to say the thing the dash cannot.
+    expect(call(edgeTagsOf([['if'], []]))).toBe('2 calls, guarded at some sites')
+    expect(call(edgeTagsOf([['if'], ['if']]))).toBe('2 calls, guarded')
+  })
+
+  it('distinguishes "sometimes looped" from "always looped"', () => {
+    // The distinction the node roll-up needs (tic-5069): "only ever called in
+    // a loop" is a claim about every site, and one looped site must not vote
+    // for three ordinary ones.
+    expect(call(edgeTagsOf([['while:test'], []]))).toBe('2 calls, in a loop')
+    expect(call(edgeTagsOf([['while:test'], ['while:test']]))).toBe('2 calls, always in a loop')
+  })
+
+  it('says only "external" for a sink, which has no sites to count', () => {
+    expect(call(null, { external: true })).toBe('external')
+  })
+
+  it('says nothing at all when the export carried no breadcrumbs', () => {
+    // A pre-v3 export, or the implicit class -> __init__ edge.  Inventing
+    // "1 call" for a line with no site data would be a made-up number.
+    expect(call(null)).toBe('')
+  })
+
+  it('answers "does this always happen" on an unguarded line (tic-3a20)', () => {
+    // The near-even split is what earns it a place: on ../carnot's overview
+    // 60 unguarded call edges always run and 62 do not.  Neither answer is
+    // the boring majority, so both are worth the words.
+    expect(call(edgeTagsOf([[]], [true]))).toBe('1 call, always runs')
+    expect(call(edgeTagsOf([[]], [false]))).toBe('1 call, not always reached')
+    expect(call(edgeTagsOf([[], []], [true, false]))).toBe('2 calls, not always reached')
+  })
+
+  it('stays silent about certainty on a guarded line, where it adds nothing', () => {
+    // `certain` is a strict subset of unguarded by construction, so on a
+    // guarded line the answer is always no and saying it twice is noise.
+    expect(call(edgeTagsOf([['if']], [false]))).toBe('1 call, guarded')
+    expect(call(edgeTagsOf([['if'], []], [false, true]))).toBe('2 calls, guarded at some sites')
+  })
+
+  it('stays silent when the export could not say, which is not "no"', () => {
+    // A pre-v9 export carries no `certains`.  Reporting that as "not always
+    // reached" would call every call in the codebase avoidable.
+    expect(edgeTagsOf([[]])!.certain).toBeNull()
+    expect(call(edgeTagsOf([[]]))).toBe('1 call')
+  })
+
+  it('names the shared variables on a coupling, and both writers when mutual', () => {
+    expect(stateDetail({ through: [], beside: false, mutual: false, via: '_cache' })).toBe(
+      'shares: _cache',
+    )
+    expect(stateDetail({ through: [], beside: false, mutual: true, via: '_cache' })).toBe(
+      'both write: _cache',
+    )
+  })
+
+  it('names the type on a flow line, and says when a call confirms it', () => {
+    expect(typeDetail({ through: [], beside: false, via: 'Rule' })).toBe('passes Rule')
+    expect(typeDetail({ through: [], beside: true, via: 'Rule' })).toBe('passes Rule, and calls it')
+  })
+
+  it('degrades to the kind name rather than an empty popup line', () => {
+    expect(stateDetail(undefined)).toBe('shared state')
+    expect(typeDetail(undefined)).toBe('type flow')
+    expect(stateDetail({ through: [], beside: false, mutual: false, via: '' })).toBe('shares')
+  })
+
+  it('rides on the edges the mode actually builds, not only on the helpers', () => {
+    const spec = select({ showState: true, showTypes: true })
+    const calls = spec.edges.filter((e) => e.kind === 'call')
+    expect(calls.length).toBeGreaterThan(0)
+    for (const edge of calls) {
+      expect(edge.detail, edge.id).toBe(callDetail(edge.data as Parameters<typeof callDetail>[0]))
+    }
   })
 })

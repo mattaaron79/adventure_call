@@ -54,7 +54,9 @@ import {
   edgesNearPoint,
   endpointNodesOf,
   highlightedEdgesLast,
-  importEdgesIncidentTo,
+  connectionEdgesIncidentTo,
+  edgePopupHeight,
+  isConnection,
   isAntsEdge,
   nodesInRect,
   placedRects,
@@ -261,7 +263,7 @@ export function Workspace({
     if (hovered !== null) ids.add(hovered)
     for (const id of selection) ids.add(id)
     if (ids.size === 0) return NO_HIGHLIGHT
-    return importEdgesIncidentTo(scene, ids)
+    return connectionEdgesIncidentTo(scene, ids)
   }, [scene, selection, hovered])
 
   // The nodes those lit lines land on borrow the hover border (tic-ece1), so a
@@ -734,15 +736,15 @@ export function Workspace({
   // throttled to one requestAnimationFrame: the handler only records where the
   // pointer is, and at most one probe runs per frame with the latest position.
   const [edgePopup, setEdgePopup] = useState<EdgePopup | null>(null)
-  // Import lines only, which is what "a connection" means everywhere else on
-  // this canvas -- selection highlighting and the marching ants both key on
-  // the same kind (tic-5393, tic-ece1).  The fs-tree's nesting elbows are
+  // Connection lines only, which is what "a connection" means everywhere else
+  // on this canvas -- selection highlighting and the marching ants key on the
+  // same set (tic-5393, tic-ece1, tic-260c).  The fs-tree's nesting elbows are
   // structure rather than connection: a popup reading "app -> errors.py" over
   // one says nothing the picture is not already saying, and a folder's fan of
-  // them would crowd out the import lines the summary is for.  Filtered once
-  // per scene rather than per probe, and it shrinks the scan too.
+  // them would crowd out the lines the summary is for.  Filtered once per
+  // scene rather than per probe, and it shrinks the scan too.
   const connections = useMemo(
-    () => ({ ...visible, edges: visible.edges.filter((edge) => edge.kind === 'import') }),
+    () => ({ ...visible, edges: visible.edges.filter(isConnection) }),
     [visible],
   )
   const connectionsRef = useRef(connections)
@@ -1036,7 +1038,10 @@ export function Workspace({
       {/* The near-pointer connection summary (tic-f1d7): what the lines under
           the cursor connect, while the cursor is over empty canvas.  It flips
           to the other side of the pointer near the right or bottom edge, which
-          keeps it on screen without having to measure it first. */}
+          keeps it on screen without having to measure it first -- the vertical
+          threshold is predicted from the line count (tic-260c), because at the
+          raised cap the box is over twice the height the old fixed guess
+          assumed and would have run off the bottom. */}
       {edgePopup && (
         <div
           className="edge-popup"
@@ -1045,7 +1050,11 @@ export function Workspace({
             top: edgePopup.y,
             transform: `translate(${
               edgePopup.x > size.width - 300 ? 'calc(-100% - 14px)' : '14px'
-            }, ${edgePopup.y > size.height - 160 ? 'calc(-100% - 14px)' : '14px'})`,
+            }, ${
+              edgePopup.y > size.height - edgePopupHeight(edgePopup.lines.length, edgePopup.more)
+                ? 'calc(-100% - 14px)'
+                : '14px'
+            })`,
           }}
         >
           {edgePopup.lines.map((line) => (

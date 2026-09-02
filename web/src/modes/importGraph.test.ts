@@ -12,6 +12,7 @@ import {
 } from './importGraph'
 import { CALL_FLOW_MODE_ID } from './ids'
 import type { SceneSpec } from './types'
+import { CONNECTION_KINDS, STRUCTURAL_KINDS } from '../canvas/scene'
 
 function node(id: string, kind: SymbolKind, file_path: string, module: string): GraphNode {
   return {
@@ -911,5 +912,26 @@ describe('importGraphMode row affordances (tic-d6af)', () => {
 
   it('stays off a row with no call flow to trace', () => {
     expect(row('app.run.RETRIES')!.openIn).toBeUndefined()
+  })
+})
+
+describe('edge kinds are classified for the canvas (tic-260c)', () => {
+  // Not a checklist: the kinds come from a real spec this suite already
+  // builds, so a kind added to the mode and forgotten in scene.ts fails here.
+  // Highlighting, the near-pointer summary and the marching ants all key on
+  // that classification, and an unclassified kind is a line that quietly
+  // never lights up.
+  it('classifies every kind the import graph emits', () => {
+    const kinds = new Set(importGraphMode
+      .select(WORKSPACE, importGraphMode.defaultParams, { expanded: {} })
+      .edges.map((e) => e.kind))
+    expect(kinds.size).toBeGreaterThan(0)
+    for (const kind of kinds) {
+      expect(CONNECTION_KINDS.has(kind) || STRUCTURAL_KINDS.has(kind), kind).toBe(true)
+    }
+  })
+
+  it('puts imports on the connection side', () => {
+    expect(CONNECTION_KINDS.has('import')).toBe(true)
   })
 })

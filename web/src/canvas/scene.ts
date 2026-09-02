@@ -127,6 +127,22 @@ export interface SceneEdge {
    */
   kind?: string
   /**
+   * What this line MEANS, in the mode's own words (tic-260c), appended to the
+   * endpoint names by {@link describeConnections}.
+   *
+   * The endpoints alone were enough while every line was an import: "a -> b"
+   * over an import line says the whole thing.  A call-flow scene draws three
+   * kinds of line at once, and over one of them the reader's question is not
+   * which two functions it joins -- the chips at each end already answer that
+   * -- but which KIND of line this is and what it is carrying.  So the mode
+   * writes that, and the canvas stays out of it: composing this string here
+   * would mean the canvas layer knowing what a breadcrumb or a coupling is.
+   *
+   * Absent on modes that have not written one, which reads exactly as it did
+   * before.
+   */
+  detail?: string
+  /**
    * Whether the edge carries a direction worth showing (tic-2b2b).  The mode
    * sets it on lines whose flow matters -- today only import edges, whose
    * `from` is the importer and `to` the imported -- and the canvas renders a
@@ -438,7 +454,63 @@ export function cullScene(scene: Scene, visible: Rect): Scene {
 // -- selection highlighting (tic-5393) ---------------------------------------
 
 /**
- * The import edges incident to any of the given element ids.
+ * The edge kinds the canvas treats as CONNECTIONS rather than structure
+ * (tic-260c).
+ *
+ * Three cross-mode behaviours key on this -- selection/hover highlighting
+ * ({@link connectionEdgesIncidentTo}), the near-pointer summary, and the
+ * marching ants ({@link isAntsEdge}) -- and all three used to test
+ * `kind === 'import'` outright.  That was true when only the fs-tree and the
+ * import graph drew lines, and quietly wrong from the moment call flow
+ * shipped: its call, state and type lines mean at least as much as an import
+ * does, and hovering a function lit nothing.
+ *
+ * An inclusion set rather than "anything that is not nesting", because the
+ * two fail in opposite directions.  A kind left out of an inclusion set is a
+ * line that does not light up -- visible, reported, and fixed by adding a
+ * word here.  A structural kind that slips through an exclusion set puts a
+ * popup over a folder elbow reading "app -> errors.py", which says nothing
+ * the picture is not already saying, and animates a line that carries no
+ * direction to show.  `modes/registry.test.ts` requires every kind every
+ * registered mode emits to be classified one way or the other, so a new one
+ * cannot arrive unnoticed.
+ *
+ * Structural kinds deliberately absent: 'nesting' and 'stub' (fs-tree tree
+ * lines), 'section' and 'module' (file-detail grouping).
+ */
+export const CONNECTION_KINDS: ReadonlySet<string> = new Set([
+  'import', // fs-tree, import graph
+  'call', // call flow
+  'state', // call flow, tic-675a's state coupling
+  'type', // call flow, tic-59b1's type flow
+])
+
+/**
+ * The edge kinds that draw the SHAPE of the scene rather than a connection
+ * across it: the fs-tree's parent/child elbows and its collapsed-subtree
+ * stubs, and file-detail's grouping lines.
+ *
+ * Declared alongside {@link CONNECTION_KINDS} so the two together are a
+ * complete classification, and each mode's own suite asserts that every kind
+ * it emits falls in one of them.  Nothing reads this set at runtime -- it
+ * exists so "I forgot to classify a new kind" is a test failure rather than a
+ * line that silently never lights up.
+ */
+export const STRUCTURAL_KINDS: ReadonlySet<string> = new Set([
+  'nesting', // fs-tree parent -> child
+  'stub', // fs-tree collapsed-subtree marker
+  'section', // file detail
+  'module', // file detail
+])
+
+/** Whether this line joins two things rather than nesting one inside the
+ *  other; see {@link CONNECTION_KINDS}. */
+export function isConnection(edge: SceneEdge): boolean {
+  return edge.kind !== undefined && CONNECTION_KINDS.has(edge.kind)
+}
+
+/**
+ * The connection edges incident to any of the given element ids.
  *
  * Incidence follows the scene's anchors, which the mode has already shaped to
  * the expand state (fsTree's anchorId): a collapsed file's import edges anchor
@@ -446,16 +518,16 @@ export function cullScene(scene: Scene, visible: Rect): Scene {
  * collapsed file therefore lights every import its symbols own, while
  * selecting one row inside an expanded container lights only that row's.  A
  * union is returned, so multi-selection (or a selection plus a hover) lights
- * every edge touching any of the ids.  Only edges the mode labelled 'import'
- * are considered -- nesting edges keep their current treatment.
+ * every edge touching any of the ids.  Only {@link CONNECTION_KINDS} are
+ * considered -- nesting edges keep their current treatment.
  */
-export function importEdgesIncidentTo(
+export function connectionEdgesIncidentTo(
   scene: Scene,
   elementIds: ReadonlySet<string>,
 ): Set<string> {
   const hit = new Set<string>()
   for (const edge of scene.edges) {
-    if (edge.kind !== 'import') continue
+    if (!isConnection(edge)) continue
     if (
       (edge.from !== undefined && elementIds.has(edge.from)) ||
       (edge.to !== undefined && elementIds.has(edge.to))
@@ -470,7 +542,7 @@ export function importEdgesIncidentTo(
  * The nodes at both ends of the given edges -- and the containers those ends
  * live inside (tic-ece1).
  *
- * The companion to {@link importEdgesIncidentTo}: that one answers "which
+ * The companion to {@link connectionEdgesIncidentTo}: that one answers "which
  * lines light up", this one answers "which chips do those lines land on", so
  * the canvas can lend the far end of a lit connection the hover border.  Both
  * ends are returned, not just the far one -- the caller already paints the
@@ -675,7 +747,36 @@ export function describeConnections(scene: Scene, edges: readonly SceneEdge[]): 
     }
     return node?.label ?? id
   }
-  return edges.map((edge) => `${nameOf(edge.from)} → ${nameOf(edge.to)}`)
+  // A non-directional connection gets a two-headed arrow rather than a
+  // misleading one-way one: a MUTUAL state coupling (tic-675a) is two
+  // functions writing the same variable, and neither end is the source.
+  return edges.map((edge) => {
+    const arrow = edge.directional === false ? '↔' : '→'
+    const ends = `${nameOf(edge.from)} ${arrow} ${nameOf(edge.to)}`
+    return edge.detail ? `${ends}  ${edge.detail}` : ends
+  })
+}
+
+/**
+ * Roughly how tall the near-pointer summary will be, in CSS px (tic-260c).
+ *
+ * The popup flips to the other side of the pointer near the bottom of the
+ * canvas, and that decision has to be made BEFORE the box exists -- so its
+ * height is predicted from the line count rather than measured.  This was a
+ * fixed 160 while the cap was 8; at 20 lines the box is over twice that, and
+ * a fixed guess would let the popup run off the bottom in exactly the dense
+ * case the raise was for.
+ *
+ * The figures mirror `.edge-popup` in styles.css: 11px text at line-height
+ * 1.5 is 16.5px a line, plus 5px padding top and bottom, plus a `+N more`
+ * tail that gets its own line and 2px of margin.  An over-estimate is
+ * harmless (the popup flips a little early); an under-estimate is the bug.
+ */
+export const EDGE_POPUP_LINE_PX = 16.5
+export const EDGE_POPUP_CHROME_PX = 12
+
+export function edgePopupHeight(lines: number, more: number): number {
+  return (lines + (more > 0 ? 1 : 0)) * EDGE_POPUP_LINE_PX + EDGE_POPUP_CHROME_PX
 }
 
 /**
@@ -728,12 +829,17 @@ export function antsDashOffset(timeMs: number): number {
  * By default (tic-2b2b) it must carry a direction AND be highlighted (coloured,
  * drawn on top) -- a grey, unselected line never animates, because the flow is
  * a property of the lit connection, not of the idle scene.  The 'animate all'
- * toggle (tic-5196) broadens that to every import line, regardless of
- * highlight, so a viewer can watch the whole import flow at once.  Either way
- * only import lines animate: the folder/nesting elbows carry no direction to
- * show, and animating them would just add noise (tic-1ea2).
+ * toggle (tic-5196) broadens that to every connection line, regardless of
+ * highlight, so a viewer can watch the whole flow at once.  Either way only
+ * connections animate: the folder/nesting elbows carry no direction to show,
+ * and animating them would just add noise (tic-1ea2).
+ *
+ * A non-directional connection still never animates on the default path, and
+ * that is a real case rather than a theoretical one: a MUTUAL state coupling
+ * (tic-675a) has no direction to march in, so it lights without ants while
+ * its one-way neighbours march.
  */
 export function isAntsEdge(edge: SceneEdge, highlighted: boolean, animateAll: boolean): boolean {
-  if (animateAll) return edge.kind === 'import'
+  if (animateAll) return isConnection(edge)
   return highlighted && edge.directional === true
 }

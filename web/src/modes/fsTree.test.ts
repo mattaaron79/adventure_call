@@ -14,6 +14,7 @@ import { fileRows, layoutContainer } from './fileDetail'
 import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './fsTree'
 import { CALL_FLOW_MODE_ID, IMPORT_GRAPH_MODE_ID } from './ids'
 import { renderMode, resolveGoto } from './types'
+import { CONNECTION_KINDS, STRUCTURAL_KINDS } from '../canvas/scene'
 
 /**
  * Render the mode the way the app does: only through the VizMode interface.
@@ -861,5 +862,26 @@ describe('fsTreeMode row affordances (tic-d6af)', () => {
     const imp = rowOf('imp:app.errors.PluginError')!
     expect(imp.openIn).toBeUndefined()
     expect(imp.gotoTo).toBe('src/app/errors.py')
+  })
+})
+
+describe('edge kinds are classified for the canvas (tic-260c)', () => {
+  // Not a checklist: the kinds come from a real spec this suite already
+  // builds, so a kind added to the mode and forgotten in scene.ts fails here.
+  // Highlighting, the near-pointer summary and the marching ants all key on
+  // that classification, and an unclassified kind is a line that quietly
+  // never lights up.
+  it('classifies every kind the fs-tree emits', () => {
+    const kinds = new Set(render({ 'app/errors.py': true }).scene.edges.map((e) => e.kind!))
+    expect(kinds.size).toBeGreaterThan(0)
+    for (const kind of kinds) {
+      expect(CONNECTION_KINDS.has(kind) || STRUCTURAL_KINDS.has(kind), kind).toBe(true)
+    }
+  })
+
+  it('puts imports, and leaves the tree lines structural on the connection side', () => {
+    expect(CONNECTION_KINDS.has('import')).toBe(true)
+    expect(STRUCTURAL_KINDS.has('nesting')).toBe(true)
+    expect(STRUCTURAL_KINDS.has('stub')).toBe(true)
   })
 })

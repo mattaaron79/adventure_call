@@ -75,11 +75,25 @@ export const EDGE_HOVER_RADIUS_PX = 32
 
 /**
  * How many connections the near-pointer summary lists before it stops and
- * counts the rest (tic-f1d7).
+ * counts the rest (tic-f1d7, raised for tic-260c).
  *
  * Over a merged trunk (tic-531b) the query legitimately finds dozens of lines
  * at nearly the same distance -- which is exactly when the summary is worth
  * having -- so it has to have a stopping point, or a dense bundle papers the
  * popup over the canvas it is describing.
+ *
+ * 8 truncated more often than a stopping point should.  Counting connections
+ * per node on the ../carnot export -- a layout-free proxy for what a pointer
+ * finds, since it bounds what one chip's lines can contribute to a bundle --
+ * 7.3% of call-flow nodes and 9.1% of import-graph nodes carry more than 8,
+ * so the popup was ending in "+N more" on roughly one busy line in twelve.
+ * At 20 that is 0% and 3.3%: truncation stops happening at all in call flow
+ * and becomes a hub-file event in the import graph, which is the case the cap
+ * was written for.
+ *
+ * The cost of the raise is height -- twenty ellipsised lines is around 350px
+ * against the old ~150px -- which is why the popup's flip-near-the-edge
+ * threshold is derived from the line count rather than the constant it used
+ * to assume.  See `Workspace.tsx`'s `edgePopup` block.
  */
-export const EDGE_POPUP_MAX_LINES = 8
+export const EDGE_POPUP_MAX_LINES = 20

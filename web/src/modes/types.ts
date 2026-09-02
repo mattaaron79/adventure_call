@@ -155,10 +155,20 @@ export interface SpecEdge {
   route?: EdgeRoute
   /**
    * Whether the connection carries a direction worth showing (tic-2b2b): set
-   * on edges whose flow means something (today only 'import', where `from`
-   * imports `to`).  The canvas animates highlighted directional edges.
+   * on edges whose flow means something ('import', where `from` imports `to`;
+   * a call, where `from` calls `to`).  The canvas animates highlighted
+   * directional edges, and draws a two-headed arrow in the near-pointer
+   * summary for a connection that says `false`.
    */
   directional?: boolean
+  /**
+   * What this line means, in the mode's own words (tic-260c); see
+   * {@link ../canvas/scene.SceneEdge.detail}.  Shown after the endpoint names
+   * in the near-pointer summary, so keep it SHORT -- the popup gives each
+   * connection one ellipsised line, and a mode that writes a sentence loses
+   * the end of it.
+   */
+  detail?: string
   /**
    * Mode-private payload for the later phases; opaque to the framework, like
    * {@link SpecNode.data}.  E.g. import-graph (tic-56b2) carries whether an
@@ -456,6 +466,7 @@ function assemble(spec: SceneSpec, positioned: Positioned, styles: StyleMap): Mo
       route: edge.route,
       kind: edge.kind,
       directional: edge.directional,
+      detail: edge.detail,
       // Carried so the canvas reproject (tic-1d7c) re-routes a dragged edge
       // with the same wrapped gap pipe and in the same orientation.
       pipe: positioned.edgePipes?.get(edge.id),
