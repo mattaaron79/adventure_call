@@ -509,6 +509,13 @@ export interface CallEdge {
    */
   controls?: readonly (readonly string[])[]
   /**
+   * Per call site, whether it lies on every path through its enclosing scope
+   * (tic-3a20).  Parallel to `count` alongside `controls`, and carried for
+   * the same reason: two sites reaching one callee, one unavoidable and one
+   * not, is ordinary, and the edge has to be able to say so.
+   */
+  certains?: readonly boolean[]
+  /**
    * True for the derived `class -> class.__init__` edge, which stands for
    * "constructing this runs that" and has no call site of its own.  Anything
    * reporting on real call sites -- a coverage figure, a line list, a jump to
@@ -659,6 +666,7 @@ export function deriveCallGraph(edges: readonly GraphEdge[], index: SymbolIndex)
       confidence: edge.confidence,
       callTypes: edge.call_types,
       ...(edge.controls ? { controls: edge.controls } : {}),
+      ...(edge.certains ? { certains: edge.certains } : {}),
     })
   }
 

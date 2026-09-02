@@ -615,6 +615,7 @@ class SymbolResolver:
                 # Carried verbatim from the call site (tic-b47a) so the graph
                 # edge and the unresolved-call export both keep it.
                 control=list(call.control),
+                certain=call.certain,
             )
 
         if not call.root:

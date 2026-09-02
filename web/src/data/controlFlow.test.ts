@@ -225,3 +225,33 @@ describe('deriveControlFlowTags', () => {
     expect(empty.nodeOf.size).toBe(0)
   })
 })
+
+describe('certain (tic-3a20)', () => {
+  it('is true only when every site behind the edge is', () => {
+    // The same rule as `allLooped`, for the same reason: letting one certain
+    // site vote for three uncertain ones would restate the very claim the CFG
+    // exists to replace.
+    expect(edgeTagsOf([[], []], [true, true])!.certain).toBe(true)
+    expect(edgeTagsOf([[], []], [true, false])!.certain).toBe(false)
+    expect(edgeTagsOf([[], []], [false, false])!.certain).toBe(false)
+  })
+
+  it('is null on an export that could not say, which is not false', () => {
+    // A pre-v9 export carries no `certains`.  A UI reading that as "no" would
+    // report every call in the codebase as avoidable.
+    expect(edgeTagsOf([[], []])!.certain).toBeNull()
+    expect(edgeTagsOf([[], []], [])!.certain).toBeNull()
+  })
+
+  it('is a strictly stronger claim than unguarded', () => {
+    // An early `return` above a call leaves it unguarded and not certain,
+    // which is the 27% of ../carnot's unguarded sites this exists for.
+    const tags = edgeTagsOf([[]], [false])!
+    expect(tags.guard).toBe('unguarded')
+    expect(tags.certain).toBe(false)
+  })
+
+  it('never claims certainty for a guarded call', () => {
+    expect(edgeTagsOf([['if']], [false])!.certain).toBe(false)
+  })
+})

@@ -135,6 +135,13 @@ export interface GraphEdge {
    * body.  Absent on a schema_version < 3 export.
    */
   controls?: string[][]
+  /**
+   * Per call site, whether it lies on every path from its enclosing scope's
+   * entry to its exit (tic-3a20) -- the true form of the claim `unguarded`
+   * only approximates, and a strict subset of it. Parallel to `count`, like
+   * `controls`. Absent on a derived edge and on a pre-v9 export.
+   */
+  certains?: boolean[]
 }
 
 /**

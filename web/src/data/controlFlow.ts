@@ -98,6 +98,18 @@ export interface EdgeTags {
   /** Every site is under `if TYPE_CHECKING`, so none of them is runtime flow.
    *  Measured at zero on both available codebases; see the module docstring. */
   typeCheckingOnly: boolean
+  /**
+   * EVERY site lies on every path through its caller (tic-3a20): if the
+   * caller runs, this call runs.
+   *
+   * The honest form of `guard === 'unguarded'`, and a strictly stronger
+   * claim -- an early `return` above a call leaves it unguarded and not
+   * certain. Measured on ../carnot, 887 of 3313 unguarded drawn sites (27%)
+   * fail it; on hypermenu 113 of 535 (21%). Null on a pre-v9 export, which is
+   * different from false: `certain === null` means the export could not say,
+   * and a UI must not read it as "no".
+   */
+  certain: boolean | null
   /** Call sites behind the edge. */
   sites: number
 }
@@ -145,8 +157,16 @@ export function edgeKey(source: string, target: string): string {
  */
 export function edgeTagsOf(
   controls: readonly (readonly string[])[] | undefined,
+  certains?: readonly boolean[],
 ): EdgeTags | null {
   if (!controls || controls.length === 0) return null
+
+  // Every site or nothing, like `allLooped` and for the same reason: an edge
+  // is only unavoidable if all of its sites are, and letting one certain site
+  // vote for three uncertain ones would restate the claim the CFG exists to
+  // replace. A pre-v9 export has no `certains` and gets null, not false.
+  const certain =
+    certains === undefined || certains.length === 0 ? null : certains.every(Boolean)
 
   let unguarded = 0
   let guarded = 0
@@ -180,6 +200,7 @@ export function edgeTagsOf(
     allLooped,
     errorPath,
     typeCheckingOnly,
+    certain,
     sites: controls.length,
   }
 }

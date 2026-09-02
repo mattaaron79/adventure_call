@@ -21,6 +21,11 @@ from typing import Iterable, Iterator, Sequence
 
 from tree_sitter import Node, QueryCursor
 
+from adventure_call.cfg import (
+    SUBSTATEMENT_GUARDS,
+    certain_statements,
+    governing_statement,
+)
 from adventure_call.languages import (
     GrammarUnavailable,
     LanguageSpec,
@@ -29,6 +34,7 @@ from adventure_call.languages import (
     spec_for_path,
 )
 from adventure_call.models import (
+    GUARD_TOKENS,
     LITERAL_TYPES,
     AccessKind,
     CallSite,
@@ -1093,6 +1099,10 @@ class _PythonExtractor:
         owners = [s for s in symbols if s.kind in _CALLABLE_KINDS]
         starts = [s.start_byte for s in owners]
         calls: list[CallSite] = []
+        # One CFG per enclosing definition, built on first sight and reused
+        # for every call in it (tic-3a20).  A function with forty call sites
+        # would otherwise pay for forty identical graphs.
+        certainty: dict[int, tuple[set[int], set[int]]] = {}
 
         for caps in call_matches:
             site = caps["call.site"][0]
@@ -1101,6 +1111,7 @@ class _PythonExtractor:
                 continue
             callee = callee_nodes[0]
 
+            control = self._control_path(site)
             path = self._attribute_path(callee)
             raw_name = self.text(callee)
             root = path[0] if path else ""
@@ -1114,7 +1125,15 @@ class _PythonExtractor:
                     root=root,
                     attr_path=attr_path,
                     caller_id=self._enclosing_symbol(site.start_byte, owners, starts),
-                    control=self._control_path(site),
+                    control=control,
+                    # Two independent checks, and the call has to pass both:
+                    # the CFG says the STATEMENT is unavoidable, and the
+                    # breadcrumb says nothing inside the statement skips the
+                    # call.  See `SUBSTATEMENT_GUARDS`.
+                    certain=(
+                        not (set(control) & (GUARD_TOKENS | SUBSTATEMENT_GUARDS))
+                        and self._is_certain(site, certainty)
+                    ),
                     line=site.start_point.row + 1,
                     start_byte=site.start_byte,
                     end_byte=site.end_byte,
@@ -1123,6 +1142,26 @@ class _PythonExtractor:
 
         calls.sort(key=lambda c: c.start_byte)
         return calls
+
+    @staticmethod
+    def _is_certain(site: Node, cache: dict[int, tuple[set[int], set[int]]]) -> bool:
+        """Whether this call runs on every path through its enclosing scope.
+
+        The scope is the innermost enclosing `function_definition`, or the
+        module when there is none -- a call in a class body or at module level
+        runs on import, and answering the question there is what keeps a
+        Django URLconf's `path(...)` from reading as conditional.
+        """
+        owner: Node | None = site
+        while owner is not None and owner.type not in ("function_definition", "module"):
+            owner = owner.parent
+        if owner is None:
+            return False
+        if owner.id not in cache:
+            cache[owner.id] = certain_statements(owner)
+        certain, every = cache[owner.id]
+        statement = governing_statement(site, every)
+        return statement is not None and statement in certain
 
     # -- local bindings ----------------------------------------------------
 

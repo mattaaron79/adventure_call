@@ -277,6 +277,7 @@ class GraphBuilder:
                 confidence=resolution.confidence,
                 call_type=resolution.call_type,
                 control=resolution.control,
+                certain=resolution.certain,
             )
 
     def _add_reference_edges(self) -> None:
@@ -342,6 +343,7 @@ class GraphBuilder:
         call_type: str | None = None,
         alias: str | None = None,
         control: Sequence[str] | None = None,
+        certain: bool | None = None,
     ) -> None:
         """Add an edge, folding repeats into a count plus a line list.
 
@@ -352,6 +354,11 @@ class GraphBuilder:
         case tic-5069 has to detect.  So ``controls`` keeps one entry per call
         site, in the order the sites were resolved, and is parallel to
         ``count`` rather than to the de-duplicated ``lines``.
+
+        ``certain`` (tic-3a20) is per site for exactly the same reason and
+        rides in the same shape: two call sites reaching one callee, one of
+        them unavoidable and one not, is an ordinary thing to write, and the
+        edge has to be able to say so rather than pick.
         """
         data = self.graph.edges.get((source, target))
         if data is None:
@@ -366,12 +373,15 @@ class GraphBuilder:
                 call_types=[call_type] if call_type else [],
                 aliases=[alias] if alias else [],
                 controls=[list(control)] if control is not None else [],
+                certains=[certain] if certain is not None else [],
             )
             return
 
         data["count"] += 1
         if control is not None:
             data.setdefault("controls", []).append(list(control))
+        if certain is not None:
+            data.setdefault("certains", []).append(certain)
         if line not in data["lines"]:
             data["lines"] = sorted([*data["lines"], line])
         if edge_type not in data["types"]:

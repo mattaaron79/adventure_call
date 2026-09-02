@@ -27,7 +27,7 @@ from adventure_call.resolver import ResolutionIndex
 # from tic-b47a's control-flow walk) and `line_count`.
 # 7 (tic-799e): callables carry `locals` -- the plain names bound in their own
 # body, deduplicated, source order.  A reading aid, not a symbol table.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 GRAPH_FILENAME = "codebase_graph.json"
 REGISTRY_FILENAME = "symbol_registry.json"
 
@@ -179,6 +179,10 @@ class OutputWriter:
             "references": len(index.references),
             # Variable and attribute accesses (tic-13d7), split the way the
             # edges are: the read/write difference is the whole point.
+            # Call sites that lie on every path through their enclosing scope
+            # (tic-3a20).  The honest form of `unguarded`, which overclaims on
+            # about one call in six.
+            "calls_certain": sum(1 for r in resolved if r.certain),
             "reads": sum(1 for a in index.accesses if a.kind == "read"),
             "writes": sum(1 for a in index.accesses if a.kind == "write"),
             "diagnostics": sum(len(p.diagnostics) for p in parsed_files),

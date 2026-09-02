@@ -208,6 +208,12 @@ class CallSite:
     #: the definition body.  See :data:`GUARD_TOKENS` for what counts as a
     #: guard and why the word matters.
     control: list[str] = field(default_factory=list)
+    #: Whether this call lies on EVERY path from its function's entry to its
+    #: exit (tic-3a20) -- the true form of the claim ``guard_depth == 0`` only
+    #: approximates.  Barring an unhandled exception, and False for every call
+    #: in a generator, whose body does not run when the function is called.
+    #: See :mod:`adventure_call.cfg` for the derivation and the traps.
+    certain: bool = False
     line: int = 1
     start_byte: int = 0
     end_byte: int = 0
@@ -506,6 +512,10 @@ class Resolution:
     call_type: CallType = "call"
     reason: str | None = None
     file_path: str = ""
+    #: Whether the originating call site lies on every path through its
+    #: enclosing scope (tic-3a20).  Carried per RESOLUTION, like `control`,
+    #: because it is a fact about one site rather than about the pair.
+    certain: bool = False
     #: The originating call site's control-flow breadcrumb (tic-b47a), carried
     #: through so it can reach the graph edge and the unresolved-call export.
     #: A resolution is per call SITE, so this is one chain, not a merge.

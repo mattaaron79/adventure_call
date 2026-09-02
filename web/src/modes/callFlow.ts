@@ -678,6 +678,10 @@ interface CollapsedEdge {
   /** Every breadcrumb behind this line, from every call-graph edge that
    *  collapsed onto it (tic-5069). */
   controls: (readonly string[])[]
+  /** The same pooling for tic-3a20's per-site certainty: a drawn line is only
+   *  unavoidable if every call behind it is, and one chip can stand for a
+   *  whole condensed knot. */
+  certains: boolean[]
 }
 
 function callEdgesBetween(
@@ -703,9 +707,16 @@ function callEdgesBetween(
         // answer for the line.  Tagging each edge separately and picking one
         // would report a fact about a call the reader cannot see.
         if (edge.controls) known.controls.push(...edge.controls)
+        if (edge.certains) known.certains.push(...edge.certains)
         continue
       }
-      collapsed.set(id, { from, to, heuristic, controls: [...(edge.controls ?? [])] })
+      collapsed.set(id, {
+        from,
+        to,
+        heuristic,
+        controls: [...(edge.controls ?? [])],
+        certains: [...(edge.certains ?? [])],
+      })
     }
   }
   return [...collapsed].map(([id, edge]) => ({
@@ -718,7 +729,7 @@ function callEdgesBetween(
     data: {
       external: false,
       heuristic: edge.heuristic,
-      tags: edgeTagsOf(edge.controls),
+      tags: edgeTagsOf(edge.controls, edge.certains),
     } satisfies FlowEdgeData,
   }))
 }
