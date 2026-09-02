@@ -181,6 +181,13 @@ interface FlowNodeData {
   recursive: boolean
   /** Layers from the nearest entry point, or null when unreachable. */
   rank: number | null
+  /**
+   * The complexity proxy of the hairiest member (tic-d7d1), or null when the
+   * element carries none -- an external sink, or a symbol from an export
+   * that predates the field.  A condensed knot takes its members' max: the
+   * knot is as hairy as its worst member.
+   */
+  complexity: number | null
 }
 
 interface FlowEdgeData {
@@ -609,6 +616,7 @@ function drawComponent(
         size: group.length,
         recursive,
         rank: metric?.rank ?? null,
+        complexity: groupComplexity(group, data),
       } satisfies FlowNodeData,
     })
 
@@ -900,6 +908,25 @@ export function groupControl(
   }
 }
 
+/**
+ * The complexity proxy of the hairiest member (tic-d7d1), or null when no
+ * member carries one -- a symbol from an export that predates the field.
+ * The max, not the mean: a condensed knot is drawn as one thing, and it is
+ * as hairy as its worst member.
+ */
+export function groupComplexity(
+  members: readonly string[],
+  data: Workspace,
+): number | null {
+  let max: number | null = null
+  for (const member of members) {
+    const complexity = data.index.byId.get(member)?.complexity
+    if (complexity === undefined) continue
+    max = max === null ? complexity : Math.max(max, complexity)
+  }
+  return max
+}
+
 export function groupCoverage(
   members: readonly string[],
   metrics: CallMetricsIndex,
@@ -1055,7 +1082,13 @@ function appendExternalSinks(
       symbolId: null,
       expandable: false,
       children: [],
-      data: { role: 'external', size: 1, recursive: false, rank: null } satisfies FlowNodeData,
+      data: {
+        role: 'external',
+        size: 1,
+        recursive: false,
+        rank: null,
+        complexity: null,
+      } satisfies FlowNodeData,
     })
   }
 
@@ -1166,6 +1199,20 @@ function layout(spec: SceneSpec, sizes: SizeMap, params: CallFlowParams): Positi
   return EMPTY_POSITIONED
 }
 
+/**
+ * The stroke for a notably complex function (tic-d7d1), or null for an
+ * ordinary one.  The threshold is a judgement call on a RELATIVE-ORDERING
+ * proxy, not a measured constant: it marks the functions a reader would
+ * want flagged before opening them, and the inspector carries the exact
+ * number.  A cycle keeps its pink accent bar; this only warms the border.
+ */
+export const COMPLEXITY_SHADE_THRESHOLD = 10
+
+export function complexityAccent(complexity: number | null | undefined): string | null {
+  if (complexity === null || complexity === undefined) return null
+  return complexity >= COMPLEXITY_SHADE_THRESHOLD ? THEME.hairy : null
+}
+
 /** Colour per role.  Entry points are the loudest thing on screen, because
  *  the overview is about where execution starts. */
 export function nodeStyleFor(data: FlowNodeData): NodeStyle {
@@ -1178,7 +1225,12 @@ export function nodeStyleFor(data: FlowNodeData): NodeStyle {
       : data.role === 'framework-entry' || data.role === 'referenced' || data.role === 'entry'
         ? KIND_COLOR.function
         : KIND_COLOR.method
-  return { fill: THEME.surface2, stroke: THEME.line, accent, draggable: true }
+  return {
+    fill: THEME.surface2,
+    stroke: complexityAccent(data.complexity) ?? THEME.line,
+    accent,
+    draggable: true,
+  }
 }
 
 function style(spec: SceneSpec): StyleMap {

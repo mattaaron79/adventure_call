@@ -23,7 +23,9 @@ from adventure_call.resolver import ResolutionIndex
 # 5 (tic-7189): the effect-propagation layer reads the registry; the exports it
 # consumes (unresolved_calls with external reasons) are unchanged, but the
 # web app's typed mirror of this schema is versioned alongside it.
-SCHEMA_VERSION = 5
+# 6 (tic-d7d1): symbols carry `complexity` (a cyclomatic-style proxy counted
+# from tic-b47a's control-flow walk) and `line_count`.
+SCHEMA_VERSION = 6
 GRAPH_FILENAME = "codebase_graph.json"
 REGISTRY_FILENAME = "symbol_registry.json"
 

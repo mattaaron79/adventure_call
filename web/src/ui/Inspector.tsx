@@ -392,6 +392,20 @@ export function Inspector({
               <span className="inspector-fact">lines</span>
               <code>{lineRange(node)}</code>
             </li>
+            {(node.kind === 'function' || node.kind === 'method') && node.complexity !== undefined && (
+              <li>
+                {/* Cyclomatic-style proxy (tic-d7d1), not textbook complexity:
+                    a relative-ordering number within this codebase. */}
+                <span className="inspector-fact">complexity</span>
+                <code>{node.complexity}</code>
+              </li>
+            )}
+            {node.line_count !== undefined && node.line_count > 0 && (
+              <li>
+                <span className="inspector-fact">loc</span>
+                <code>{node.line_count}</code>
+              </li>
+            )}
             {node.is_async && (
               <li>
                 <span className="inspector-fact">async</span>

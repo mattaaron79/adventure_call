@@ -141,6 +141,27 @@ _COMPREHENSIONS = frozenset(
     }
 )
 
+#: Node types that count one decision toward a callable's complexity proxy
+#: (tic-d7d1): if/elif, match cases, for, while, except handlers, boolean
+#: ``and``/``or``, ternaries and comprehension guards.  A comprehension's own
+#: ``for`` does not count -- its guard (``if_clause``) does -- matching the
+#: ticket's list.  ``boolean_operator`` nests left-associatively, so a chain
+#: like ``a and b and c`` is two of these nodes and counts 2.
+_COMPLEXITY_NODES = frozenset(
+    {
+        "if_statement",
+        "elif_clause",
+        "case_clause",
+        "for_statement",
+        "while_statement",
+        "except_clause",
+        "except_group_clause",
+        "boolean_operator",
+        "conditional_expression",
+        "if_clause",
+    }
+)
+
 #: An `else` means something different on each of its four hosts, and all four
 #: are guards: the if-else is the obvious one, try-else runs only when nothing
 #: raised, and for/while-else only when the loop was not broken out of.
@@ -584,6 +605,12 @@ class _PythonExtractor:
         docstring = self._docstring_of_block(body)
         is_async = any(child.type == "async" for child in node.children)
 
+        if is_class:
+            complexity, line_count = 1, 0
+        else:
+            complexity = self._complexity(node)
+            line_count = node.end_point.row - (decorated or node).start_point.row + 1
+
         return SymbolDef(
             symbol_id=symbol_id,
             name=name,
@@ -602,6 +629,8 @@ class _PythonExtractor:
             decorators=decorators,
             bases=bases,
             is_async=is_async,
+            complexity=complexity,
+            line_count=line_count,
             code=self.dedented_slice(start_byte, end_byte),
             stub=self._stub(signature, docstring, decorators),
         )
@@ -660,6 +689,7 @@ class _PythonExtractor:
             end_byte=node.end_byte,
             start_line=node.start_point.row + 1,
             end_line=node.end_point.row + 1,
+            line_count=node.end_point.row - node.start_point.row + 1,
             signature=signature,
             code=self.dedented_slice(node.start_byte, node.end_byte),
             stub=signature,
@@ -1333,6 +1363,40 @@ class _PythonExtractor:
         return []
 
     # -- control flow ------------------------------------------------------
+
+    def _complexity(self, node: Node) -> int:
+        """Cyclomatic-style complexity proxy for one callable (tic-d7d1).
+
+        ``1 +`` the number of branching constructs in the definition's OWN
+        body: see :data:`_COMPLEXITY_NODES` for the list and
+        :attr:`SymbolDef.complexity` for what the number is and is not.
+
+        The walk starts at the body block, not the whole definition:
+        parameter defaults and annotations evaluate at def time, so a decision
+        written inside one says nothing about the paths a CALL can take.
+
+        A nested def or class ends the walk: it carries its own number, and
+        charging its decisions to the outer function would make every
+        function-with-helpers look hairier than it is.  A ``lambda`` is not
+        such a boundary -- it is not a symbol, matching the control-flow walk
+        above -- so a decision written inside one belongs to the enclosing
+        function.
+        """
+        body = node.child_by_field_name("body")
+        if body is None:  # pragma: no cover - a parsed def always has a body
+            return 1
+        count = 1
+        stack: list[Node] = [body]
+        while stack:
+            current = stack.pop()
+            if current.type in _COMPLEXITY_NODES:
+                count += 1
+            for child in current.named_children:
+                # `decorated_definition` is only ever a def/class wrapper
+                # inside a body, so it is a boundary for the same reason.
+                if child.type not in _DEF_NODE_TYPES and child.type != "decorated_definition":
+                    stack.append(child)
+        return count
 
     def _control_path(self, node: Node) -> list[str]:
         """The control-flow constructs between ``node`` and its enclosing def.

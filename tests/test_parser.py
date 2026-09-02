@@ -703,6 +703,142 @@ def test_unresolved_calls_carry_the_breadcrumb_too(analyse):
     assert unresolved and unresolved[0].control == ["if"]
 
 
+# -- complexity proxy (tic-d7d1) --------------------------------------------
+#
+# A cyclomatic-style RELATIVE-ORDERING proxy, not textbook complexity: 1 +
+# the branching constructs in a callable's own body.  These tests pin the
+# construct counts the ticket names, because a number that silently changes
+# meaning breaks every consumer that compares functions against each other.
+
+
+def _complexity(parse_source, source: str):
+    parsed = parse_source(source)
+    return {s.name: s.complexity for s in parsed.symbols if s.kind in ("function", "method")}
+
+
+def test_a_flat_function_scores_one(parse_source):
+    assert _complexity(parse_source, "def go():\n    return simple()\n") == {"go": 1}
+
+
+def test_every_construct_the_ticket_names_counts_once(parse_source):
+    # if + elif + for + while + 2 excepts + match case + and + or + ternary
+    # + comprehension guard = 11 decisions, so 12.
+    source = """
+        def go(flag, items, p):
+            if flag:
+                a()
+            elif other(flag):
+                b()
+            for x in items:
+                c()
+            while flag:
+                d()
+            try:
+                e()
+            except ValueError:
+                f()
+            except KeyError:
+                g()
+            match p:
+                case 1:
+                    h()
+            m = flag and items
+            n = flag or items
+            o = a() if flag else b()
+            q = [x for x in items if x]
+    """
+    assert _complexity(parse_source, source) == {"go": 12}
+
+
+def test_a_nested_def_is_excluded_and_carries_its_own_number(parse_source):
+    # The outer function's if would make it 2 if the nested def leaked in.
+    source = """
+        def outer(flag):
+            if flag:
+                a()
+
+            def inner(sub):
+                if sub:
+                    b()
+                for x in sub:
+                    c()
+
+            return inner
+    """
+    assert _complexity(parse_source, source) == {"outer": 2, "inner": 3}
+
+
+def test_a_decorated_nested_def_is_excluded_too(parse_source):
+    # `decorated_definition` wraps the nested def in the tree; it is the same
+    # boundary and must not leak the inner decisions into the outer count.
+    source = """
+        def outer(flag):
+            if flag:
+                a()
+
+            @wraps(something)
+            def inner(sub):
+                if sub:
+                    b()
+
+            return inner
+    """
+    assert _complexity(parse_source, source) == {"outer": 2, "inner": 2}
+
+
+def test_a_boolean_operator_chain_counts_each_link(parse_source):
+    # `a and b and c` is two boolean_operator nodes (left-associative), so
+    # the chain of three names scores 1 + 2 = 3.
+    source = "def go(a, b, c):\n    return a and b and c\n"
+    assert _complexity(parse_source, source) == {"go": 3}
+
+
+def test_a_comprehension_guard_counts_but_its_for_does_not(parse_source):
+    # The ticket lists comprehension guards, not comprehension fors: the
+    # guard is the decision, the for is just iteration over what exists.
+    source = "def go(items):\n    return [x for x in items if keep(x)]\n"
+    assert _complexity(parse_source, source) == {"go": 2}
+
+
+def test_a_lambda_body_counts_for_the_enclosing_function(parse_source):
+    # A lambda is not a symbol (matching the control-flow walk), so its
+    # ternary belongs to the function that wrote it.
+    source = "def go(flag):\n    f = lambda v: v if flag else 0\n    return f\n"
+    assert _complexity(parse_source, source) == {"go": 2}
+
+
+def test_parameter_defaults_do_not_count(parse_source):
+    # A default evaluates at def time, not call time: it says nothing about
+    # the paths a call can take.
+    source = "def go(flag=other() if flag else 0):\n    return flag\n"
+    assert _complexity(parse_source, source) == {"go": 1}
+
+
+def test_line_count_spans_the_whole_definition(parse_source):
+    parsed = parse_source("def go():\n    a()\n    b()\n")
+    symbol = next(s for s in parsed.symbols if s.name == "go")
+    assert symbol.line_count == 3
+
+
+def test_complexity_and_line_count_reach_the_export(analyse):
+    builder, _, _ = analyse(
+        {
+            "src/m.py": """
+                def caller(flag):
+                    if flag:
+                        target()
+                    return flag
+
+                def target():
+                    pass
+                """
+        }
+    )
+    node = builder.graph.nodes["src.m.caller"]
+    assert node["complexity"] == 2
+    assert node["line_count"] == 4
+
+
 # -- local bindings (tic-97ce) ---------------------------------------------
 #
 # What the parser records is deliberately not a type: it is "this name was

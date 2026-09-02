@@ -19,12 +19,15 @@ import {
   callFlowSummary,
   componentId,
   componentLabel,
+  complexityAccent,
   coneOf,
   EXTERNAL_PREFIX,
   formatCoverageHud,
   frontierOf,
+  groupComplexity,
   groupCoverage,
   moduleTail,
+  nodeStyleFor,
   rankedEntryComponents,
   groupControl,
   rootedElementIds,
@@ -1200,5 +1203,47 @@ describe('control-flow tags on the scene (tic-5069)', () => {
         ]),
       }),
     ).toBeNull()
+  })
+})
+
+describe('complexity proxy (tic-d7d1)', () => {
+  it('shades a node at or above the threshold, and not below', () => {
+    expect(complexityAccent(10)).toBe(THEME.hairy)
+    expect(complexityAccent(25)).toBe(THEME.hairy)
+    expect(complexityAccent(9)).toBeNull()
+    expect(complexityAccent(1)).toBeNull()
+  })
+
+  it('leaves nodes without a complexity number unshaded', () => {
+    // A schema_version 5 export predates the field entirely.
+    expect(complexityAccent(null)).toBeNull()
+    expect(complexityAccent(undefined)).toBeNull()
+  })
+
+  it('a condensed knot is as hairy as its worst member', () => {
+    const workspace = deriveWorkspace(
+      {
+        ...GRAPH,
+        nodes: [
+          ...NODES,
+          node('m.calm', 'function'),
+          node('m.hairy', 'function', { complexity: 14 }),
+        ],
+      } as CodebaseGraph,
+      [],
+    )
+    expect(groupComplexity(['m.calm', 'm.hairy'], workspace)).toBe(14)
+    expect(groupComplexity(['m.calm'], workspace)).toBeNull()
+  })
+
+  it('an ordinary node keeps the plain stroke; a hairy one wears the warm one', () => {
+    const plain = nodeStyleFor({ role: 'internal', size: 1, recursive: false, rank: null, complexity: null })
+    const hairy = nodeStyleFor({ role: 'internal', size: 1, recursive: false, rank: null, complexity: 12 })
+    expect(plain.stroke).toBe(THEME.line)
+    expect(hairy.stroke).toBe(THEME.hairy)
+    // A cycle keeps its pink accent bar; the warmth only warms the border.
+    const knotted = nodeStyleFor({ role: 'internal', size: 2, recursive: false, rank: null, complexity: 12 })
+    expect(knotted.stroke).toBe(THEME.hairy)
+    expect(knotted.accent).toBe(THEME.cycle)
   })
 })

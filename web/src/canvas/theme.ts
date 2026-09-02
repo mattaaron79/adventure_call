@@ -29,6 +29,9 @@ export const THEME = {
    *  colour against an otherwise cool palette, so a cycle reads as worth
    *  noticing rather than blending into the ordinary import lines. */
   cycle: '#f38ba8',
+  /** The stroke of a notably complex function (tic-d7d1): warm, but a
+   *  different warmth from the cycle pink, which keeps its own channel. */
+  hairy: '#fab387',
 } as const
 
 export const KIND_COLOR: Record<SymbolKind, string> = {

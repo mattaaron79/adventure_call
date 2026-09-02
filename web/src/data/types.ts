@@ -1,5 +1,5 @@
 /**
- * TypeScript mirrors of the adventure-call JSON exports (schema_version 5).
+ * TypeScript mirrors of the adventure-call JSON exports (schema_version 6).
  *
  * Written from adventure_call/models.py and adventure_call/writer.py.  Two
  * kinds -- `variable` and `attribute` -- are declared ahead of the parser that
@@ -7,11 +7,12 @@
  *
  * Version history: 4 added `GraphEdge.controls`; 5 (tic-7189) carries no
  * field changes -- the effects layer reads the existing `unresolved_calls`
- * external reasons -- but is bumped to keep the two mirrors of this constant
+ * external reasons; 6 (tic-d7d1) added `GraphNode.complexity` and
+ * `GraphNode.line_count`.  Bumped to keep the two mirrors of this constant
  * in lockstep with adventure_call/writer.py.
  */
 
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 export type SymbolKind =
   | 'module'
@@ -70,6 +71,23 @@ export interface GraphNode {
   decorators: string[]
   bases: string[]
   is_async: boolean
+  /**
+   * Cyclomatic-style complexity proxy (tic-d7d1): 1 + the branching
+   * constructs in the callable's own body -- if/elif, match cases, for,
+   * while, except handlers, boolean and/or, ternaries, comprehension
+   * guards.  NOT textbook cyclomatic complexity: a relative-ordering
+   * proxy, meant to be compared against other functions in the same
+   * codebase, and consumers must not treat it as exact.  Nested defs are
+   * excluded and carry their own number.  Optional: absent on a
+   * schema_version < 6 export and on non-callables.
+   */
+  complexity?: number
+  /**
+   * Source lines the definition spans, header included (tic-d7d1).  The
+   * unambiguous companion to {@link complexity}: a long simple function
+   * and a short dense one are different problems.  Optional as above.
+   */
+  line_count?: number
   stub: string
 }
 

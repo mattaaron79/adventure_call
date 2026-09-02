@@ -1,7 +1,7 @@
 ---
 id: tic-d7d1
 title: Per-function complexity proxy, from the control-flow walk already being done
-status: open
+status: closed
 type: feature
 tier: low
 domain: io
@@ -11,13 +11,13 @@ tags:
 - parser
 - metrics
 - complexity
-assignee: null
+assignee: z-ai.glm-5.3-flash.001
 depends_on:
 - tic-b47a
 blocked_by: null
 created: '2026-09-01T07:25:20'
-updated: '2026-09-01T07:25:20'
-closed: null
+updated: '2026-09-01T19:45:00'
+closed: '2026-09-01T19:45:00'
 ---
 
 ## Description
@@ -34,3 +34,6 @@ Bump SCHEMA_VERSION, mirror in web/src/data/types.ts. Feed both numbers into the
 Verification: parser tests over fixtures with known construct counts, including a nested def (outer number excludes it), a comprehension with a guard, and a chain of boolean operators. Report the distribution across ../carnot and name the top few functions -- if they are not intuitively the hairy ones, the proxy is wrong. Run the Python test suite.
 
 ## Notes
+- 2026-09-01T19:29:13 z-ai.glm-5.3-flash.001: Design settled: add complexity + line_count to SymbolDef (parser walks its own tree-sitter body, skipping nested defs); bump SCHEMA_VERSION 5->6 both sides; surface in Inspector and web types.
+
+- 2026-09-01T19:44:15 z-ai.glm-5.3-flash.001: Implemented: SymbolDef.complexity (1 + if/elif, match cases, for, while, except handlers, boolean and/or, ternaries, comprehension guards; own body only, nested defs excluded, lambda decisions count for the enclosing function, param defaults excluded) and SymbolDef.line_count. SCHEMA_VERSION 5->6 in writer.py, mirrored in web types.ts. Inspector shows complexity/loc; call-flow shades nodes with complexity >= 10 (THEME.hairy border). Tests: 213 Python passed, 791 web passed, tsc clean. carnot distribution: 2579 callables, median 1, p90=5, p99=15, max=39; top: Gateway._validate(39), grant_cmds._rewrite(30), Plan._ticket(26).

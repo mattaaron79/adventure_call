@@ -67,6 +67,22 @@ class SymbolDef:
     decorators: list[str] = field(default_factory=list)
     bases: list[str] = field(default_factory=list)
     is_async: bool = False
+    #: Cyclomatic-style complexity proxy (tic-d7d1): ``1 +`` the number of
+    #: branching constructs in the callable's OWN body -- if/elif, match
+    #: cases, ``for``, ``while``, except handlers, boolean ``and``/``or``,
+    #: ternaries and comprehension guards.  Constructs in a nested def are
+    #: NOT counted; the nested def carries its own number.
+    #:
+    #: Deliberately NOT textbook cyclomatic complexity.  It is a proxy for
+    #: "how many ways can control move through this", it is compared against
+    #: other functions in the same codebase, and relative ordering is all it
+    #: supports.  Do not "correct" it into a different metric without moving
+    #: every consumer that reads it.
+    complexity: int = 1
+    #: Source lines the definition spans, header included (tic-d7d1).  The
+    #: unambiguous companion to :attr:`complexity`: a long simple function
+    #: and a short dense one are different problems.
+    line_count: int = 0
     code: str = ""
     stub: str = ""
 
@@ -89,6 +105,8 @@ class SymbolDef:
             "decorators": list(self.decorators),
             "bases": list(self.bases),
             "is_async": self.is_async,
+            "complexity": self.complexity,
+            "line_count": self.line_count,
             "stub": self.stub,
         }
         if include_code:
