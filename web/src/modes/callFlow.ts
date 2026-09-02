@@ -54,6 +54,13 @@ import {
   type CallCoverage,
   type CallMetricsIndex,
 } from '../data/callMetrics'
+import {
+  deriveControlFlowTags,
+  edgeTagsOf,
+  type ControlFlowTags,
+  type EdgeTags,
+  type NodeControlTags,
+} from '../data/controlFlow'
 import { deriveEntryPoints, type EntryPoints } from '../data/entryPoints'
 import { isTestPath } from '../data/roles'
 import { KIND_COLOR, THEME } from '../canvas/theme'
@@ -187,6 +194,20 @@ interface FlowEdgeData {
    * this is a guess" beats a confident-looking line that is not.
    */
   heuristic: boolean
+  /**
+   * How this line's call sites sit in their callers' control flow (tic-5069).
+   *
+   * Carried on `data` rather than folded into {@link SpecEdge.kind}, which is
+   * the field the cross-mode machinery keys on: selection highlighting and
+   * marching ants both test for a `call` edge, and encoding a tag in the kind
+   * would quietly stop these being recognised as call edges at all.
+   *
+   * Null for a line with no breadcrumbs behind it -- an external sink, the
+   * implicit `class -> __init__` edge, or any edge on a pre-v3 export.
+   * tic-23eb is what styles these; this ticket only has to derive and carry
+   * them.
+   */
+  tags: EdgeTags | null
 }
 
 /** What a rooted scene records on its spec root for `layout` and `style`,
@@ -538,6 +559,7 @@ function drawComponent(
   graph: CallGraph,
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
+  control: ControlFlowTags,
   component: number,
   expand: boolean,
   children: SpecNode[],
@@ -570,6 +592,7 @@ function drawComponent(
         metric?.reachDown ?? 0,
         recursive,
         groupCoverage(group, metrics),
+        groupControl(group, control),
       ),
       symbolId: group.length === 1 ? group[0] : null,
       expandable: false,
@@ -617,11 +640,20 @@ function drawComponent(
  * the drawn line is partly a guess, and saying so costs a dash pattern
  * rather than a reader's trust.
  */
+interface CollapsedEdge {
+  from: string
+  to: string
+  heuristic: boolean
+  /** Every breadcrumb behind this line, from every call-graph edge that
+   *  collapsed onto it (tic-5069). */
+  controls: (readonly string[])[]
+}
+
 function callEdgesBetween(
   graph: CallGraph,
   elementOf: ReadonlyMap<string, string>,
 ): SpecEdge[] {
-  const collapsed = new Map<string, { from: string; to: string; heuristic: boolean }>()
+  const collapsed = new Map<string, CollapsedEdge>()
   for (const [source, outgoing] of graph.callees) {
     const from = elementOf.get(source)
     if (from === undefined) continue
@@ -633,9 +665,16 @@ function callEdgesBetween(
       const known = collapsed.get(id)
       if (known) {
         if (heuristic) known.heuristic = true
+        // Breadcrumbs POOL rather than the first winning.  A drawn element
+        // can stand for several symbols -- a condensed knot most obviously --
+        // so one line can carry two functions' calls to the same target, and
+        // if one of them is guarded and the other is not, `mixed` is the true
+        // answer for the line.  Tagging each edge separately and picking one
+        // would report a fact about a call the reader cannot see.
+        if (edge.controls) known.controls.push(...edge.controls)
         continue
       }
-      collapsed.set(id, { from, to, heuristic })
+      collapsed.set(id, { from, to, heuristic, controls: [...(edge.controls ?? [])] })
     }
   }
   return [...collapsed].map(([id, edge]) => ({
@@ -645,7 +684,11 @@ function callEdgesBetween(
     kind: 'call',
     route: 'center',
     directional: true,
-    data: { external: false, heuristic: edge.heuristic } satisfies FlowEdgeData,
+    data: {
+      external: false,
+      heuristic: edge.heuristic,
+      tags: edgeTagsOf(edge.controls),
+    } satisfies FlowEdgeData,
   }))
 }
 
@@ -656,6 +699,7 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   // moment it has been fetched and is null -- visibly absent, never zero --
   // before that.
   const metrics = deriveCallMetrics(graph, data.index, entryPoints, data.registry)
+  const control = deriveControlFlowTags(graph)
 
   // The focus path names a SYMBOL here (see the module docstring).  One the
   // call graph does not hold -- a stale id, a directory from something that
@@ -665,8 +709,8 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   const focusPath = ui.focusPath ?? ''
   const rootComponent = focusPath === '' ? undefined : graph.componentOf.get(focusPath)
   return rootComponent === undefined
-    ? selectOverview(data, params, graph, entryPoints, metrics)
-    : selectRooted(data, params, graph, entryPoints, metrics, focusPath, rootComponent)
+    ? selectOverview(data, params, graph, entryPoints, metrics, control)
+    : selectRooted(data, params, graph, entryPoints, metrics, control, focusPath, rootComponent)
 }
 
 function selectOverview(
@@ -675,6 +719,7 @@ function selectOverview(
   graph: CallGraph,
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
+  control: ControlFlowTags,
 ): SceneSpec {
   // Filtered by FILE, not by the `test` role.  The role is name-based
   // (`^test_`), which misses the helpers a test module defines around its
@@ -697,7 +742,18 @@ function selectOverview(
   const goto = new Map<string, string>()
   const elementOf = new Map<string, string>()
   for (const component of frontier) {
-    drawComponent(data, graph, entryPoints, metrics, component, false, children, elementOf, goto)
+    drawComponent(
+      data,
+      graph,
+      entryPoints,
+      metrics,
+      control,
+      component,
+      false,
+      children,
+      elementOf,
+      goto,
+    )
   }
 
   const edges = callEdgesBetween(graph, elementOf)
@@ -728,6 +784,7 @@ function selectRooted(
   graph: CallGraph,
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
+  control: ControlFlowTags,
   focusPath: string,
   rootComponent: number,
 ): SceneSpec {
@@ -744,6 +801,7 @@ function selectRooted(
       graph,
       entryPoints,
       metrics,
+      control,
       component,
       params.expandCycles,
       children,
@@ -817,6 +875,31 @@ function selectRooted(
  * is the true statement about the chip, and per-member figures would not be
  * visible anywhere anyway until the knot is expanded.
  */
+/**
+ * Control tags shared by every member a chip stands for (tic-5069).
+ *
+ * A condensed knot speaks for several functions, and the honest claim about
+ * the chip is what is true of ALL of them: a knot where one member is an
+ * error handler and the other is not is not an error-handler chip.  A member
+ * nothing calls has no tags at all, and one untagged member is enough to sink
+ * the claim -- the same "no callers is not a vacuous yes" rule the roll-up
+ * itself uses.
+ */
+export function groupControl(
+  members: readonly string[],
+  control: ControlFlowTags,
+): NodeControlTags | null {
+  const tags = members.map((member) => control.nodeOf.get(member))
+  if (tags.length === 0 || tags.some((entry) => entry === undefined)) return null
+  const present = tags as NodeControlTags[]
+  return {
+    errorHandler: present.every((entry) => entry.errorHandler),
+    hot: present.every((entry) => entry.hot),
+    alwaysGuarded: present.every((entry) => entry.alwaysGuarded),
+    callers: present.reduce((total, entry) => total + entry.callers, 0),
+  }
+}
+
 export function groupCoverage(
   members: readonly string[],
   metrics: CallMetricsIndex,
@@ -867,8 +950,9 @@ export function sublabelFor(
   reachDown: number,
   recursive: boolean,
   coverage: CallCoverage | null = null,
+  control: NodeControlTags | null = null,
 ): string {
-  const parts = identityParts(members, module, framework, recursive)
+  const parts = identityParts(members, module, framework, recursive, control)
   parts.push(`reaches ${reachDown}`)
   appendCoverage(parts, coverage)
   return parts.join(' · ')
@@ -881,12 +965,20 @@ function identityParts(
   module: string | null,
   framework: string | null,
   recursive: boolean,
+  control: NodeControlTags | null = null,
 ): string[] {
   const parts: string[] = []
   if (module) parts.push(module)
   if (members.length > 1) parts.push(`${members.length} mutually recursive`)
   else if (recursive) parts.push('recursive')
   if (framework) parts.push(framework)
+  // A control roll-up goes in the same slot as the framework role, because it
+  // is the same kind of claim -- what part does this play -- and because both
+  // are short and rare enough not to crowd the chip.  `alwaysGuarded` is
+  // deliberately not here: it is true of a quarter of called symbols on both
+  // codebases, and a badge that common says nothing.
+  if (control?.errorHandler) parts.push('error handler')
+  else if (control?.hot) parts.push('hot')
   return parts
 }
 
@@ -978,7 +1070,7 @@ function appendExternalSinks(
       // External calls are unresolved by definition, not by conjecture, so
       // they never wear the heuristic marking; their own faint dashed style
       // already says what they are.
-      data: { external: true, heuristic: false } satisfies FlowEdgeData,
+      data: { external: true, heuristic: false, tags: null } satisfies FlowEdgeData,
     })
   }
 }

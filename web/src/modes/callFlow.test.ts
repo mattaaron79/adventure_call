@@ -26,6 +26,7 @@ import {
   groupCoverage,
   moduleTail,
   rankedEntryComponents,
+  groupControl,
   rootedElementIds,
   rootSublabelFor,
   sublabelFor,
@@ -33,6 +34,7 @@ import {
 } from './callFlow'
 import { shouldShowGoIn } from '../canvas/iconButtonLogic'
 import { THEME } from '../canvas/theme'
+import type { EdgeTags } from '../data/controlFlow'
 import { CALL_FLOW_MODE_ID } from './ids'
 import { modeById, MODES } from './registry'
 
@@ -986,5 +988,126 @@ describe('rootSublabelFor', () => {
     expect(rootSublabelFor(['m.a', 'm.b'], 'm', 'route', false, 0, false)).toBe(
       'm · 2 mutually recursive · route',
     )
+  })
+})
+
+
+describe('control-flow tags on the scene (tic-5069)', () => {
+  /** m.wide -> m.shared is guarded and looped; m.narrow -> m.shared is not. */
+  const TAGGED = {
+    ...GRAPH,
+    edges: EDGES.map((edge) =>
+      edge.source === 'm.wide' && edge.target === 'm.shared'
+        ? { ...edge, count: 2, controls: [['if'], ['for']] }
+        : { ...edge, controls: [[]] },
+    ),
+  } as CodebaseGraph
+  const tagged = deriveWorkspace(TAGGED, [])
+  const scene = callFlowMode.select(tagged, params(), { expanded: {} })
+  const dataOf = (id: string) =>
+    scene.edges.find((edge) => edge.id === id)!.data as { tags: EdgeTags | null }
+
+  it('carries the tags on data, never on the edge kind', () => {
+    // `kind` is what the cross-mode machinery keys on: selection highlighting
+    // and marching ants both test for a `call` edge, so encoding a tag there
+    // would quietly stop these being recognised as call edges at all.
+    for (const edge of scene.edges) expect(edge.kind).toBe('call')
+    expect(dataOf('call:m.wide->m.shared').tags!.guard).toBe('guarded')
+    expect(dataOf('call:m.narrow->m.shared').tags!.guard).toBe('unguarded')
+  })
+
+  it('pools the breadcrumbs of every call-graph edge that collapses onto one line', () => {
+    // A drawn element can stand for several symbols, so one line can carry
+    // two functions' calls to the same target.  Tagging one edge and picking
+    // it would report a fact about a call the reader cannot see.
+    const pooled = deriveWorkspace(
+      {
+        ...GRAPH,
+        edges: [
+          { ...calls('m.ping', 'm.deep'), controls: [[]] },
+          { ...calls('m.pong', 'm.deep'), controls: [['if']] },
+          ...EDGES.map((edge) => ({ ...edge, controls: [[]] })),
+        ],
+      } as CodebaseGraph,
+      [],
+    )
+    // m.ping and m.pong are one condensed knot, so both edges draw one line.
+    const spec = callFlowMode.select(pooled, params({ depth: 2 }), { expanded: {} })
+    const line = spec.edges.find((edge) => edge.id.endsWith('->m.deep'))!
+    expect((line.data as { tags: EdgeTags }).tags.guard).toBe('mixed')
+    expect((line.data as { tags: EdgeTags }).tags.sites).toBe(2)
+  })
+
+  it('gives an external sink line no tags, because it has no breadcrumbs', () => {
+    const withExternals = deriveWorkspace(TAGGED, [], '', registryWith([['m.shared', 'json.loads']]))
+    const spec = callFlowMode.select(withExternals, params(), { expanded: {} })
+    const external = spec.edges.find((edge) => edge.id.startsWith('ext:'))!
+    expect((external.data as { tags: unknown }).tags).toBeNull()
+  })
+
+  it('badges a function every one of whose callers calls it from an error path', () => {
+    const rescued = deriveWorkspace(
+      {
+        ...GRAPH,
+        edges: EDGES.map((edge) =>
+          edge.target === 'm.deep'
+            ? { ...edge, controls: [['try:except']] }
+            : { ...edge, controls: [[]] },
+        ),
+      } as CodebaseGraph,
+      [],
+    )
+    const spec = callFlowMode.select(rescued, params({ depth: 2 }), { expanded: {} })
+    expect(spec.root.children.find((n) => n.id === 'm.deep')!.sublabel).toContain('error handler')
+  })
+
+  it('badges a function every one of whose call sites is inside a loop', () => {
+    const spec = callFlowMode.select(
+      deriveWorkspace(
+        {
+          ...GRAPH,
+          edges: EDGES.map((edge) =>
+            edge.target === 'm.deep'
+              ? { ...edge, controls: [['for']] }
+              : { ...edge, controls: [[]] },
+          ),
+        } as CodebaseGraph,
+        [],
+      ),
+      params({ depth: 2 }),
+      { expanded: {} },
+    )
+    expect(spec.root.children.find((n) => n.id === 'm.deep')!.sublabel).toContain('hot')
+  })
+
+  it('does not badge `always guarded`, which is true of a quarter of everything', () => {
+    // Derived and available; simply too common to be worth a chip's ink.
+    const spec = callFlowMode.select(tagged, params(), { expanded: {} })
+    for (const child of spec.root.children) {
+      expect(child.sublabel ?? '').not.toContain('always guarded')
+    }
+  })
+
+  it('says nothing about a knot unless every member agrees', () => {
+    expect(
+      groupControl(['m.ping', 'm.pong'], {
+        edgeOf: new Map(),
+        nodeOf: new Map([
+          ['m.ping', { errorHandler: true, hot: false, alwaysGuarded: true, callers: 1 }],
+          ['m.pong', { errorHandler: false, hot: false, alwaysGuarded: true, callers: 1 }],
+        ]),
+      }),
+    ).toEqual({ errorHandler: false, hot: false, alwaysGuarded: true, callers: 2 })
+  })
+
+  it('gives a knot no tags at all when one member has no callers', () => {
+    expect(
+      groupControl(['m.ping', 'm.pong'], {
+        edgeOf: new Map(),
+        nodeOf: new Map([
+          ['m.ping', { errorHandler: true, hot: true, alwaysGuarded: true, callers: 1 }],
+        ]),
+      }),
+    ).toBeNull()
   })
 })

@@ -446,6 +446,13 @@ export interface CallEdge {
   confidence: Confidence
   callTypes: readonly CallType[]
   /**
+   * One control-flow breadcrumb per call site behind this edge (tic-b47a),
+   * carried through from the export so tic-5069 can tag the edge without a
+   * second pass over the raw edges.  Parallel to `count`; absent on an
+   * `implicit` edge, which has no call site, and on a pre-v3 export.
+   */
+  controls?: readonly (readonly string[])[]
+  /**
    * True for the derived `class -> class.__init__` edge, which stands for
    * "constructing this runs that" and has no call site of its own.  Anything
    * reporting on real call sites -- a coverage figure, a line list, a jump to
@@ -595,6 +602,7 @@ export function deriveCallGraph(edges: readonly GraphEdge[], index: SymbolIndex)
       lines: edge.lines,
       confidence: edge.confidence,
       callTypes: edge.call_types,
+      ...(edge.controls ? { controls: edge.controls } : {}),
     })
   }
 
