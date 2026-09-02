@@ -174,6 +174,10 @@ function rowNodes(data: Workspace, file: FsFile): SpecNode[] {
     children: [],
     data: row,
     gotoTo: row.gotoTo,
+    // Function and method rows get the cross-mode 'trace call flow'
+    // affordance (tic-d6af), declared once on the shared Row.  Absent on
+    // every other kind; the canvas draws it generically.
+    openIn: row.openIn,
   }))
 }
 

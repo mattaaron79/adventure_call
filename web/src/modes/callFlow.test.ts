@@ -31,10 +31,11 @@ import {
   rootSublabelFor,
   sublabelFor,
   toElkGraphInput,
+  edgeStyleFor,
 } from './callFlow'
 import { shouldShowGoIn } from '../canvas/iconButtonLogic'
 import { THEME } from '../canvas/theme'
-import type { EdgeTags } from '../data/controlFlow'
+import { edgeTagsOf, type EdgeTags } from '../data/controlFlow'
 import { CALL_FLOW_MODE_ID } from './ids'
 import { modeById, MODES } from './registry'
 
@@ -861,6 +862,96 @@ describe('heuristic edges (tic-171f)', () => {
   function hWorkspaceOf(graph: CodebaseGraph): ReturnType<typeof deriveWorkspace> {
     return deriveWorkspace(graph, [])
   }
+})
+
+describe('edge styles from control-flow tags (tic-23eb)', () => {
+  /** Edges with breadcrumbs, so the tags are real derivations, not literals
+   *  the tests could lie about. */
+  const TAGGED_GRAPH: CodebaseGraph = {
+    ...GRAPH,
+    edges: [
+      { ...calls('m.wide', 'm.shared'), controls: [['if']] },
+      { ...calls('m.wide', 'm.loops'), controls: [['for']] },
+      { ...calls('m.narrow', 'm.shared'), controls: [['try:except']] },
+      { ...calls('m.deep', 'm.deeper'), controls: [['type-checking']] },
+      { ...calls('m.shared', 'm.deep'), controls: [['if'], []] },
+    ],
+  }
+  const TAGGED_WORKSPACE = deriveWorkspace(TAGGED_GRAPH, [])
+  const styleOf = (id: string) => {
+    const spec = callFlowMode.select(TAGGED_WORKSPACE, params(), { expanded: {} })
+    const styles = callFlowMode.style(spec, params())
+    return { data: spec.edges.find((e) => e.id === id)!, style: styles.edges.get(id)! }
+  }
+
+  it('draws a guarded edge dashed', () => {
+    expect(styleOf('call:m.wide->m.shared').style.dash).toEqual([6, 4])
+  })
+
+  it('draws a looped edge heavier than the unguarded default', () => {
+    const plain = edgeStyleFor({ external: false, heuristic: false, tags: edgeTagsOf([[]]) })
+    const looped = edgeStyleFor({ external: false, heuristic: false, tags: edgeTagsOf([['for']]) })
+    expect(looped.strokeWidth!).toBeGreaterThan(plain.strokeWidth!)
+  })
+
+  it('gives mixed the guarded dash rather than a third treatment for 2% of edges', () => {
+    // Measured (tic-5069): mixed is 2.2%/1.5% of edges.  Its dash claim --
+    // "this call can be skipped" -- is true of it, so the cheap correct
+    // choice is to share guarded's dash and let the inspector say the rest.
+    expect(edgeStyleFor({ external: false, heuristic: false, tags: edgeTagsOf([['if'], []]) }).dash).toEqual([6, 4])
+  })
+
+  it('marks an error path with the one warm colour in the palette', () => {
+    expect(styleOf('call:m.narrow->m.shared').style.stroke).toBe(THEME.cycle)
+  })
+
+  it('does not draw a type-checking-only edge at all', () => {
+    // It fired ZERO times on both measured codebases and structurally will on
+    // most (`if TYPE_CHECKING` guards imports, not calls), so it earns no
+    // param, no styling and no legend entry until an export exists where it
+    // fires.  Absence is the honest treatment of a tag that never happens.
+    const style = edgeStyleFor({
+      external: false,
+      heuristic: false,
+      tags: edgeTagsOf([['type-checking']]),
+    })
+    expect(style.opacity).toBe(0)
+  })
+
+  it('leaves the unguarded majority solid -- styling 78% of edges is how a style phase becomes noise', () => {
+    // The base fixture's edges carry no breadcrumbs, so their tags are null:
+    // the unguarded-by-default case.
+    const spec = callFlowMode.select(WORKSPACE, params(), { expanded: {} })
+    const style = callFlowMode.style(spec, params()).edges.get('call:m.wide->m.shared')!
+    expect(style.dash).toBeUndefined()
+    expect(style.stroke).toBe(THEME.edge)
+    expect(style.opacity).toBe(0.9)
+  })
+
+  it('keeps a heuristic edge on the confidence dash even when guarded, but still weights and warms it', () => {
+    // One dash channel; when confidence and the guard collide, "some of this
+    // is a guess" is the louder claim on the line.
+    const style = edgeStyleFor({
+      external: false,
+      heuristic: true,
+      tags: edgeTagsOf([['for', 'try:except'], ['try:except']]),
+    })
+    expect(style.dash).toEqual([2, 4])
+    expect(style.opacity).toBeLessThan(0.9)
+    expect(style.strokeWidth).toBeCloseTo(1.7)
+    expect(style.stroke).toBe(THEME.cycle)
+  })
+
+  it('keeps the external sink voice untouched by tags', () => {
+    expect(
+      edgeStyleFor({ external: true, heuristic: false, tags: edgeTagsOf([['for']]) }),
+    ).toEqual({ stroke: THEME.textFaint, strokeWidth: 1, dash: [4, 4], opacity: 0.5 })
+  })
+
+  it('never lets a tag become the kind, which cross-mode machinery keys on', () => {
+    const spec = callFlowMode.select(TAGGED_WORKSPACE, params(), { expanded: {} })
+    for (const edge of spec.edges) expect(edge.kind).toBe('call')
+  })
 })
 
 describe('destinationOf (tic-f21f)', () => {

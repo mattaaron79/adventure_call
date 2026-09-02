@@ -223,6 +223,31 @@ html, body, #root {
   align-items: center;
   gap: 7px;
 }
+/* 'Trace call flow' (tic-d6af): the inspector's cross-mode jump for callable
+   selections.  Quiet by default, accent on hover, like the card's other
+   buttons -- it is a navigation affordance, not a call to action. */
+.inspector-trace {
+  margin: 0 0 10px;
+}
+.inspector-trace-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.inspector-trace-button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.inspector-trace-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .inspector-head strong { font-size: 13px; }
 .inspector-kind {
   margin-left: auto;

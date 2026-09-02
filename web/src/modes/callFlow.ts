@@ -1195,25 +1195,75 @@ function style(spec: SceneSpec): StyleMap {
   }
   const edges = new Map<string, EdgeStyle>()
   for (const edge of spec.edges) {
-    const data = edge.data as FlowEdgeData | undefined
-    const external = data?.external ?? false
-    // Three edge voices (tic-171f): solid for exact resolutions, finely
-    // dashed for lines standing partly on heuristic ones, and the faint
-    // coarse dash an external sink already had.  The heuristic voice is
-    // quieter but present -- an edge whose confidence is partial should
-    // look slightly less certain than one that is not, without demanding a
-    // legend to decode.
-    const heuristic = data?.heuristic ?? false
-    edges.set(
-      edge.id,
-      external
-        ? { stroke: THEME.textFaint, strokeWidth: 1, dash: [4, 4], opacity: 0.5 }
-        : heuristic
-          ? { stroke: THEME.edge, strokeWidth: 1.1, dash: [2, 4], opacity: 0.55 }
-          : { stroke: THEME.edge, strokeWidth: 1.4, opacity: 0.9 },
-    )
+    edges.set(edge.id, edgeStyleFor(edge.data as FlowEdgeData | undefined))
   }
   return { nodes, groups: new Map(), edges }
+}
+
+/**
+ * The visual treatment of one call edge, from its mode-private payload.
+ * Exported for the tests, which build payloads directly rather than standing
+ * up whole graphs per tag.
+ *
+ * ## What gets a channel, and what does not (tic-23eb)
+ *
+ * The measured tag distribution (tic-5069) is lopsided: unguarded is 78%/74%
+ * of edges on carnot/hypermenu, guarded 20%/24%, looped 9%/9%, error-path
+ * 1.3%/0.3%, and type-checking-only fires ZERO times on both.  So the budget
+ * goes to the two tags a reader will actually meet:
+ *
+ * - `guarded` (and `mixed`, which is partly guarded -- see below) draws
+ *   dashed.  A dash's claim is "this call can be skipped", which is true of
+ *   both: mixed means some sites are guarded, so drawing it solid would
+ *   overclaim and drawing it a THIRD way would spend a second channel on 2%
+ *   of edges.  The exact split stays a job for the inspector.
+ * - `looped` draws a heavier stroke.  "This can fire more than once" is the
+ *   one tag that changes how many times an edge's meaning is consumed, and
+ *   weight is the channel that reads at any zoom without a legend.
+ * - `errorPath` takes THEME.cycle, the palette's one warm colour: 1% of
+ *   edges, so rarity is what makes it legible, and the chips already use the
+ *   same warm accent for their 'error handler' badge -- one colour, one
+ *   claim, both ends of the line.
+ * - `typeCheckingOnly` is NOT drawn (opacity 0).  It fired zero times on
+ *   both available codebases and structurally will on most -- `if
+ *   TYPE_CHECKING` guards imports, not calls -- so it gets no param, no
+ *   styling and no legend entry until an export exists where it fires.  The
+ *   tags still ride on the data, so styling it later is a one-line change.
+ * - `unguarded` is the default and gets nothing: styling the 78% majority is
+ *   how a style phase becomes noise.
+ *
+ * Channels compose where they do not collide.  Heuristic confidence already
+ * owns the dash channel on a heuristic edge, so a heuristic+guarded edge
+ * keeps the fine heuristic dash -- "some of this is a guess" outranks "it
+ * can be skipped" when one line must carry both -- and weight/colour still
+ * apply to it.  External sinks predate all of this and keep their voice.
+ */
+export function edgeStyleFor(data: FlowEdgeData | undefined): EdgeStyle {
+  const external = data?.external ?? false
+  // Three edge voices (tic-171f): solid for exact resolutions, finely
+  // dashed for lines standing partly on heuristic ones, and the faint
+  // coarse dash an external sink already had.  The heuristic voice is
+  // quieter but present -- an edge whose confidence is partial should
+  // look slightly less certain than one that is not, without demanding a
+  // legend to decode.
+  const heuristic = data?.heuristic ?? false
+  if (external) return { stroke: THEME.textFaint, strokeWidth: 1, dash: [4, 4], opacity: 0.5 }
+
+  const tags = data?.tags ?? null
+  if (tags?.typeCheckingOnly) return { stroke: THEME.edge, strokeWidth: 1, opacity: 0 }
+
+  let style: EdgeStyle = heuristic
+    ? { stroke: THEME.edge, strokeWidth: 1.1, dash: [2, 4], opacity: 0.55 }
+    : { stroke: THEME.edge, strokeWidth: 1.4, opacity: 0.9 }
+  if (tags?.errorPath) style = { ...style, stroke: THEME.cycle }
+  if (tags?.looped) style = { ...style, strokeWidth: (style.strokeWidth ?? 1.4) + 0.6 }
+  // `mixed` shares the guarded dash; the docstring above says why.  A
+  // heuristic edge keeps its own, finer dash instead -- one dash channel,
+  // and confidence is the louder claim on that line.
+  if (!heuristic && (tags?.guard === 'guarded' || tags?.guard === 'mixed')) {
+    style = { ...style, dash: [6, 4] }
+  }
+  return style
 }
 
 /**

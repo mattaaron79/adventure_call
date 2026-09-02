@@ -10,6 +10,7 @@ import {
   neighbourhoodOf,
   toElkGraphInput,
 } from './importGraph'
+import { CALL_FLOW_MODE_ID } from './ids'
 import type { SceneSpec } from './types'
 
 function node(id: string, kind: SymbolKind, file_path: string, module: string): GraphNode {
@@ -866,5 +867,44 @@ describe('cacheKeyOf with a Local View', () => {
     expect(cacheKeyOf(specOf(path('p')), sizes, PARAMS)).not.toBe(
       cacheKeyOf(specOf(path('q')), sizes, PARAMS),
     )
+  })
+})
+
+describe('importGraphMode row affordances (tic-d6af)', () => {
+  /** The main fixture holds no callable, so one is added: an expanded
+   *  container's function row should carry the same cross-mode affordance an
+   *  fs-tree container's does -- fileDetail is shared, and the two modes must
+   *  not drift. */
+  const RUN_WS = deriveWorkspace(
+    {
+      ...GRAPH,
+      nodes: [
+        node('app.run', 'module', 'src/run.py', 'app.run'),
+        node('app.run.go', 'function', 'src/run.py', 'app.run'),
+        node('app.run.RETRIES', 'variable', 'src/run.py', 'app.run'),
+      ],
+      edges: [],
+    },
+    [],
+  )
+  const spec = importGraphMode.select(RUN_WS, importGraphMode.defaultParams, {
+    expanded: { 'src/run.py': true },
+  })
+  // Rows live INSIDE their file's node on the raw spec -- only renderMode's
+  // assemble flattens the scene -- so the search walks one level down.
+  const rows = spec.root.children.flatMap((file) => file.children)
+  const row = (suffix: string) => rows.find((n) => n.id === `row:src/run.py:${suffix}`)
+
+  it('offers to trace call flow from a function row', () => {
+    expect(row('app.run.go')!.openIn).toEqual({
+      modeId: CALL_FLOW_MODE_ID,
+      target: 'app.run.go',
+      icon: 'local-view',
+      label: 'Trace call flow',
+    })
+  })
+
+  it('stays off a row with no call flow to trace', () => {
+    expect(row('app.run.RETRIES')!.openIn).toBeUndefined()
   })
 })

@@ -450,3 +450,32 @@ describe('Inspector Imported By rendering (tic-2caf)', () => {
     expect(html).toContain('<h3>Imports</h3>')
   })
 })
+
+describe('Inspector trace call flow (tic-d6af)', () => {
+  const render = (selected: GraphNode) =>
+    renderToStaticMarkup(
+      createElement(Inspector, {
+        node: selected,
+        workspace: WORKSPACE,
+        absoluteRoot: '/repo',
+        collapsed: false,
+        onToggleCollapsed: () => {},
+      }),
+    )
+
+  it('offers the jump for a function selection, whatever mode is active', () => {
+    // The inspector is the one surface the affordance reaches from ANY mode
+    // and ANY selection, including elements that carry no canvas affordance.
+    expect(render(node('app.loop.run', 'function'))).toContain('Trace call flow')
+  })
+
+  it('offers it for a method selection too', () => {
+    expect(render(node('app.loop.Agent.step', 'method'))).toContain('Trace call flow')
+  })
+
+  it('offers nothing for a selection with no call flow to trace', () => {
+    for (const kind of ['module', 'class', 'variable', 'attribute'] as SymbolKind[]) {
+      expect(render(node('app.errors.PluginError', kind))).not.toContain('Trace call flow')
+    }
+  })
+})

@@ -12,7 +12,7 @@ import type {
 } from '../data/types'
 import { fileRows, layoutContainer } from './fileDetail'
 import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './fsTree'
-import { IMPORT_GRAPH_MODE_ID } from './ids'
+import { CALL_FLOW_MODE_ID, IMPORT_GRAPH_MODE_ID } from './ids'
 import { renderMode, resolveGoto } from './types'
 
 /**
@@ -825,5 +825,41 @@ describe('fsTreeMode with an unresolvable focus (tic-e738)', () => {
     const { scene } = render({}, { ...fsTreeMode.defaultParams }, 0, WORKSPACE, 'src/app/loop.py')
     expect(scene.nodes.length).toBeGreaterThan(0)
     expect(scene.nodes.map((n) => n.id)).toContain('src/app/loop.py')
+  })
+})
+
+describe('fsTreeMode row affordances (tic-d6af)', () => {
+  const { scene } = render({ 'src/app/loop.py': true })
+  const rowOf = (suffix: string) =>
+    scene.nodes.find((n) => n.id === `row:src/app/loop.py:${suffix}`)
+
+  it('offers to trace call flow from a function row, targeted in the destination mode vocabulary', () => {
+    // The target is a SYMBOL ID -- the call-flow mode reads focusPath as one
+    // -- not the file path this mode's own focus speaks.
+    expect(rowOf('app.loop.run')!.openIn).toEqual({
+      modeId: CALL_FLOW_MODE_ID,
+      target: 'app.loop.run',
+      icon: 'local-view',
+      label: 'Trace call flow',
+    })
+  })
+
+  it('offers it from a method row too', () => {
+    expect(rowOf('app.loop.Agent.step')!.openIn).toMatchObject({
+      modeId: CALL_FLOW_MODE_ID,
+      target: 'app.loop.Agent.step',
+    })
+  })
+
+  it('puts it on callables only -- a class, attribute or variable row has no call flow to trace', () => {
+    for (const id of ['app.loop.Agent', 'app.loop.Agent.name', 'app.loop.LIMIT']) {
+      expect(rowOf(id)!.openIn).toBeUndefined()
+    }
+  })
+
+  it('stays off an import row, which keeps the goto affordance it already had', () => {
+    const imp = rowOf('imp:app.errors.PluginError')!
+    expect(imp.openIn).toBeUndefined()
+    expect(imp.gotoTo).toBe('src/app/errors.py')
   })
 })

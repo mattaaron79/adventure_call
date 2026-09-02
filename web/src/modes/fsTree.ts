@@ -281,6 +281,10 @@ function select(data: Workspace, params: FsTreeParams, ui: UiState): SceneSpec {
         // Import rows get a canvas goto button that flies the camera to the
         // file they import (tic-4d7c); rows without a target stay plain.
         gotoTo: row.gotoTo,
+        // Function and method rows get the cross-mode 'trace call flow'
+        // affordance (tic-d6af), declared once on the shared Row.  Absent on
+        // every other kind; the canvas draws it generically.
+        openIn: row.openIn,
       }))
     }
     return node

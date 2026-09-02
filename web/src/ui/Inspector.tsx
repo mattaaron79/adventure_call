@@ -12,6 +12,12 @@ import type { SymbolIndex, Workspace } from '../data/derive'
 import { normalizePath } from '../data/filters'
 import { loadRegistry } from '../data/load'
 import type { GraphNode, SymbolKind } from '../data/types'
+// The cross-mode jump (tic-d6af): naming the destination mode takes the leaf
+// ids module, and taking the jump takes the store's openInMode -- the same
+// call the canvas's open-in button makes, so a jump from here records the
+// same excursion provenance and gets the same way back.
+import { CALL_FLOW_MODE_ID } from '../modes/ids'
+import { useWorkspace } from '../state/store'
 import { GotoIcon } from './GotoIcon'
 
 type SourceState = 'idle' | 'loading' | 'ready' | 'unavailable'
@@ -81,6 +87,17 @@ export function launchVscodeLink(url: string): void {
   iframe.src = url
   document.body.appendChild(iframe)
   window.setTimeout(() => iframe.remove(), 1000)
+}
+
+/**
+ * The target of the 'trace call flow' jump (tic-d6af): the selected symbol's
+ * id, in the call-flow mode's focus vocabulary, or null when the selection
+ * has no call flow to trace -- a module, class, variable or attribute.  Only
+ * a function or method can set something in motion, and an affordance that
+ * does nothing is worse than none.
+ */
+export function traceCallFlowTarget(node: GraphNode): string | null {
+  return node.kind === 'function' || node.kind === 'method' ? node.symbol_id : null
 }
 
 /** A human-readable line range: `L12` for a single line, `L12–L34` for a span. */
@@ -263,6 +280,10 @@ export function Inspector({
   }, [node])
 
   const filePath = useMemo(() => (node ? normalizePath(node.file_path) : ''), [node])
+  // The 'trace call flow' jump (tic-d6af): present for ANY callable selection
+  // in ANY mode, including selections whose scene element carries no
+  // affordance -- that is what makes the inspector the cheapest surface for it.
+  const traceTarget = useMemo(() => (node ? traceCallFlowTarget(node) : null), [node])
 
   // The file's imports and its per-kind symbol counts, derived once per
   // selection from the in-memory workspace.
@@ -337,6 +358,22 @@ export function Inspector({
           ) : (
             <p className="inspector-path">
               {node.file_path}:{node.start_line}
+            </p>
+          )}
+
+          {traceTarget !== null && (
+            <p className="inspector-trace">
+              <button
+                type="button"
+                className="inspector-trace-button"
+                title={`Trace call flow from ${node.name}`}
+                aria-label={`Trace call flow from ${node.name}`}
+                onClick={() => {
+                  useWorkspace.getState().openInMode(CALL_FLOW_MODE_ID, traceTarget)
+                }}
+              >
+                Trace call flow
+              </button>
             </p>
           )}
 

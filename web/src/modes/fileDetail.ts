@@ -25,6 +25,8 @@
  */
 import type { FsFile, Workspace } from '../data/derive'
 import type { SymbolKind } from '../data/types'
+import { CALL_FLOW_MODE_ID } from './ids'
+import type { OpenInTarget } from './types'
 
 /** Container geometry, in world units. Shared by `measure` and `layout`. */
 export const CONTAINER = {
@@ -60,6 +62,18 @@ export interface Row {
    * the same file, external imports (tic-314c).
    */
   gotoTo?: string
+  /**
+   * A cross-mode target for the row (tic-d6af): function and method rows
+   * carry an openIn pointing at the call-flow mode rooted on this row's
+   * symbol, so the canvas draws the 'trace call flow' affordance generically
+   * and both container modes get it from this one declaration.  Absent on
+   * every other kind -- a class, variable, attribute or import row has no
+   * call flow to trace, and an affordance that does nothing is worse than
+   * none.  The icon is the same glyph the call-flow chips' own 'Trace call
+   * flow' affordance wears (tic-7a5e), so one gesture looks like itself
+   * everywhere it appears.
+   */
+  openIn?: OpenInTarget
 }
 
 export const rowId = (path: string, suffix: string): string => `row:${path}:${suffix}`
@@ -74,6 +88,11 @@ export function sectionRow(path: string, title: string): Row {
   }
 }
 
+/** The kinds that HAVE a call flow to trace (tic-d6af).  A class is called by
+ *  instantiating it, which the call graph does not model as call flow; a
+ *  variable or attribute is not called at all. */
+const TRACEABLE_KINDS: ReadonlySet<SymbolKind> = new Set(['function', 'method'])
+
 export function memberRow(path: string, node: { id: string; kind: SymbolKind; name: string; signature: string }, indent: boolean): Row {
   return {
     id: rowId(path, node.id),
@@ -81,6 +100,20 @@ export function memberRow(path: string, node: { id: string; kind: SymbolKind; na
     label: node.signature !== '' ? node.signature : node.name,
     kind: node.kind,
     indent,
+    // Only a callable offers the jump; TRACEABLE_KINDS says why the rest
+    // stay plain.  The target is a SYMBOL ID because that is the call-flow
+    // mode's focus vocabulary -- a mode declaring an openIn speaks the
+    // destination's language, not its own.
+    ...(TRACEABLE_KINDS.has(node.kind)
+      ? {
+          openIn: {
+            modeId: CALL_FLOW_MODE_ID,
+            target: node.id,
+            icon: 'local-view',
+            label: 'Trace call flow',
+          } satisfies OpenInTarget,
+        }
+      : {}),
   }
 }
 

@@ -1,7 +1,7 @@
 ---
 id: tic-d6af
 title: A 'trace call flow' affordance on function and method rows
-status: open
+status: closed
 type: feature
 tier: medium
 domain: ui
@@ -11,14 +11,14 @@ tags:
 - navigation
 - filedetail
 - affordance
-assignee: null
+assignee: z-ai.glm-5.3-flash.001
 depends_on:
 - tic-e738
 - tic-7a5e
 blocked_by: null
 created: '2026-09-01T07:24:42'
-updated: '2026-09-01T17:47:35'
-closed: null
+updated: '2026-09-01T18:15:16'
+closed: '2026-09-01T18:15:16'
 ---
 
 ## Description
@@ -42,3 +42,5 @@ Two things to know while building:
 * It is one level deep and replaces on each jump, so fs-tree -> call flow -> (a chip re-roots) keeps 'back to Files & symbols' the whole way, because re-rooting is setFocusPath rather than a jump.
 
 Also note tic-7a5e already gives every call-flow chip a focusTo affordance ('Trace call flow'), so the inspector button this ticket wants is the remaining gap for selections whose element carries no affordance.
+
+- 2026-09-01T18:13:45 z-ai.glm-5.3-flash.001: Implemented. The affordance is declared once on the shared Row in fileDetail.ts: function and method member rows carry openIn -> { modeId: CALL_FLOW_MODE_ID, target: <symbol id>, icon: 'local-view', label: 'Trace call flow' } -- the same glyph and wording tic-7a5e's chips use, so one gesture looks like itself everywhere. Both fsTree and importGraph pass row.openIn through their row->spec mapping, so one change landed in both modes; no special-casing. The inspector got the jump too: traceCallFlowTarget(node) returns the symbol id for function/method selections and null otherwise, and a 'Trace call flow' button calls useWorkspace.getState().openInMode(CALL_FLOW_MODE_ID, target) -- the same call the canvas's open-in button makes, so excursion provenance and the tic-53f7 return trip come for free; no second return mechanism was built. Non-callable rows (class, attribute, variable, import) and non-callable selections get nothing. Tests: fsTree.test.ts +4, importGraph.test.ts +2, Inspector.test.ts +3. npm run test (754 pass) and tsc -b clean. Remaining from verification: browser-verify the trip from both container modes and the inspector, and the return trip landing back on the file.
