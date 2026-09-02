@@ -1066,3 +1066,160 @@ def test_self_and_cls_are_never_references(parse_source):
 def test_a_calls_callee_is_not_a_reference(parse_source):
     """It is a call; the call machinery already has it."""
     assert _refs(parse_source, "def a(): pass\ndef go():\n    a()\n") == set()
+
+
+# -- locals (tic-799e) -------------------------------------------------------
+
+
+def _local_names(parse_source, name: str, source: str) -> list[str]:
+    """The `locals` of the definition spelled `name` in a one-def snippet."""
+    parsed = parse_source(source)
+    symbols = {s.name: s for s in parsed.symbols}
+    assert name in symbols, f"{name} missing from {sorted(symbols)}"
+    return symbols[name].locals
+
+
+def test_locals_capture_every_binding_form(parse_source):
+    """Each source the ticket names contributes its names, in source order."""
+    locals = _local_names(
+        parse_source,
+        "handler",
+        """
+        def handler(req):
+            total = 0
+            done: bool = False
+            with open(req.path) as handle, open(req.log) as (raw, cooked):
+                pass
+            try:
+                parse(req)
+            except ValueError as err:
+                flagged = True
+            while (ok := next(req)) is not None:
+                out = ok
+            trimmed = [x for x in ok]
+            pairs = {k: v for k, v in req.items()}
+            gen = (i * 2 for i in trimmed)
+            return total
+        """,
+    )
+    # Source order of FIRST binding: an assignment's own target precedes
+    # the names bound inside its right-hand side.
+    assert locals == [
+        "total",      # assignment
+        "done",       # bare annotation (still an assignment node)
+        "handle",     # with ... as
+        "raw",        # with ... as a tuple target
+        "cooked",
+        "err",        # except ... as
+        "flagged",
+        "ok",         # walrus
+        "out",
+        "trimmed",
+        "x",          # comprehension target (list)
+        "pairs",
+        "k",          # comprehension target (dict)
+        "v",
+        "gen",
+        "i",          # comprehension target (generator)
+    ]
+
+
+def test_locals_capture_for_targets(parse_source):
+    locals = _local_names(
+        parse_source,
+        "go",
+        """
+        def go(items):
+            for item in items:
+                use(item)
+            for key, value in items:
+                use(key)
+            return item
+        """,
+    )
+    assert locals == ["item", "key", "value"]
+
+
+def test_locals_capture_tuple_and_starred_targets(parse_source):
+    locals = _local_names(
+        parse_source,
+        "unpack",
+        """
+        def unpack(pairs):
+            first, second = pairs
+            head, *rest = pairs
+            (a, (b, c)) = pairs
+            return first
+        """,
+    )
+    assert locals == ["first", "second", "head", "rest", "a", "b", "c"]
+
+
+def test_locals_are_deduplicated_in_source_order(parse_source):
+    """Shadowing is one entry: the name was bound here, once is the answer."""
+    locals = _local_names(
+        parse_source,
+        "go",
+        """
+        def go(xs):
+            x = 1
+            for x in xs:
+                y = x
+            x = y
+            y = 2
+            return x
+        """,
+    )
+    assert locals == ["x", "y"]
+
+
+def test_locals_exclude_params_and_nested_defs(parse_source):
+    parsed = parse_source(
+        """
+        def outer(param_a, param_b=1):
+            outer_local = param_a
+            def inner(inner_param):
+                inner_local = inner_param
+                return inner_local
+            class Helper:
+                helper_body_name = 1
+            return inner(outer_local)
+        """
+    )
+    by_name = {s.name: s for s in parsed.symbols}
+    assert by_name["outer"].locals == ["outer_local"]
+    assert by_name["inner"].locals == ["inner_local"]
+
+
+def test_non_callables_carry_no_locals(parse_source):
+    parsed = parse_source(
+        """
+        TOP = 1
+
+        class C:
+            shared = []
+
+            def m(self):
+                local = 2
+        """
+    )
+    by_name = {s.name: s for s in parsed.symbols}
+    assert by_name["TOP"].locals == []
+    assert by_name["C"].locals == []
+    assert by_name["shared"].locals == []
+
+
+def test_locals_reach_the_export(analyse, tmp_path):
+    builder, files, _ = analyse(
+        {
+            "m.py": """
+            def go():
+                local = 1
+                return local
+            """
+        }
+    )
+    go = next(s for f in files for s in f.symbols if s.name == "go")
+    assert go.locals == ["local"]
+    node = builder.graph.nodes[go.symbol_id]
+    assert node["locals"] == ["local"]

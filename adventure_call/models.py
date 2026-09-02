@@ -83,6 +83,15 @@ class SymbolDef:
     #: unambiguous companion to :attr:`complexity`: a long simple function
     #: and a short dense one are different problems.
     line_count: int = 0
+    #: Plain names bound anywhere in the callable's OWN body (tic-799e), in
+    #: source order of first binding and deduplicated.  Binding sources:
+    #: assignment targets (tuple/starred included), ``for`` targets,
+    #: ``with ... as``, ``except ... as``, walrus and comprehension targets.
+    #: NOT params (they are on :attr:`params`), NOT nested defs -- their locals
+    #: are their own.  A name list, deliberately not a symbol table: nothing
+    #: here is resolved or typed, and tic-97ce's resolution design is
+    #: untouched.  Empty on non-callables.
+    locals: list[str] = field(default_factory=list)
     code: str = ""
     stub: str = ""
 
@@ -107,6 +116,7 @@ class SymbolDef:
             "is_async": self.is_async,
             "complexity": self.complexity,
             "line_count": self.line_count,
+            "locals": list(self.locals),
             "stub": self.stub,
         }
         if include_code:

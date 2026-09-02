@@ -1,7 +1,7 @@
 ---
 id: tic-799e
 title: 'Parser: list each function''s local variable names (listed, not graphed)'
-status: open
+status: closed
 type: feature
 tier: medium
 domain: io
@@ -11,13 +11,13 @@ tags:
 - parser
 - variables
 - inspector
-assignee: null
+assignee: zai.glm.001
 depends_on:
 - tic-2255
 blocked_by: null
 created: '2026-09-01T07:23:02'
-updated: '2026-09-01T07:26:55'
-closed: null
+updated: '2026-09-01T19:59:54'
+closed: '2026-09-01T19:59:54'
 ---
 
 ## Description
@@ -32,3 +32,6 @@ Bump SCHEMA_VERSION, mirror in web/src/data/types.ts. Watch the export size: nam
 Verification: parser tests for each binding form, tuple unpacking, shadowing (deduplicated, one entry), a nested def whose locals stay out of the outer function's list, and a comprehension. Run the Python test suite.
 
 ## Notes
+- 2026-09-01T19:51:18 zai.glm.001: Design settled: walk each function body stopping at nested defs/classes; collect assignment/for/with-as/except-as/walrus/comprehension targets via a recursive pattern-name helper; dedupe in source order onto SymbolDef.locals. Bumping SCHEMA_VERSION 6->7 and mirroring in web types.
+
+- 2026-09-01T19:59:46 zai.glm.001: Implemented. SymbolDef.locals (list[str]) added in models.py; parser._local_names walks each callable body stopping at nested defs/classes/decorated wrappers, collecting assignment/for/with-as/except-as/walrus/comprehension targets via _pattern_names (tuple+starred handled; this grammar parses 'with x as (a,b)' as as_pattern_target->tuple). Dedup, source order, params excluded. Augmented assignment/global/nonlocal deliberately out (rebind, not introduce). SCHEMA_VERSION 6->7 in writer.py, mirrored in web/src/data/types.ts (GraphNode.locals?: string[]). Tests: 7 new parser tests, suite 220 passed; tsc -p tsconfig.app.json clean. Export delta on ../carnot: +191,784 bytes (graph 6,614,071->6,805,855, +2.90%; registry 10,022,990->10,214,774, +1.91%); 5,158 local names on 1,720 of 4,437 callables, longest list 24.

@@ -108,6 +108,19 @@ _DEF_NODE_TYPES = frozenset({"function_definition", "class_definition"})
 _SELF_NAMES = frozenset({"self", "cls"})
 # Kinds that own a body and can therefore enclose a call site.
 _CALLABLE_KINDS = frozenset({"function", "method", "class"})
+# Nodes that end the locals walk (tic-799e): a nested def or class binds its
+# own names, and a decorated_definition is only ever one of those in wrapper
+# clothes.  A `lambda` is deliberately absent -- it is not a scope, so a walrus
+# inside one binds in the enclosing function, matching the control-flow walk.
+_LOCAL_BOUNDARY = frozenset(
+    {"function_definition", "class_definition", "decorated_definition"}
+)
+# Pattern nodes that merely WRAP bound names; the walk recurses through them.
+# `tuple` is here because this grammar parses `with x as (a, b)` as an
+# as_pattern_target holding a tuple, not a pattern_list.
+_PATTERN_CONTAINERS = frozenset(
+    {"pattern_list", "tuple_pattern", "list_pattern", "as_pattern_target", "tuple"}
+)
 _MAX_VALUE_CHARS = 80  # assignment right-hand sides are summarised, not stored
 
 
@@ -606,10 +619,11 @@ class _PythonExtractor:
         is_async = any(child.type == "async" for child in node.children)
 
         if is_class:
-            complexity, line_count = 1, 0
+            complexity, line_count, locals_names = 1, 0, []
         else:
             complexity = self._complexity(node)
             line_count = node.end_point.row - (decorated or node).start_point.row + 1
+            locals_names = self._local_names(node)
 
         return SymbolDef(
             symbol_id=symbol_id,
@@ -631,6 +645,7 @@ class _PythonExtractor:
             is_async=is_async,
             complexity=complexity,
             line_count=line_count,
+            locals=locals_names,
             code=self.dedented_slice(start_byte, end_byte),
             stub=self._stub(signature, docstring, decorators),
         )
@@ -1397,6 +1412,81 @@ class _PythonExtractor:
                 if child.type not in _DEF_NODE_TYPES and child.type != "decorated_definition":
                     stack.append(child)
         return count
+
+    # -- locals (tic-799e) ---------------------------------------------------
+
+    def _pattern_names(self, node: Node | None) -> Iterator[str]:
+        """The plain names a binding TARGET introduces.
+
+        An identifier is itself; container patterns recurse; splats bind the
+        name under the stars.  An attribute or subscript target binds nothing
+        plain and yields nothing -- ``self.x = 1`` and ``cache[k] = v`` are
+        mutations, not locals.
+        """
+        if node is None:
+            return
+        kind = node.type
+        if kind == "identifier":
+            yield self.text(node)
+        elif kind in _PATTERN_CONTAINERS:
+            for child in node.named_children:
+                yield from self._pattern_names(child)
+        elif kind in ("list_splat_pattern", "dictionary_splat_pattern", "list_splat", "dictionary_splat"):
+            inner = node.named_children[0] if node.named_children else None
+            if inner is not None:
+                yield from self._pattern_names(inner)
+            else:  # pragma: no cover - a bare `*` target is not valid Python
+                yield self.text(node).lstrip("*")
+
+    def _local_names(self, node: Node) -> list[str]:
+        """Names bound anywhere in one callable's OWN body (tic-799e).
+
+        Deduplicated, first binding wins, source order.  The sources are the
+        ones that introduce a name: assignment targets (tuple and starred
+        targets included -- the very shapes :meth:`_build_assignment`
+        deliberately declines), ``for`` targets, ``with ... as``,
+        ``except ... as``, walrus and comprehension targets.  Augmented
+        assignment and ``global``/``nonlocal`` are NOT here: they rebind or
+        re-export an existing name rather than introduce one, and this is a
+        reading aid, not a scope analysis.  Params live on :attr:`SymbolDef.params`
+        and a nested def's locals are its own, so both stay out.
+
+        A name list and nothing more -- deliberately not a symbol table.
+        What a local BINDS is tic-97ce's business (:class:`LocalBinding`);
+        this answers only "what does this function actually handle".
+        """
+        body = node.child_by_field_name("body")
+        if body is None:  # pragma: no cover - a parsed def always has a body
+            return []
+
+        seen: set[str] = set()
+        ordered: list[str] = []
+
+        def bind(target: Node | None) -> None:
+            for name in self._pattern_names(target):
+                if name not in seen:
+                    seen.add(name)
+                    ordered.append(name)
+
+        def walk(current: Node) -> None:
+            kind = current.type
+            if kind in _LOCAL_BOUNDARY:
+                return  # a nested def's locals are its own
+            if kind == "assignment":
+                bind(current.child_by_field_name("left"))
+            elif kind in ("for_statement", "for_in_clause"):
+                bind(current.child_by_field_name("left"))
+            elif kind == "named_expression":
+                bind(current.child_by_field_name("name"))
+            elif kind == "as_pattern":
+                bind(current.child_by_field_name("alias"))
+            elif kind in _EXCEPT_CLAUSES:
+                bind(current.child_by_field_name("name"))
+            for child in current.named_children:
+                walk(child)
+
+        walk(body)
+        return ordered
 
     def _control_path(self, node: Node) -> list[str]:
         """The control-flow constructs between ``node`` and its enclosing def.

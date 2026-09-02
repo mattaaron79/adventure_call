@@ -1,5 +1,5 @@
 /**
- * TypeScript mirrors of the adventure-call JSON exports (schema_version 6).
+ * TypeScript mirrors of the adventure-call JSON exports (schema_version 7).
  *
  * Written from adventure_call/models.py and adventure_call/writer.py.  Two
  * kinds -- `variable` and `attribute` -- are declared ahead of the parser that
@@ -8,11 +8,12 @@
  * Version history: 4 added `GraphEdge.controls`; 5 (tic-7189) carries no
  * field changes -- the effects layer reads the existing `unresolved_calls`
  * external reasons; 6 (tic-d7d1) added `GraphNode.complexity` and
- * `GraphNode.line_count`.  Bumped to keep the two mirrors of this constant
- * in lockstep with adventure_call/writer.py.
+ * `GraphNode.line_count`; 7 (tic-799e) added `GraphNode.locals`.  Bumped to
+ * keep the two mirrors of this constant in lockstep with
+ * adventure_call/writer.py.
  */
 
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 export type SymbolKind =
   | 'module'
@@ -88,6 +89,16 @@ export interface GraphNode {
    * and a short dense one are different problems.  Optional as above.
    */
   line_count?: number
+  /**
+   * Plain names bound anywhere in the callable's own body (tic-799e),
+   * deduplicated, in source order of first binding: assignment targets
+   * (tuple/starred included), `for` targets, `with ... as`, `except ... as`,
+   * walrus and comprehension targets.  NOT params and NOT nested defs --
+   * their locals are their own.  A name list, deliberately not a symbol
+   * table: nothing here is resolved or typed (that is tic-97ce's business).
+   * Optional: absent on a schema_version < 7 export and on non-callables.
+   */
+  locals?: string[]
   stub: string
 }
 

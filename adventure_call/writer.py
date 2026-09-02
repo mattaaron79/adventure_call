@@ -25,7 +25,9 @@ from adventure_call.resolver import ResolutionIndex
 # web app's typed mirror of this schema is versioned alongside it.
 # 6 (tic-d7d1): symbols carry `complexity` (a cyclomatic-style proxy counted
 # from tic-b47a's control-flow walk) and `line_count`.
-SCHEMA_VERSION = 6
+# 7 (tic-799e): callables carry `locals` -- the plain names bound in their own
+# body, deduplicated, source order.  A reading aid, not a symbol table.
+SCHEMA_VERSION = 7
 GRAPH_FILENAME = "codebase_graph.json"
 REGISTRY_FILENAME = "symbol_registry.json"
 
