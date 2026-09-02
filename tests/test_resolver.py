@@ -952,3 +952,139 @@ def test_a_module_level_referrer_survives_the_module_call_edge_flag(analyse):
         module_call_edges=False,
     )
     assert builder.graph.has_edge("app.urls", "app.views.home")
+
+
+# -- variable and attribute accesses (tic-13d7) -----------------------------
+
+
+def _links(idx):
+    return {(a.kind, a.accessor_id, a.target_id) for a in idx.accesses}
+
+
+def test_a_function_reading_a_module_constant(analyse):
+    _, _, idx = analyse({"m.py": "LIMIT = 5\ndef go():\n    return LIMIT\n"})
+    assert ("read", "m.go", "m.LIMIT") in _links(idx)
+
+
+def test_a_method_writing_and_a_sibling_reading_the_same_attribute(analyse):
+    """The coupling a call graph is structurally blind to.
+
+    ``__init__`` and ``show`` never call each other, so nothing in CALLS joins
+    them; on ../carnot 591 method pairs are in this position even after
+    constructors are excluded.
+    """
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class K:\n"
+                "    def __init__(self):\n"
+                "        self.cursor = 0\n"
+                "    def show(self):\n"
+                "        return self.cursor\n"
+            )
+        }
+    )
+    links = _links(idx)
+    assert ("write", "m.K.__init__", "m.K.cursor") in links
+    assert ("read", "m.K.show", "m.K.cursor") in links
+
+
+def test_an_augmented_assignment_resolves_to_both_edges(analyse):
+    _, _, idx = analyse(
+        {"m.py": "class K:\n    def bump(self):\n        self.n += 1\n    n = 0\n"}
+    )
+    links = _links(idx)
+    assert ("read", "m.K.bump", "m.K.n") in links
+    assert ("write", "m.K.bump", "m.K.n") in links
+
+
+def test_self_x_finds_an_attribute_declared_on_a_base_class(analyse):
+    """Which is why the value lookup walks bases, exactly as the method lookup
+    does -- an attribute declared once on a base and read from a subclass
+    method that never mentions it is ordinary Python."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "class Base:\n"
+                "    shared = 0\n"
+                "class K(Base):\n"
+                "    def show(self):\n"
+                "        return self.shared\n"
+            )
+        }
+    )
+    assert ("read", "m.K.show", "m.Base.shared") in _links(idx)
+
+
+def test_an_imported_constant_resolves_to_its_definition(analyse):
+    _, _, idx = analyse(
+        {
+            "pkg/__init__.py": "",
+            "pkg/config.py": "LIMIT = 5\n",
+            "pkg/use.py": "from .config import LIMIT\ndef go():\n    return LIMIT\n",
+        }
+    )
+    assert ("read", "pkg.use.go", "pkg.config.LIMIT") in _links(idx)
+
+
+def test_another_modules_constant_through_a_dotted_name(analyse):
+    _, _, idx = analyse(
+        {
+            "pkg/__init__.py": "",
+            "pkg/config.py": "LIMIT = 5\n",
+            "pkg/use.py": "from . import config\ndef go():\n    return config.LIMIT\n",
+        }
+    )
+    assert ("read", "pkg.use.go", "pkg.config.LIMIT") in _links(idx)
+
+
+def test_a_local_shadowing_a_module_variable_produces_no_edge(analyse):
+    _, _, idx = analyse({"m.py": "count = 5\ndef go():\n    count = 3\n    return count\n"})
+    assert _links(idx) == set()
+
+
+def test_naming_a_callable_is_a_reference_and_never_an_access(analyse):
+    """A name resolving to a function or class belongs to tic-89fa, which
+    already exists and says it better.  Letting those through here would emit a
+    second, noisier copy of that edge type."""
+    # Both ways a callable can arrive: defined here, and imported.  The
+    # imported one is the case that matters -- an import binding points
+    # straight at the function, so only the kind check refuses it.
+    _, _, idx = analyse(
+        {
+            "pkg/__init__.py": "",
+            "pkg/w.py": "def worker(): pass\n",
+            "pkg/m.py": (
+                "from .w import worker\n"
+                "def local(): pass\n"
+                "def go():\n"
+                "    Thread(target=worker)\n"
+                "    Thread(target=local)\n"
+            ),
+        }
+    )
+    assert _links(idx) == set()
+    named = {r.target_id for r in idx.references}
+    assert named == {"pkg.w.worker", "pkg.m.local"}
+
+
+def test_a_declaration_is_not_recorded_as_a_write(analyse):
+    """`LIMIT = 5` at module level is where the symbol comes from, and the
+    graph already says so with a CONTAINS edge.  Reads are never redundant
+    this way, so only writes are dropped."""
+    _, _, idx = analyse({"m.py": "LIMIT = 5\n"})
+    assert _links(idx) == set()
+
+
+def test_a_write_from_anywhere_but_the_owner_is_kept(analyse):
+    _, _, idx = analyse({"m.py": "TOTAL = 0\ndef go():\n    global TOTAL\n    TOTAL = 2\n"})
+    assert ("write", "m.go", "m.TOTAL") in _links(idx)
+
+
+def test_a_name_that_resolves_to_nothing_is_dropped_silently(analyse):
+    """Deliberately no `unresolved` counterpart, and more so than for
+    references: the query behind this matches every identifier in the file --
+    33974 candidate sites on ../carnot for 1448 accesses -- so recording the
+    remainder would say nothing except that Python has variables."""
+    _, _, idx = analyse({"m.py": "def go():\n    return whatever + other.thing\n"})
+    assert _links(idx) == set()

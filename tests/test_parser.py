@@ -1223,3 +1223,124 @@ def test_locals_reach_the_export(analyse, tmp_path):
     assert go.locals == ["local"]
     node = builder.graph.nodes[go.symbol_id]
     assert node["locals"] == ["local"]
+
+
+# -- variable and attribute accesses (tic-13d7) -----------------------------
+#
+# The query hands over EVERY identifier in the file, so nearly all of the work
+# is refusal.  These tests are mostly about what is refused.
+
+
+def _accesses(parse_source, source: str):
+    return {(a.kind, a.raw_name, a.scope_id) for a in parse_source(source).accesses}
+
+
+def test_a_module_variable_is_read_from_a_function(parse_source):
+    found = _accesses(parse_source, "LIMIT = 5\ndef go():\n    return LIMIT + 1\n")
+    assert ("read", "LIMIT", "m.go") in found
+
+
+def test_an_assignment_is_a_write(parse_source):
+    found = _accesses(parse_source, "class K:\n    def set(self):\n        self.x = 1\n")
+    assert ("write", "self.x", "m.K.set") in found
+    assert ("read", "self.x", "m.K.set") not in found
+
+
+def test_an_augmented_assignment_is_both(parse_source):
+    """Two accesses, not a third word for the pair.
+
+    A consumer asking "who writes this" and one asking "who reads this" must
+    each find it, and any single label fails one of them.
+    """
+    found = _accesses(parse_source, "class K:\n    def bump(self):\n        self.n += 1\n")
+    assert ("read", "self.n", "m.K.bump") in found
+    assert ("write", "self.n", "m.K.bump") in found
+
+
+def test_an_annotated_declaration_is_a_write(parse_source):
+    found = _accesses(parse_source, "class K:\n    def set(self):\n        self.x: int = 1\n")
+    assert ("write", "self.x", "m.K.set") in found
+
+
+def test_a_sibling_method_reading_self_x_is_an_access(parse_source):
+    """The shape the whole edge type exists for: two methods coupled by state,
+    with no call between them for a call graph to see."""
+    found = _accesses(
+        parse_source,
+        "class K:\n"
+        "    def __init__(self):\n"
+        "        self.cursor = 0\n"
+        "    def show(self):\n"
+        "        return self.cursor\n",
+    )
+    assert ("write", "self.cursor", "m.K.__init__") in found
+    assert ("read", "self.cursor", "m.K.show") in found
+
+
+def test_a_local_does_not_shadow_at_module_or_class_level(parse_source):
+    """Shadowing is a FUNCTION-scope question and only that.
+
+    A name bound at module or class level IS the symbol worth pointing at, so
+    consulting the bound set there would suppress every read of every constant.
+    """
+    found = _accesses(parse_source, "LIMIT = 5\nTOTAL = LIMIT * 2\n")
+    assert ("read", "LIMIT", None) in found
+
+    # And the same one level in: a class body binds `size`, and `size` is
+    # still the attribute worth pointing at rather than a local shadowing it.
+    inside = _accesses(parse_source, "class K:\n    size = 2\n    double = size * 2\n")
+    assert ("read", "size", "m.K") in inside
+
+
+def test_a_function_local_shadows_the_module_variable_it_is_spelled_like(parse_source):
+    source = "count = 5\ndef go():\n    count = 3\n    return count\n"
+    assert not any(a.raw_name == "count" and a.scope_id == "m.go" for a in parse_source(source).accesses)
+
+
+def test_a_parameter_shadows_too(parse_source):
+    source = "config = 1\ndef go(config):\n    return config\n"
+    assert not any(a.scope_id == "m.go" for a in parse_source(source).accesses)
+
+
+def test_a_global_declaration_unshadows_the_name_it_names(parse_source):
+    """`global X; X = 2` binds X in the function as far as the query is
+    concerned, but the declaration says the name is the module's -- and a
+    function writing a module-level constant is exactly the edge worth
+    drawing."""
+    found = _accesses(
+        parse_source, "TOTAL = 0\ndef go():\n    global TOTAL\n    TOTAL = 2\n"
+    )
+    assert ("write", "TOTAL", "m.go") in found
+
+
+def test_a_calls_callee_is_not_a_read(parse_source):
+    assert _accesses(parse_source, "def helper(): pass\ndef go():\n    helper()\n") == set()
+
+
+def test_a_method_call_on_self_is_not_a_read(parse_source):
+    """`self.helper()` is a callee; the call machinery already has it."""
+    found = _accesses(
+        parse_source, "class K:\n    def go(self):\n        self.helper()\n"
+    )
+    assert not any(name == "self.helper" for _, name, _ in found)
+
+
+def test_an_import_is_not_a_read(parse_source):
+    assert _accesses(parse_source, "import os\nfrom pkg import LIMIT, other\n") == set()
+
+
+def test_a_definitions_own_name_is_not_a_read(parse_source):
+    assert _accesses(parse_source, "def go(): pass\nclass K: pass\n") == set()
+
+
+def test_a_keyword_argument_reads_its_value_and_not_its_name(parse_source):
+    found = _accesses(parse_source, "LIMIT = 1\ndef go():\n    f(limit=LIMIT)\n")
+    assert ("read", "LIMIT", "m.go") in found
+    assert not any(name == "limit" for _, name, _ in found)
+
+
+def test_a_deeper_chain_is_not_captured(parse_source):
+    """`a.b.c` names nothing this can follow -- nothing here knows what `a.b`
+    is -- so only the one-level attribute is a candidate."""
+    found = _accesses(parse_source, "def go(cfg):\n    return cfg.a.b\n")
+    assert not any(name in ("cfg.a.b", "a.b") for _, name, _ in found)

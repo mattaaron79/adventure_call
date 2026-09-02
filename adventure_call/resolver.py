@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
 from adventure_call.models import (
+    AccessLink,
     CallSite,
     ImportRecord,
     LocalBinding,
@@ -30,6 +31,7 @@ from adventure_call.models import (
     ReferenceLink,
     Resolution,
     SymbolDef,
+    VariableAccess,
 )
 
 BindingKind = Literal["module", "symbol", "external"]
@@ -37,6 +39,9 @@ BindingKind = Literal["module", "symbol", "external"]
 # Variables and class attributes are symbols, but they are not call targets:
 # they are indexed and reachable, and never the answer to "what does this call?"
 _CALLABLE_KINDS = frozenset({"function", "method", "class"})
+# ...which is exactly why READS/WRITES (tic-13d7) needs its own kind set and
+# its own lookup tables: the two vocabularies do not overlap at all.
+_VALUE_KINDS = frozenset({"variable", "attribute"})
 _BUILTIN_NAMES = frozenset(dir(builtins))
 _SELF_NAMES = frozenset({"self", "cls"})
 _MAX_MRO_DEPTH = 8
@@ -145,6 +150,12 @@ class ResolutionIndex:
     #: that something can reach a callable, never evidence that anything does,
     #: and anything reasoning about flow must be able to ignore them.
     references: list[ReferenceLink] = field(default_factory=list)
+    #: Module variables and class attributes read or written (tic-13d7).
+    #: Kept apart from `resolutions` and `references` alike: a call is flow, a
+    #: reference is reachability, and this is data coupling.  It is the only
+    #: one of the three that can join two methods of a class that never call
+    #: each other.
+    accesses: list[AccessLink] = field(default_factory=list)
     builtin_calls: int = 0
 
     @property
@@ -196,6 +207,13 @@ class SymbolResolver:
         self.module_members: dict[str, dict[str, str]] = defaultdict(dict)
         # class symbol_id -> {member name: symbol_id}
         self.class_members: dict[str, dict[str, str]] = defaultdict(dict)
+        #: The value-side twins of `module_members`/`class_members` (tic-13d7).
+        #: Separate tables rather than extra entries in those, because the
+        #: callable tables exclude non-callables precisely so a constant
+        #: sharing a function's name cannot make that name ambiguous for CALL
+        #: resolution -- and a read needs exactly the entries that excludes.
+        self.module_values: dict[str, dict[str, str]] = defaultdict(dict)
+        self.class_values: dict[str, dict[str, str]] = defaultdict(dict)
         # bare name -> every symbol id carrying it (unique-name fallback)
         self.by_name: dict[str, list[str]] = defaultdict(list)
         self.bindings: dict[str, dict[str, Binding]] = defaultdict(dict)
@@ -222,6 +240,11 @@ class SymbolResolver:
                     # which matches "the definition a reader meets first".
                     continue
                 self.symbols[symbol.symbol_id] = symbol
+                if symbol.kind in _VALUE_KINDS:
+                    if symbol.parent is None:
+                        self.module_values[symbol.module][symbol.name] = symbol.symbol_id
+                    else:
+                        self.class_values[symbol.parent][symbol.name] = symbol.symbol_id
                 if symbol.kind not in _CALLABLE_KINDS:
                     # Indexed above so the graph and registry carry it, but kept
                     # out of every lookup table below -- otherwise a constant
@@ -392,6 +415,11 @@ class SymbolResolver:
                 if link is not None:
                     index.references.append(link)
 
+            for access in parsed.accesses:
+                data_link = self._resolve_access(access)
+                if data_link is not None:
+                    index.accesses.append(data_link)
+
         return index
 
     def _resolve_reference(self, ref: Reference) -> ReferenceLink | None:
@@ -440,6 +468,121 @@ class SymbolResolver:
             file_path=ref.file_path,
             position=ref.position,
         )
+
+    def _resolve_access(self, access: VariableAccess) -> AccessLink | None:
+        """Resolve a variable or attribute access, or None to drop it.
+
+        All-or-nothing, with no `unresolved` counterpart, for the same reason
+        :meth:`_resolve_reference` has none and more so: the query behind this
+        matches every identifier in the file, which on ../carnot is 33974
+        candidate sites for 1728 accesses.  Recording the other 32000 as
+        unresolved would say nothing except that Python has variables.
+
+        The target must be a VARIABLE or an ATTRIBUTE.  A name that resolves to
+        a function or a class is :class:`Reference` territory (tic-89fa), which
+        already exists and states it better; letting those through here would
+        emit a second, noisier copy of that edge type.
+        """
+        scope_id = access.scope_id or access.module
+        if not access.root:
+            return None
+
+        if access.attr_path:
+            target = self._access_attribute(access, scope_id)
+        else:
+            target = self._access_name(access, scope_id)
+
+        if target is None or not self._is_value(target):
+            return None
+
+        # A write from the symbol's own owner is its DECLARATION -- `X = 1` at
+        # module level, `x = 1` in a class body -- and the graph already says
+        # that with a CONTAINS edge.  Reads are never redundant this way, so
+        # only writes are dropped.
+        if access.kind == "write" and scope_id == self._owner_of(target):
+            return None
+
+        return AccessLink(
+            accessor_id=scope_id,
+            target_id=target,
+            raw_name=access.raw_name,
+            line=access.line,
+            file_path=access.file_path,
+            kind=access.kind,
+        )
+
+    def _access_name(self, access: VariableAccess, scope_id: str) -> str | None:
+        """A bare name: a class-body sibling, a module constant, an import."""
+        symbol = self.symbols.get(scope_id)
+        if symbol is not None and symbol.kind == "class":
+            sibling = self._lookup_value(scope_id, access.root)
+            if sibling:
+                return sibling
+
+        member = self.module_values.get(access.module, {}).get(access.root)
+        if member:
+            return member
+
+        binding = self.bindings.get(access.module, {}).get(access.root)
+        if binding is not None and binding.kind == "symbol":
+            return binding.target
+        return None
+
+    def _access_attribute(self, access: VariableAccess, scope_id: str) -> str | None:
+        """A one-level attribute: `self.x`, `cls.x`, `module.CONST`, `Cls.x`."""
+        attr = access.attr_path[0]
+
+        if access.root in _SELF_NAMES:
+            # `self.x` reaches the enclosing class and its in-project bases,
+            # which is how an attribute declared on a base class is found from
+            # a subclass method that never mentions it.
+            klass = self._enclosing_class(scope_id)
+            return self._lookup_value(klass, attr) if klass else None
+
+        base = self._root_target(access.module, scope_id, access.root)
+        if base is None:
+            return None
+        found = self.module_values.get(base, {}).get(attr)
+        if found:
+            return found
+        return self._lookup_value(base, attr)
+
+    def _lookup_value(self, class_id: str, name: str, depth: int = 0) -> str | None:
+        """Find an attribute on a class or its in-project base classes.
+
+        The value-side twin of :meth:`_lookup_member`, and separate from it on
+        purpose: the callable tables deliberately exclude non-callables so that
+        a constant sharing a function's name cannot make that name ambiguous
+        for CALL resolution, which means a read needs tables of its own.
+        """
+        if depth > _MAX_MRO_DEPTH:
+            return None
+        member = self.class_values.get(class_id, {}).get(name)
+        if member:
+            return member
+
+        klass = self.symbols.get(class_id)
+        if klass is None:
+            return None
+        for base in klass.bases:
+            base_id = self._resolve_class_ref(base, klass.module)
+            if base_id and base_id != class_id:
+                found = self._lookup_value(base_id, name, depth + 1)
+                if found:
+                    return found
+        return None
+
+    def _is_value(self, symbol_id: str) -> bool:
+        """True when ``symbol_id`` names data rather than something callable."""
+        symbol = self.symbols.get(symbol_id)
+        return symbol is not None and symbol.kind in _VALUE_KINDS
+
+    def _owner_of(self, symbol_id: str) -> str | None:
+        """The class or module a symbol is declared in."""
+        symbol = self.symbols.get(symbol_id)
+        if symbol is None:
+            return None
+        return symbol.parent or symbol.module
 
     def _resolve_call(self, call: CallSite, caller_id: str) -> Resolution:
         def outcome(

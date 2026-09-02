@@ -29,8 +29,18 @@ export type SymbolKind =
  * It is evidence that something can reach the target, never evidence that
  * anything does, so anything reasoning about FLOW must ignore it and anything
  * asking "is this dead" must not.
+ *
+ * `READS` and `WRITES` (tic-13d7) are data, not flow: a module variable or
+ * class attribute whose value is taken or replaced.  Two edge types rather
+ * than one with a flag because the questions differ -- "what does this depend
+ * on" is READS, "what does changing this break" is WRITES -- and one pair can
+ * carry both, which is what `x += 1` produces.
+ *
+ * These are the only edges that can join two methods of a class that never
+ * call each other: on ../carnot 591 method pairs share an attribute with no
+ * call between them, and a call graph cannot see any of them.
  */
-export type EdgeType = 'CALLS' | 'IMPORTS' | 'CONTAINS' | 'REFERENCES'
+export type EdgeType = 'CALLS' | 'IMPORTS' | 'CONTAINS' | 'REFERENCES' | 'READS' | 'WRITES'
 export type Confidence = 'exact' | 'heuristic' | 'unresolved'
 export type CallType = 'call' | 'constructor' | 'method'
 export type ParamKind = 'positional' | 'posonly' | 'kwonly' | 'vararg' | 'kwarg'

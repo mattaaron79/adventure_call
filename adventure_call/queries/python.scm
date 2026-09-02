@@ -92,6 +92,29 @@
 (pair value: [(identifier) (attribute)] @ref.name) @ref.collection
 
 ;; --------------------------------------------------------------------------
+;; Variable and attribute accesses (tic-13d7) -- the data edges.
+;;
+;; Unlike every other pattern here these are captured WITHOUT a position, on
+;; purpose: a read happens anywhere an expression can, and enumerating the
+;; positions would be a list that is wrong the moment someone writes an
+;; f-string.  So every identifier and every one-level attribute is a candidate,
+;; and the parser refuses the positions that are not reads (a call's callee, a
+;; def's own name, an import) by field rather than by pattern.
+;;
+;; The volume that produces is the reason resolution is all-or-nothing: 33974
+;; candidate sites on ../carnot yield 1728 accesses and 1248 merged edges, so
+;; recording the remainder as unresolved would bury the signal.
+;;
+;; One level only.  `self.x` and `config.limit` name something the project
+;; defines; `a.b.c` does not, because nothing here knows what `a.b` is.
+;; --------------------------------------------------------------------------
+(identifier) @access.name
+
+(attribute
+  object: (identifier)
+  attribute: (identifier)) @access.dotted
+
+;; --------------------------------------------------------------------------
 ;; Names a scope BINDS (tic-89fa), so a reference to one can be refused.
 ;;
 ;; `def test_x(session): do(session)` must not report a reference to a

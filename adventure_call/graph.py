@@ -22,6 +22,8 @@ from adventure_call.resolver import ResolutionIndex, SymbolResolver
 CALLS = "CALLS"
 IMPORTS = "IMPORTS"
 REFERENCES = "REFERENCES"
+READS = "READS"
+WRITES = "WRITES"
 CONTAINS = "CONTAINS"
 
 _CONFIDENCE_RANK = {"exact": 2, "heuristic": 1, "unresolved": 0}
@@ -171,6 +173,7 @@ class GraphBuilder:
         self._add_import_edges()
         self._add_call_edges()
         self._add_reference_edges()
+        self._add_access_edges()
         if self.contains_edges:
             self._add_contains_edges()
         return self.graph
@@ -297,6 +300,30 @@ class GraphBuilder:
             if referrer == target:
                 continue
             self._merge_edge(referrer, target, REFERENCES, line=link.line)
+
+    def _add_access_edges(self) -> None:
+        """Module variables and class attributes read or written (tic-13d7).
+
+        Two edge types rather than one with a flag, because the questions are
+        different and a consumer usually wants exactly one of them: "what does
+        this function depend on" is READS, "what does changing this break" is
+        WRITES.  A pair can carry both -- 105 of ../carnot's 1445 do, mostly
+        from `x += 1` -- and `_merge_edge` puts both names in `types`, exactly
+        as it already does for a pair that is both a call and an import.
+
+        Module-level accessors are kept whatever `module_call_edges` says.
+        That flag is about calls executed at import time; a module reading
+        another module's constant is not a call at all, and dropping it would
+        remove the plainest data dependency there is.
+        """
+        for link in self.index.accesses:
+            accessor, target = link.accessor_id, link.target_id
+            if accessor not in self.graph or target not in self.graph:
+                continue
+            if accessor == target:
+                continue
+            edge_type = READS if link.kind == "read" else WRITES
+            self._merge_edge(accessor, target, edge_type, line=link.line)
 
     def _add_contains_edges(self) -> None:
         for symbol in self.index.symbols.values():

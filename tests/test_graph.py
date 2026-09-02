@@ -198,3 +198,62 @@ def test_module_nodes_can_be_rooms(builder):
 def test_leaf_symbol_reads_cleanly(builder):
     text = builder.get_room_context("src.api.Router.fallback").to_markdown()
     assert "_It calls nothing else in this codebase._" in text
+
+
+# -- READS / WRITES edges (tic-13d7) ----------------------------------------
+
+_COUPLED = {
+    "m.py": (
+        "LIMIT = 5\n"
+        "class K:\n"
+        "    def __init__(self):\n"
+        "        self.cursor = 0\n"
+        "    def show(self):\n"
+        "        return self.cursor + LIMIT\n"
+        "    def bump(self):\n"
+        "        self.cursor += 1\n"
+    )
+}
+
+
+def test_a_read_and_a_write_are_different_edge_types(analyse):
+    """Two types rather than one with a flag, because the questions are
+    different and a consumer usually wants exactly one: "what does this depend
+    on" is READS, "what does changing this break" is WRITES."""
+    builder, _, _ = analyse(_COUPLED)
+    assert builder.graph.edges["m.K.__init__", "m.K.cursor"]["types"] == ["WRITES"]
+    assert builder.graph.edges["m.K.show", "m.K.cursor"]["types"] == ["READS"]
+
+
+def test_a_pair_that_is_both_carries_both_names(analyse):
+    """`self.cursor += 1` is a read AND a write of one pair, and `_merge_edge`
+    already knows how to hold two type names -- it does the same for a pair
+    that is both a call and an import."""
+    builder, _, _ = analyse(_COUPLED)
+    types = builder.graph.edges["m.K.bump", "m.K.cursor"]["types"]
+    assert sorted(types) == ["READS", "WRITES"]
+
+
+def test_two_methods_that_never_call_each_other_are_joined_through_the_data(analyse):
+    """The point of the edge type.  Nothing in CALLS connects `show` to
+    `__init__`, and no amount of call-graph analysis would produce it."""
+    builder, _, _ = analyse(_COUPLED)
+    assert not builder.graph.has_edge("m.K.show", "m.K.__init__")
+    assert not builder.graph.has_edge("m.K.__init__", "m.K.show")
+    assert builder.graph.has_edge("m.K.__init__", "m.K.cursor")
+    assert builder.graph.has_edge("m.K.show", "m.K.cursor")
+
+
+def test_a_module_level_accessor_survives_the_module_call_edge_flag(analyse):
+    """That flag is about calls executed at import time.  A module reading
+    another module's constant is not a call at all, and dropping it would
+    remove the plainest data dependency there is."""
+    builder, _, _ = analyse(
+        {
+            "pkg/__init__.py": "",
+            "pkg/config.py": "LIMIT = 5\n",
+            "pkg/use.py": "from .config import LIMIT\nTOTAL = LIMIT * 2\n",
+        },
+        module_call_edges=False,
+    )
+    assert builder.graph.has_edge("pkg.use", "pkg.config.LIMIT")

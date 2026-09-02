@@ -22,7 +22,7 @@ DiagnosticKind = Literal[
 ]
 Confidence = Literal["exact", "heuristic", "unresolved"]
 CallType = Literal["call", "constructor", "method"]
-EdgeType = Literal["CALLS", "IMPORTS", "CONTAINS", "REFERENCES"]
+EdgeType = Literal["CALLS", "IMPORTS", "CONTAINS", "REFERENCES", "READS", "WRITES"]
 
 JSONDict = dict[str, Any]
 
@@ -381,6 +381,74 @@ class ReferenceLink:
         return asdict(self)
 
 
+#: Whether an access takes a variable's value or replaces it.  An augmented
+#: assignment (``count += 1``) is BOTH, and the parser emits two accesses for
+#: it rather than inventing a third word for the pair.
+AccessKind = Literal["read", "write"]
+
+
+@dataclass(frozen=True)
+class VariableAccess:
+    """A module variable or class attribute read or written (tic-13d7).
+
+    The call graph is structurally blind to data coupling.  Two methods of one
+    class that both touch ``self.cursor`` and never call each other have no
+    edge between them, and no amount of call-graph analysis will produce one --
+    measured on ../carnot, 2735 method pairs are in exactly that position.
+    This is the edge type that makes them visible.
+
+    Deliberately narrow.  A read is recorded only for a plain identifier or a
+    ONE-level attribute (``self.x``, ``config.limit``), and only survives if it
+    resolves to a variable or attribute symbol the project actually defines.
+    Everything else is discarded rather than emitted as unresolved: the query
+    that finds these matches every identifier in the file -- 33974 sites on
+    ../carnot for 1728 real accesses -- so an unresolved counterpart would be
+    twenty parts noise to one part signal.
+
+    Targets that resolve to a CALLABLE are dropped too.  Naming a function
+    without calling it is :class:`Reference`, which already exists and says it
+    better; this edge type is about data.
+
+    The dotted expression is stored as ``root`` plus ``attr_path``, exactly as
+    :class:`CallSite` and :class:`Reference` store theirs, so the resolver
+    walks all three with the same machinery.
+    """
+
+    module: str
+    file_path: str
+    #: The expression as written, e.g. ``self.cursor``.
+    raw_name: str
+    root: str
+    attr_path: list[str] = field(default_factory=list)
+    #: The definition containing the access; None at module or class level,
+    #: which is where a constant's own assignment sits.
+    scope_id: str | None = None
+    kind: AccessKind = "read"
+    line: int = 1
+    start_byte: int = 0
+    end_byte: int = 0
+
+    def to_dict(self) -> JSONDict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AccessLink:
+    """A resolved :class:`VariableAccess`: who reads or writes which symbol."""
+
+    #: The definition containing the access, or the module when it sits at
+    #: module or class level.
+    accessor_id: str
+    target_id: str
+    raw_name: str
+    line: int
+    file_path: str
+    kind: AccessKind
+
+    def to_dict(self) -> JSONDict:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
 class ParseDiagnostic:
     """Something the parser could not fully understand.
@@ -415,6 +483,8 @@ class ParsedFile:
     locals: list[LocalBinding] = field(default_factory=list)
     #: Callables named without being called (tic-89fa).
     references: list[Reference] = field(default_factory=list)
+    #: Module variables and class attributes read or written (tic-13d7).
+    accesses: list[VariableAccess] = field(default_factory=list)
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
     module_docstring: str | None = None
 

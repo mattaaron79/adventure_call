@@ -30,6 +30,7 @@ from adventure_call.languages import (
 )
 from adventure_call.models import (
     LITERAL_TYPES,
+    AccessKind,
     CallSite,
     ImportRecord,
     LocalBinding,
@@ -38,6 +39,7 @@ from adventure_call.models import (
     ParsedFile,
     Reference,
     SymbolDef,
+    VariableAccess,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +139,39 @@ _REF_POSITIONS = {
 
 #: How far up the enclosing-scope chain a shadowing check walks.
 _MAX_SCOPE_DEPTH = 8
+
+# Positions where an identifier is not a READ of a value (tic-13d7), by the
+# type of its parent.  `attribute` is here because a name inside a dotted
+# chain is handled by the `@access.dotted` capture when the chain is one level
+# and is out of scope when it is deeper -- nothing here knows what `a.b` is.
+# The declaration statements are here because `global X` states where a name
+# lives; it does not take its value.
+_NOT_A_READ_PARENT = frozenset(
+    {
+        "attribute",
+        "import_statement",
+        "import_from_statement",
+        "aliased_import",
+        "dotted_name",
+        "relative_import",
+        "wildcard_import",
+        "global_statement",
+        "nonlocal_statement",
+        "parameters",
+    }
+)
+
+# (parent type, field) pairs where the identifier names something rather than
+# reading it: the callee of a call, a definition's own name, the keyword in
+# `f(x=1)`, a parameter's name.
+_NOT_A_READ_FIELD = (
+    ("call", "function"),
+    ("function_definition", "name"),
+    ("class_definition", "name"),
+    ("keyword_argument", "name"),
+    ("default_parameter", "name"),
+    ("typed_default_parameter", "name"),
+)
 
 _CONTROL_STOP = frozenset(
     {"function_definition", "class_definition", "decorated_definition", "module"}
@@ -451,6 +486,9 @@ class _PythonExtractor:
         # (position, name node, site node) and the raw bound-name nodes.
         ref_matches: list[tuple[str, Node, Node]] = []
         bind_names: list[Node] = []
+        # Every identifier and every one-level attribute in the file (tic-13d7);
+        # which of them are actually reads is decided in `_build_accesses`.
+        access_nodes: list[Node] = []
 
         for _pattern, caps in matches:
             if "def.function" in caps or "def.class" in caps:
@@ -473,6 +511,9 @@ class _PythonExtractor:
                 call_matches.append(caps)
             elif "bind.name" in caps:
                 bind_names.extend(caps["bind.name"])
+            elif "access.name" in caps or "access.dotted" in caps:
+                access_nodes.extend(caps.get("access.name") or [])
+                access_nodes.extend(caps.get("access.dotted") or [])
             else:
                 for capture, position in _REF_POSITIONS.items():
                     site_nodes = caps.get(capture)
@@ -486,6 +527,7 @@ class _PythonExtractor:
         calls = self._build_calls(call_matches, symbols)
         local_bindings = self._build_locals(assign_matches, with_matches, symbols)
         references = self._build_references(ref_matches, bind_names, symbols)
+        accesses = self._build_accesses(access_nodes, bind_names, symbols)
 
         return ParsedFile(
             file_path=self.file_path,
@@ -496,6 +538,7 @@ class _PythonExtractor:
             calls=calls,
             locals=local_bindings,
             references=references,
+            accesses=accesses,
             diagnostics=self.diagnostics,
             module_docstring=self._docstring_of_block(root),
         )
@@ -1299,6 +1342,179 @@ class _PythonExtractor:
 
         references.sort(key=lambda r: r.start_byte)
         return references
+
+    def _build_accesses(
+        self,
+        access_nodes: Sequence[Node],
+        bind_names: Sequence[Node],
+        symbols: Sequence[SymbolDef],
+    ) -> list[VariableAccess]:
+        """Module variables and class attributes read or written (tic-13d7).
+
+        The query hands over every identifier and every one-level attribute in
+        the file, so almost all of the work here is refusal.  Three filters, in
+        order of how much they remove:
+
+        1. Position.  A call's callee, a definition's own name, an import, a
+           parameter name and a name inside a deeper dotted chain are not
+           reads of a value.  See :data:`_NOT_A_READ_PARENT` and
+           :data:`_NOT_A_READ_FIELD`.
+        2. Shadowing, which is a FUNCTION-scope question and only that.  A name
+           bound inside a function body is a local and never the module
+           variable it is spelled like -- but a name bound at module or class
+           level IS the symbol we want to point at, so consulting the bound set
+           there would suppress every read of every constant.  This is the one
+           place `_build_accesses` and `_build_references` genuinely disagree:
+           89fa wants module-level bindings to shadow, and this wants them not
+           to.
+        3. Resolution, in the resolver: only names landing on a variable or
+           attribute the project defines survive at all.
+
+        `global X` inside a function is the exception to (2).  The assignment
+        that follows it puts X in the function's bound set, but the declaration
+        says X is the module's, which is exactly the write worth recording.
+        """
+        owners = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+        starts = [s.start_byte for s in owners]
+        by_id = {s.symbol_id: s for s in owners}
+        bound = self._bound_names(bind_names, owners, starts)
+        declared_global = self._declared_globals(bind_names, owners, starts)
+
+        accesses: list[VariableAccess] = []
+        for node in access_nodes:
+            if self._inside_error(node):
+                continue
+            if not self._is_read_position(node):
+                continue
+
+            path = self._attribute_path(node)
+            if not path:
+                continue
+            root = path[0]
+
+            scope_id = self._enclosing_symbol(node.start_byte, owners, starts)
+            # `self` and `cls` are parameters and so are always "local", but a
+            # receiver is not a name being read -- the attribute after it is,
+            # and the resolver finds that on the enclosing class.
+            if root not in _SELF_NAMES:
+                if root not in declared_global.get(scope_id, ()) and self._is_local(
+                    root, scope_id, by_id, bound
+                ):
+                    continue
+
+            for kind in self._access_kinds(node):
+                accesses.append(
+                    VariableAccess(
+                        module=self.module,
+                        file_path=self.file_path,
+                        raw_name=self.text(node),
+                        root=root,
+                        attr_path=path[1:],
+                        scope_id=scope_id,
+                        kind=kind,
+                        line=node.start_point.row + 1,
+                        start_byte=node.start_byte,
+                        end_byte=node.end_byte,
+                    )
+                )
+
+        accesses.sort(key=lambda a: (a.start_byte, a.kind))
+        return accesses
+
+    @staticmethod
+    def _is_read_position(node: Node) -> bool:
+        """Whether the name is being READ rather than merely named.
+
+        Applies to a one-level attribute as much as to a bare identifier:
+        `self.helper()` is a callee and `a.b.c` is a chain this cannot follow,
+        and both arrive here as `attribute` nodes.
+        """
+        parent = node.parent
+        if parent is None:
+            return False
+        if parent.type in _NOT_A_READ_PARENT:
+            return False
+        for parent_type, field in _NOT_A_READ_FIELD:
+            if parent.type != parent_type:
+                continue
+            named = parent.child_by_field_name(field)
+            if named is not None and named.id == node.id:
+                return False
+        # `(typed_parameter (identifier) type: (type))` puts the parameter name
+        # in no field at all, so it is identified by position instead.
+        if parent.type == "typed_parameter" and parent.named_child(0) is not None:
+            if parent.named_child(0).id == node.id:
+                return False
+        return True
+
+    @staticmethod
+    def _access_kinds(node: Node) -> tuple[AccessKind, ...]:
+        """Read, write, or both.
+
+        `x += 1` is both, and gets two accesses rather than a third word: a
+        consumer asking "who writes this" and one asking "who reads this" must
+        each find it, and any single label would fail one of them.
+        """
+        parent = node.parent
+        if parent is None:
+            return ("read",)
+        left = parent.child_by_field_name("left")
+        if left is None or left.id != node.id:
+            return ("read",)
+        if parent.type == "assignment":
+            return ("write",)
+        if parent.type == "augmented_assignment":
+            return ("read", "write")
+        return ("read",)
+
+    def _declared_globals(
+        self,
+        bind_names: Sequence[Node],
+        owners: Sequence[SymbolDef],
+        starts: Sequence[int],
+    ) -> dict[str | None, set[str]]:
+        """Names each scope declared `global` or `nonlocal`, by scope id.
+
+        The point is to UNDO the shadow check for them.  `global X; X = 2`
+        binds X in the function as far as the query is concerned, but the
+        declaration says the name is the module's -- and a function writing a
+        module-level constant is precisely the edge this exists to draw.
+        """
+        declared: dict[str | None, set[str]] = defaultdict(set)
+        for node in bind_names:
+            parent = node.parent
+            if parent is None or parent.type not in ("global_statement", "nonlocal_statement"):
+                continue
+            scope_id = self._enclosing_symbol(node.start_byte, owners, starts)
+            declared[scope_id].add(self.text(node))
+        return declared
+
+    @staticmethod
+    def _is_local(
+        name: str,
+        scope_id: str | None,
+        by_id: dict[str, SymbolDef],
+        bound: dict[str | None, set[str]],
+    ) -> bool:
+        """Whether `name` is bound in an enclosing FUNCTION body.
+
+        Deliberately unlike :meth:`_is_bound`, which walks all the way out to
+        module level.  Only a function body produces locals; a name bound at
+        class or module level is a symbol in its own right, and treating it as
+        a shadow would delete the whole edge type.
+        """
+        seen = 0
+        current = scope_id
+        while current is not None and seen <= _MAX_SCOPE_DEPTH:
+            symbol = by_id.get(current)
+            if symbol is None:
+                return False
+            if symbol.kind in ("function", "method") and name in bound.get(current, ()):
+                return True
+            parent = symbol.parent
+            current = parent if parent in by_id else None
+            seen += 1
+        return False
 
     def _bound_names(
         self,
