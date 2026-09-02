@@ -1748,6 +1748,29 @@ function style(spec: SceneSpec): StyleMap {
  * can be skipped" when one line must carry both -- and weight/colour still
  * apply to it.  External sinks predate all of this and keep their voice.
  */
+/**
+ * What the call-flow lines mean, in one string (tic-ec97).
+ *
+ * Lives here rather than in App.tsx because the version that lived there
+ * drifted: it was written for tic-171f's three confidence voices and never
+ * learned tic-23eb's tags, so it went on describing a solid line as "exact
+ * resolution" after solid had also come to mean "not guarded" -- and left the
+ * dash a reader actually meets most often, on 20% of edges, unexplained.
+ * Next to {@link edgeStyleFor}, a channel added without a legend line is a
+ * one-screen omission instead of a cross-file one.
+ *
+ * Every channel this names is one `edgeStyleFor` really draws; the tag it
+ * declines to draw (`typeCheckingOnly`) stays out of both.
+ */
+export const EDGE_LEGEND =
+  'Solid: an exactly resolved call that always happens. ' +
+  'Coarse dash: guarded -- it sits behind an if, a try or an except, so it can be skipped. ' +
+  'Fine dash: heuristic -- a name guess resolved it, so part of the line is inference. ' +
+  'Faint dash: an external module, outside the parsed codebase. ' +
+  'Thicker: looped -- it can fire more than once. ' +
+  'Warm colour: an error path -- the call is inside an exception handler. ' +
+  'Coverage below is read live from the export.'
+
 export function edgeStyleFor(data: FlowEdgeData | undefined): EdgeStyle {
   const external = data?.external ?? false
   // Three edge voices (tic-171f): solid for exact resolutions, finely
@@ -1953,16 +1976,62 @@ export const callFlowMode: VizMode<CallFlowParams> = {
     expandCycles: false,
   },
   paramToggles: [
-    { key: 'showExternals', label: 'External calls' },
-    { key: 'includeTests', label: 'Test entry points' },
-    { key: 'showState', label: 'State coupling' },
-    { key: 'showTypes', label: 'Type flow' },
-    { key: 'expandCycles', label: 'Expand cycles' },
+    {
+      key: 'showExternals',
+      label: 'External calls',
+      help:
+        'Adds a chip for each third-party or standard-library module the code calls out to, ' +
+        'drawn faint and coarsely dashed so it never reads as one of your own functions. ' +
+        'Off, the picture is your codebase alone and those calls simply end.',
+    },
+    {
+      key: 'includeTests',
+      label: 'Test entry points',
+      help:
+        'Lets functions in test files count as entry points. Off by default, and that is a ' +
+        'measured decision rather than a preference: entries are ranked by how far they ' +
+        'reach, and a test drives a deeper path than almost anything else, so tests take the ' +
+        'top of the list -- 9 of the top 12 on carnot. Turn it on when the test surface is ' +
+        'the thing you want to look at.',
+    },
+    {
+      key: 'showState',
+      label: 'State coupling',
+      help:
+        'Draws a finely dotted accent line between two functions that touch the same ' +
+        'module-level or class variable. Bright and thick when neither one calls the other ' +
+        '-- that is coupling the call graph cannot show you at all -- and thin and faded ' +
+        'when a call edge already joins them.',
+    },
+    {
+      key: 'showTypes',
+      label: 'Type flow',
+      help:
+        'Draws a long-dashed warm line where one function returns a type another accepts, so ' +
+        'data can move between them whether or not either calls the other. In a rooted view ' +
+        'this ADDS chips: a producer and a consumer of the same type are exactly the pair a ' +
+        'call cone never contains both of, so an overlay confined to what is already drawn ' +
+        'would show nothing. The line is brightest where a call edge agrees with it, which ' +
+        'is the rare case.',
+    },
+    {
+      key: 'expandCycles',
+      label: 'Expand cycles',
+      help:
+        'Draws a mutual-recursion knot as its individual functions instead of one chip ' +
+        'reading "4 functions (cycle)". Worth turning on once the view is rooted on a knot ' +
+        'and "which of these calls which" is the question; it does make the layout messier, ' +
+        'because a cycle cannot be arranged in layers the way the rest of the graph can.',
+    },
   ],
   paramOptions: [
     {
       key: 'direction',
       label: 'Trace',
+      help:
+        'Which way a rooted view walks from the function it is focused on: Calls follows ' +
+        'what it reaches, Callers follows what reaches it, Both draws the function in the ' +
+        'middle of its neighbourhood. No effect on the overview.',
       options: [
         { value: 'both', label: 'Both' },
         { value: 'down', label: 'Calls' },
@@ -1971,9 +2040,39 @@ export const callFlowMode: VizMode<CallFlowParams> = {
     },
   ],
   paramNumbers: [
-    { key: 'depth', label: 'Overview depth', min: 0, max: 3, step: 1 },
-    { key: 'entryLimit', label: 'Entries', min: 1, max: 200, step: 10 },
-    { key: 'rootDepth', label: 'Trace depth', min: 0, max: 4, step: 1 },
+    {
+      key: 'depth',
+      label: 'Overview depth',
+      help:
+        'How many call hops below each entry point the overview draws. 1 answers "what does ' +
+        'each way in reach immediately", which is what the overview is for. 2 and 3 trade ' +
+        'legibility for reach quickly -- on carnot, depth 2 pulls in 2286 of 2574 nodes.',
+      min: 0,
+      max: 3,
+      step: 1,
+    },
+    {
+      key: 'entryLimit',
+      label: 'Entries',
+      help:
+        'How many entry points the overview draws, the furthest-reaching first. The line ' +
+        'under the canvas says how many were left out.',
+      min: 1,
+      max: 200,
+      step: 10,
+    },
+    {
+      key: 'rootDepth',
+      label: 'Trace depth',
+      help:
+        'How many call hops a rooted view walks from its root, in each direction Trace has ' +
+        'switched on. A separate knob from Overview depth because the two want opposite ' +
+        'values: the same graph that floods an overview at 2 gives a rooted view a median of ' +
+        'three chips at 1.',
+      min: 0,
+      max: 4,
+      step: 1,
+    },
   ],
   select,
   measure,

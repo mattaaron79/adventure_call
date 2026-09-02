@@ -10,7 +10,12 @@ import { modeById } from './modes/registry'
 import { fileOnlyDirIds, fsTreeMode, minimalScopeForTarget } from './modes/fsTree'
 import { getLayoutVersion, subscribeLayoutReady } from './modes/asyncLayout'
 import { CALL_FLOW_MODE_ID } from './modes/ids'
-import { callFlowCoverage, formatCoverageHud, formatTypeCoverageHud } from './modes/callFlow'
+import {
+  EDGE_LEGEND,
+  callFlowCoverage,
+  formatCoverageHud,
+  formatTypeCoverageHud,
+} from './modes/callFlow'
 import { deriveTypeFlow } from './data/typeFlow'
 import { renderMode } from './modes/types'
 import { activeMode, selectExpanded, selectFilterVisible, useWorkspace } from './state/store'
@@ -261,7 +266,7 @@ export function App() {
           // anything but; this is the antidote, worn where the mode is.
           <div
             className="coverage-hud"
-            title="Solid edge = exact resolution · fine dash = heuristic (a name guess resolved it) · faint dash = external module. Coverage is read live from the export."
+            title={EDGE_LEGEND}
           >
             {formatCoverageHud(callFlowCoverage(graph.graph.stats, registry))}
             {/* The type-flow overlay's own honesty line (tic-59b1), shown only

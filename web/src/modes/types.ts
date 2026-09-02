@@ -237,11 +237,35 @@ export interface StyleMap {
   edges: ReadonlyMap<string, EdgeStyle>
 }
 
+/**
+ * Plain-language help for one param control (tic-ec97).
+ *
+ * A label like "State coupling" or "Sibling wrap" names a control without
+ * saying what it does to the picture, and the sidebar is where a reader meets
+ * it with no other context.  So every declared control carries a written
+ * explanation, and {@link ../ui/ModePicker.ModePicker} surfaces it in two
+ * places: as the native `title` on the control, and inline under the label
+ * when the panel's help is switched on.
+ *
+ * What to write here: what changes ON SCREEN when the control moves, in
+ * ordinary sentences.  A default that is load-bearing rather than a
+ * preference should say why -- "Test entry points" being off is a measured
+ * decision, and a reader who does not know that will read it as an arbitrary
+ * one.  The param's own docstring is the place for the implementation
+ * reasoning; this is the place for the reader's question.
+ *
+ * `registry.test.ts` requires one on every control every registered mode
+ * declares, so a new control cannot ship unexplained.
+ */
+export type ParamHelp = string
+
 /** A boolean param the ModePicker can render as a checkbox. */
 export interface ParamToggle {
   /** Key in the mode's params object. */
   key: string
   label: string
+  /** What this does to the picture; see {@link ParamHelp}. */
+  help: ParamHelp
 }
 
 /** A multi-value param the ModePicker can render as a segmented control. */
@@ -251,6 +275,8 @@ export interface ParamOption {
   label: string
   /** The choices, in display order; the stored value is the selected one. */
   options: readonly { value: string; label: string }[]
+  /** What this does to the picture; see {@link ParamHelp}. */
+  help: ParamHelp
 }
 
 /** A numeric param the ModePicker can render as a small number input. */
@@ -261,6 +287,8 @@ export interface ParamNumber {
   min?: number
   max?: number
   step?: number
+  /** What this does to the picture; see {@link ParamHelp}. */
+  help: ParamHelp
 }
 
 export interface VizMode<P> {

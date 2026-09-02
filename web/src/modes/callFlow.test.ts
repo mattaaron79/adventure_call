@@ -12,6 +12,7 @@ import type {
 } from '../data/types'
 import { COMPUTED_CALLEE_REASON } from '../data/callMetrics'
 import {
+  EDGE_LEGEND,
   cacheKeyOf,
   callFlowCoverage,
   callFlowMode,
@@ -1635,5 +1636,50 @@ describe('type flow overlay (tic-59b1)', () => {
     expect(style.stroke).not.toBe(
       stateEdgeStyleFor({ through: [], beside: false, mutual: false, via: '' }).stroke,
     )
+  })
+})
+
+
+describe('EDGE_LEGEND (tic-ec97)', () => {
+  // A checklist rather than a proof: nothing can force a new channel into the
+  // sentence.  What it does catch is the failure that actually happened --
+  // the legend App.tsx carried was written for three confidence voices and
+  // never learned the tags, so it went on describing a picture the code had
+  // stopped drawing.  Each entry pairs a payload `edgeStyleFor` treats
+  // specially with the word the legend uses for it.
+  //
+  // The payload type is mode-private; naming it through `edgeStyleFor` keeps
+  // it that way rather than exporting it for one test.
+  const channels: [string, Parameters<typeof edgeStyleFor>[0]][] = [
+    ['external', { external: true, heuristic: false, tags: null }],
+    ['heuristic', { external: false, heuristic: true, tags: null }],
+    ['guarded', { external: false, heuristic: false, tags: edgeTagsOf([['if']]) }],
+    ['looped', { external: false, heuristic: false, tags: edgeTagsOf([['for']]) }],
+    ['error path', { external: false, heuristic: false, tags: edgeTagsOf([['try:except']]) }],
+  ]
+
+  const plain = edgeStyleFor({ external: false, heuristic: false, tags: edgeTagsOf([[]]) })
+
+  it('names every channel that changes how a line is drawn', () => {
+    for (const [word, data] of channels) {
+      expect(edgeStyleFor(data), word).not.toEqual(plain)
+      expect(EDGE_LEGEND.toLowerCase(), word).toContain(word)
+    }
+  })
+
+  it('leaves out the tag the style phase declines to draw', () => {
+    // `typeCheckingOnly` fired zero times on both measured codebases and gets
+    // no styling; a legend entry for it would send a reader looking for
+    // something that is not there.
+    expect(EDGE_LEGEND.toLowerCase()).not.toContain('type_checking')
+    expect(EDGE_LEGEND.toLowerCase()).not.toContain('type-checking')
+  })
+
+  it('describes solid as the unguarded default, not only as an exact resolution', () => {
+    // The precise drift this replaces: solid came to mean two things at once
+    // and the old sentence only mentioned one of them.
+    expect(plain.dash).toBeUndefined()
+    expect(EDGE_LEGEND).toMatch(/^Solid: /)
+    expect(EDGE_LEGEND.toLowerCase()).toContain('always happens')
   })
 })

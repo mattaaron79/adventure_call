@@ -285,9 +285,14 @@ describe('mode params', () => {
   })
 
   it('declares mergeLines as a toggle so ModePicker renders it generically', () => {
-    expect(importGraphMode.paramToggles).toEqual([
-      { key: 'mergeLines', label: 'Merge import lines' },
-    ])
+    expect(importGraphMode.paramToggles).toHaveLength(1)
+    const [toggle] = importGraphMode.paramToggles!
+    expect(toggle.key).toBe('mergeLines')
+    expect(toggle.label).toBe('Merge import lines')
+    // The explanation itself is held by registry.test.ts, which requires one
+    // on every control of every mode; pinning its wording here would make an
+    // edit to the prose fail a test about the toggle.
+    expect(toggle.help).toBeTruthy()
   })
 })
 

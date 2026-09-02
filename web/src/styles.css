@@ -199,6 +199,61 @@ html, body, #root {
   border-color: var(--accent);
 }
 
+/* Control explanations (tic-ec97).  `.param-control` wraps a checkbox or a
+   number input with its help paragraph so the two move together; the
+   segmented control is already a fieldset and needs no wrapper. */
+.param-control {
+  margin: 10px 0 0;
+}
+.param-control > .noise-toggle,
+.param-control > .param-number {
+  margin: 0;
+}
+.param-help {
+  margin: 5px 0 0;
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* The `?` that pins every explanation open, sitting at the end of the
+   heading it belongs to. */
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.help-toggle {
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.help-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.help-toggle.active {
+  border-color: var(--accent);
+  background: rgba(137, 180, 250, 0.14);
+  color: var(--accent);
+}
+.help-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .inspector {
   position: absolute;
   right: 14px;

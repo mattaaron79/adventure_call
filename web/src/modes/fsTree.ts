@@ -581,11 +581,24 @@ export const fsTreeMode: VizMode<FsTreeParams> = {
   id: FS_TREE_MODE_ID,
   label: 'Files & symbols',
   defaultParams: { showImports: true, orientation: 'lr', wrap: 0 },
-  paramToggles: [{ key: 'showImports', label: 'Import lines' }],
+  paramToggles: [
+    {
+      key: 'showImports',
+      label: 'Import lines',
+      help:
+        'Draws a line from each file to the files it imports. Off, you see the folder tree ' +
+        'on its own; on, you also see how the files reach past it to each other. Hovering a ' +
+        'file highlights just its own lines, which is the usual way to read a busy tree.',
+    },
+  ],
   paramOptions: [
     {
       key: 'orientation',
       label: 'Tree direction',
+      help:
+        'Which way the tree grows. Horizontal puts the root at the left with folders opening ' +
+        'to the right, and suits deep nesting; vertical puts the root at the top, and suits a ' +
+        'shallow tree with many files per folder.',
       options: [
         { value: 'lr', label: 'Horizontal →' },
         { value: 'tb', label: 'Vertical ↓' },
@@ -596,6 +609,10 @@ export const fsTreeMode: VizMode<FsTreeParams> = {
     {
       key: 'wrap',
       label: 'Sibling wrap',
+      help:
+        "How many columns to pack a folder's children into -- rows, going vertical. 0 or 1 " +
+        'stacks them in one long line; 3 makes a folder of 30 files a third as tall and three ' +
+        'times as wide. Worth raising when one big folder is stretching the whole picture.',
       min: 0,
       max: 8,
       step: 1,

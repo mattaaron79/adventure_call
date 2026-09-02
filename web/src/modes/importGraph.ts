@@ -675,7 +675,16 @@ export const importGraphMode: VizMode<ImportGraphParams> = {
   defaultParams: { mergeLines: false },
   // Rendered as a checkbox by ModePicker's generic paramToggles handling
   // (tic-83ec), so merging needs no UI code of its own (tic-531b).
-  paramToggles: [{ key: 'mergeLines', label: 'Merge import lines' }],
+  paramToggles: [
+    {
+      key: 'mergeLines',
+      label: 'Merge import lines',
+      help:
+        'Bundles the import lines into shared trunks with visible junction dots, instead of ' +
+        'drawing one separate line per import. A module everything imports wears a fan of ' +
+        'dozens of lines otherwise. Only how it is drawn -- no import appears or disappears.',
+    },
+  ],
   select,
   measure,
   layout,

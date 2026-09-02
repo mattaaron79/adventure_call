@@ -6,9 +6,27 @@
  * serializable snapshots of { modeId, params, filters, expandState }.  The
  * exclude filters live in App state, so applying a preset's filters goes
  * through `onApplyFilters` rather than the workspace store.
+ *
+ * ## Explaining the controls (tic-ec97)
+ *
+ * Every declared control carries a `help` string (see {@link
+ * ../modes/types.ParamHelp}), and this renders it two ways, because the two
+ * answer different questions.  The native `title` is always there and costs
+ * nothing, for "what is this one thing" mid-task.  The `?` in the Mode
+ * heading pins every explanation inline at once, for "what is this whole
+ * panel" -- which is the question a reader meeting the sidebar for the first
+ * time actually has, and one a hover tooltip answers badly: it makes them
+ * hover nine controls one at a time and holds each answer on screen only as
+ * long as the pointer sits still.
+ *
+ * The pinned state is a reading preference rather than part of a view, so it
+ * lives under its own localStorage key instead of in the per-mode
+ * {@link ../state/persist.ModeState}: it should not travel inside a preset,
+ * and it should not reset when the mode changes.
  */
 import { useState } from 'react'
 import { MODES, modeById } from '../modes/registry'
+import { readHelpPinned, writeHelpPinned } from './paramHelp'
 import {
   deletePreset,
   downloadPresets,
@@ -38,6 +56,17 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
 
   const [presets, setPresets] = useState<Preset[]>(readPresets)
   const [name, setName] = useState('')
+  const [helpPinned, setHelpPinned] = useState<boolean>(readHelpPinned)
+
+  const toggleHelp = () => {
+    const next = !helpPinned
+    setHelpPinned(next)
+    writeHelpPinned(next)
+  }
+
+  /** The inline explanation, when the panel's help is pinned. */
+  const helpFor = (help: string) =>
+    helpPinned ? <p className="param-help">{help}</p> : null
 
   const commit = (next: Preset[]) => {
     setPresets(next)
@@ -78,7 +107,18 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
 
   return (
     <>
-      <h2>Mode</h2>
+      <h2 className="section-heading">
+        Mode
+        <button
+          type="button"
+          className={`help-toggle${helpPinned ? ' active' : ''}`}
+          onClick={toggleHelp}
+          aria-pressed={helpPinned}
+          title={helpPinned ? 'Hide the control explanations' : 'Explain what each control does'}
+        >
+          ?
+        </button>
+      </h2>
       <select
         className="mode-select"
         value={modeId}
@@ -91,21 +131,24 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
         ))}
       </select>
       {mode.paramToggles?.map((toggle) => (
-        <label key={toggle.key} className="noise-toggle">
-          <input
-            type="checkbox"
-            checked={params[toggle.key] === true}
-            onChange={(event) =>
-              useWorkspace.getState().setParams({ ...params, [toggle.key]: event.target.checked })
-            }
-          />
-          {toggle.label}
-        </label>
+        <div key={toggle.key} className="param-control">
+          <label className="noise-toggle" title={toggle.help}>
+            <input
+              type="checkbox"
+              checked={params[toggle.key] === true}
+              onChange={(event) =>
+                useWorkspace.getState().setParams({ ...params, [toggle.key]: event.target.checked })
+              }
+            />
+            {toggle.label}
+          </label>
+          {helpFor(toggle.help)}
+        </div>
       ))}
       {/* Multi-value params (tic-0419), e.g. the fs-tree orientation, render
           as a segmented control: one radio per declared option. */}
       {mode.paramOptions?.map((group) => (
-        <fieldset key={group.key} className="param-options">
+        <fieldset key={group.key} className="param-options" title={group.help}>
           <legend>{group.label}</legend>
           <div className="param-options-row">
             {group.options.map((option) => (
@@ -126,25 +169,29 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
               </label>
             ))}
           </div>
+          {helpFor(group.help)}
         </fieldset>
       ))}
       {/* Numeric params (tic-3d87), e.g. the fs-tree sibling wrap, render as
           a labelled number input; 0/1 both mean "off". */}
       {mode.paramNumbers?.map((param) => (
-        <label key={param.key} className="param-number">
-          <span>{param.label}</span>
-          <input
-            type="number"
-            min={param.min}
-            max={param.max}
-            step={param.step}
-            value={Number(params[param.key] ?? 0)}
-            onChange={(event) => {
-              const next = event.target.value === '' ? 0 : Number(event.target.value)
-              useWorkspace.getState().setParams({ ...params, [param.key]: next })
-            }}
-          />
-        </label>
+        <div key={param.key} className="param-control">
+          <label className="param-number" title={param.help}>
+            <span>{param.label}</span>
+            <input
+              type="number"
+              min={param.min}
+              max={param.max}
+              step={param.step}
+              value={Number(params[param.key] ?? 0)}
+              onChange={(event) => {
+                const next = event.target.value === '' ? 0 : Number(event.target.value)
+                useWorkspace.getState().setParams({ ...params, [param.key]: next })
+              }}
+            />
+          </label>
+          {helpFor(param.help)}
+        </div>
       ))}
 
       <h2>Presets</h2>
