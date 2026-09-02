@@ -20,7 +20,7 @@ import networkx as nx
 from adventure_call.models import ParsedFile
 from adventure_call.resolver import ResolutionIndex
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 GRAPH_FILENAME = "codebase_graph.json"
 REGISTRY_FILENAME = "symbol_registry.json"
 
@@ -167,6 +167,9 @@ class OutputWriter:
             "calls_heuristic": sum(1 for r in resolved if r.confidence == "heuristic"),
             "calls_unresolved": len(index.unresolved),
             "calls_builtin": index.builtin_calls,
+            # Callables NAMED without being called (tic-89fa).  Counted apart
+            # from calls because a reference is not one.
+            "references": len(index.references),
             "diagnostics": sum(len(p.diagnostics) for p in parsed_files),
         }
 

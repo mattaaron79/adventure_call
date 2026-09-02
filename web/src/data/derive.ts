@@ -20,6 +20,61 @@ import type {
   SymbolRegistry,
 } from './types'
 
+// -- references --------------------------------------------------------------
+
+/**
+ * Who names each callable without calling it (tic-89fa).
+ *
+ * A reference is evidence that something CAN reach a callable, and nothing
+ * more: `path("o/m/<slug>/", views.menu_items)` proves the view is wired up,
+ * while proving nothing about whether the route is ever hit.  Kept out of
+ * {@link CallGraph} for exactly that reason -- everything reading the call
+ * graph is reasoning about flow, and a reference is not flow.
+ */
+export interface ReferenceIndex {
+  /** Target symbol id -> the symbols that name it, deduplicated. */
+  referrers: ReadonlyMap<string, readonly string[]>
+}
+
+const referenceCache = new WeakMap<readonly GraphEdge[], WeakMap<SymbolIndex, ReferenceIndex>>()
+
+/**
+ * Index the REFERENCES edges by target.  Memoised per (edges, index) pair.
+ *
+ * Endpoints are resolved through the index like every other derivation here,
+ * so an edge touching something the excludes or the file query removed is
+ * dropped rather than left dangling.
+ */
+export function deriveReferences(
+  edges: readonly GraphEdge[],
+  index: SymbolIndex,
+): ReferenceIndex {
+  let perIndex = referenceCache.get(edges)
+  if (!perIndex) {
+    perIndex = new WeakMap()
+    referenceCache.set(edges, perIndex)
+  }
+  const cached = perIndex.get(index)
+  if (cached) return cached
+
+  const referrers = new Map<string, string[]>()
+  for (const edge of edges) {
+    if (!edge.types.includes('REFERENCES')) continue
+    if (!index.byId.has(edge.source) || !index.byId.has(edge.target)) continue
+    if (edge.source === edge.target) continue
+    const known = referrers.get(edge.target)
+    if (known) {
+      if (!known.includes(edge.source)) known.push(edge.source)
+    } else {
+      referrers.set(edge.target, [edge.source])
+    }
+  }
+
+  const result: ReferenceIndex = { referrers }
+  perIndex.set(index, result)
+  return result
+}
+
 // -- symbol index ------------------------------------------------------------
 
 export interface SymbolIndex {
@@ -863,6 +918,8 @@ export interface Workspace {
    *  import layers walk, so it costs one more pass over them and is memoised
    *  alongside everything else here. */
   callGraph: CallGraph
+  /** Who NAMES each callable without calling it (tic-89fa). */
+  references: ReferenceIndex
   /**
    * External imports from the registry (tic-314c), grouped per file and
    * target.  Empty until the registry has been fetched -- startup stays on
@@ -952,6 +1009,7 @@ export function deriveWorkspace(
     fileImporters: deriveFileImporters(fileImports),
     importCycles: deriveStronglyConnectedComponents(fileImports),
     callGraph: deriveCallGraph(graph.edges, index),
+    references: deriveReferences(graph.edges, index),
     externalImports: registry ? deriveExternalImports(registry, index) : EMPTY_EXTERNAL_IMPORTS,
     externalCalls: registry ? deriveExternalCalls(registry, index) : EMPTY_EXTERNAL_CALLS,
     registry,

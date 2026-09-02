@@ -15,6 +15,7 @@ import inspect
 import logging
 import os
 from bisect import bisect_right
+from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Iterator, Sequence
 
@@ -35,6 +36,7 @@ from adventure_call.models import (
     Param,
     ParseDiagnostic,
     ParsedFile,
+    Reference,
     SymbolDef,
 )
 
@@ -113,6 +115,16 @@ _MAX_VALUE_CHARS = 80  # assignment right-hand sides are summarised, not stored
 #: the definition that owns it (tic-b47a).  `lambda` is deliberately absent --
 #: it is not a symbol, so a call inside one still belongs to the enclosing
 #: function and merely gains a `lambda` token.
+#: Reference capture name -> the position it records (tic-89fa).
+_REF_POSITIONS = {
+    "ref.argument": "argument",
+    "ref.assign": "assign-value",
+    "ref.collection": "collection",
+}
+
+#: How far up the enclosing-scope chain a shadowing check walks.
+_MAX_SCOPE_DEPTH = 8
+
 _CONTROL_STOP = frozenset(
     {"function_definition", "class_definition", "decorated_definition", "module"}
 )
@@ -402,6 +414,9 @@ class _PythonExtractor:
         with_matches: list[tuple[Node, dict[str, list[Node]]]] = []
         import_nodes: list[tuple[str, Node]] = []
         call_matches: list[dict[str, list[Node]]] = []
+        # (position, name node, site node) and the raw bound-name nodes.
+        ref_matches: list[tuple[str, Node, Node]] = []
+        bind_names: list[Node] = []
 
         for _pattern, caps in matches:
             if "def.function" in caps or "def.class" in caps:
@@ -422,11 +437,21 @@ class _PythonExtractor:
                 import_nodes.append(("from", caps["import.from"][0]))
             elif "call.site" in caps:
                 call_matches.append(caps)
+            elif "bind.name" in caps:
+                bind_names.extend(caps["bind.name"])
+            else:
+                for capture, position in _REF_POSITIONS.items():
+                    site_nodes = caps.get(capture)
+                    if not site_nodes:
+                        continue
+                    for name_node in caps.get("ref.name") or []:
+                        ref_matches.append((position, name_node, site_nodes[0]))
 
         symbols = self._build_symbols(def_matches, assign_matches)
         imports = self._build_imports(import_nodes)
         calls = self._build_calls(call_matches, symbols)
         local_bindings = self._build_locals(assign_matches, with_matches, symbols)
+        references = self._build_references(ref_matches, bind_names, symbols)
 
         return ParsedFile(
             file_path=self.file_path,
@@ -436,6 +461,7 @@ class _PythonExtractor:
             imports=imports,
             calls=calls,
             locals=local_bindings,
+            references=references,
             diagnostics=self.diagnostics,
             module_docstring=self._docstring_of_block(root),
         )
@@ -1159,6 +1185,133 @@ class _PythonExtractor:
             return (segments[0], segments[1:]) if segments else ("", [])
         path = self._attribute_path(node)
         return (path[0], path[1:]) if path else ("", [])
+
+    # -- references (tic-89fa) ---------------------------------------------
+
+    def _build_references(
+        self,
+        ref_matches: Sequence[tuple[str, Node, Node]],
+        bind_names: Sequence[Node],
+        symbols: Sequence[SymbolDef],
+    ) -> list[Reference]:
+        """Callables named without being called, minus everything shadowed.
+
+        A reference is only worth recording if the name could actually reach
+        the definition it looks like.  A name the enclosing function BINDS
+        cannot: ``def test_x(session): do(session)`` names its own parameter,
+        not the module-level ``session`` it happens to share a spelling with.
+        Measured on ../carnot, skipping that check made 85% of the argument
+        references wrong -- so the bound-name set is built first and is
+        deliberately over-broad, since a binding form missed here becomes a
+        false reference while one caught unnecessarily costs only a true
+        reference we decline to draw.
+        """
+        owners = [s for s in symbols if s.kind in _CALLABLE_KINDS]
+        starts = [s.start_byte for s in owners]
+        by_id = {s.symbol_id: s for s in owners}
+        bound = self._bound_names(bind_names, owners, starts)
+
+        references: list[Reference] = []
+        for position, name_node, site in ref_matches:
+            if self._inside_error(site):
+                continue
+            # A class's superclass list is an `argument_list` in this grammar,
+            # so `class Greet(Tool)` looks exactly like `f(Tool)`.  Inheritance
+            # is a different relationship from a callback registration, it is
+            # already recorded on `SymbolDef.bases`, and on ../carnot it was
+            # 231 of 434 references -- more than half the edge type, saying
+            # something the export already said.  If inheritance is ever worth
+            # drawing it deserves its own edge type, not a share of this one.
+            if site.parent is not None and site.parent.type == "class_definition":
+                continue
+            path = self._attribute_path(name_node)
+            if not path:
+                continue
+            root = path[0]
+            # `self.x` and `cls.x` name a member, which the call machinery
+            # already understands and which is never a free reference.
+            if root in _SELF_NAMES:
+                continue
+
+            scope_id = self._enclosing_symbol(name_node.start_byte, owners, starts)
+            if self._is_bound(root, scope_id, by_id, bound):
+                continue
+
+            references.append(
+                Reference(
+                    module=self.module,
+                    file_path=self.file_path,
+                    raw_name=self.text(name_node),
+                    root=root,
+                    attr_path=path[1:],
+                    scope_id=scope_id,
+                    position=position,  # type: ignore[arg-type]
+                    line=name_node.start_point.row + 1,
+                    start_byte=name_node.start_byte,
+                    end_byte=name_node.end_byte,
+                )
+            )
+
+        references.sort(key=lambda r: r.start_byte)
+        return references
+
+    def _bound_names(
+        self,
+        bind_names: Sequence[Node],
+        owners: Sequence[SymbolDef],
+        starts: Sequence[int],
+    ) -> dict[str | None, set[str]]:
+        """Every name each scope binds, keyed by scope id (None = module level).
+
+        Two sources: the query's assignment/loop/with/except/global captures,
+        and parameters.
+
+        Deliberately NOT import aliases.  An import is what MAKES a name mean
+        the thing it names -- `from . import views` is precisely why
+        `views.menu_items` resolves -- so treating the alias as a binding
+        suppressed every Django URLconf reference, which is the case this
+        whole ticket exists for.
+
+        Deliberately NOT nested definition names either.  A nested `def`
+        genuinely shadows an outer name, but the resolver already scopes that
+        correctly (`_lookup_local` tries `<scope>.<name>` first), so a
+        reference to one resolves to the nested definition rather than to the
+        outer symbol -- and referencing a nested helper is a real reference
+        worth drawing, not a false one worth dropping.
+        """
+        bound: dict[str | None, set[str]] = defaultdict(set)
+
+        for node in bind_names:
+            scope_id = self._enclosing_symbol(node.start_byte, owners, starts)
+            bound[scope_id].add(self.text(node))
+
+        for symbol in owners:
+            for param in symbol.params:
+                if param.name:
+                    bound[symbol.symbol_id].add(param.name)
+
+        return bound
+
+    @staticmethod
+    def _is_bound(
+        name: str,
+        scope_id: str | None,
+        by_id: dict[str, SymbolDef],
+        bound: dict[str | None, set[str]],
+    ) -> bool:
+        """Whether `name` is bound anywhere in `scope_id`'s enclosing chain."""
+        seen = 0
+        current: str | None = scope_id
+        while seen <= _MAX_SCOPE_DEPTH:
+            if name in bound.get(current, ()):
+                return True
+            if current is None:
+                return False
+            symbol = by_id.get(current)
+            parent = symbol.parent if symbol else None
+            current = parent if parent in by_id else None
+            seen += 1
+        return False
 
     def _attribute_path(self, callee: Node) -> list[str]:
         """Flatten ``a.b.c`` into ``["a", "b", "c"]``.

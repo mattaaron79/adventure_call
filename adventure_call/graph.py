@@ -21,6 +21,7 @@ from adventure_call.resolver import ResolutionIndex, SymbolResolver
 
 CALLS = "CALLS"
 IMPORTS = "IMPORTS"
+REFERENCES = "REFERENCES"
 CONTAINS = "CONTAINS"
 
 _CONFIDENCE_RANK = {"exact": 2, "heuristic": 1, "unresolved": 0}
@@ -169,6 +170,7 @@ class GraphBuilder:
         self._add_module_nodes()
         self._add_import_edges()
         self._add_call_edges()
+        self._add_reference_edges()
         if self.contains_edges:
             self._add_contains_edges()
         return self.graph
@@ -273,6 +275,28 @@ class GraphBuilder:
                 call_type=resolution.call_type,
                 control=resolution.control,
             )
+
+    def _add_reference_edges(self) -> None:
+        """Callables NAMED without being called (tic-89fa).
+
+        A separate edge TYPE, never folded into CALLS, because the two say
+        different things: a call is flow, a reference is only evidence that
+        something could reach the target.  A consumer walking execution must
+        be able to ignore these, and one asking "is this dead" must not.
+
+        Module-level referrers are kept whatever `module_call_edges` says --
+        that flag is about calls executed at import time, while framework
+        configuration (a URLconf, an admin registration, a router table) is
+        module-level BY NATURE and dropping it would discard the case this
+        edge type exists for.
+        """
+        for link in self.index.references:
+            referrer, target = link.referrer_id, link.target_id
+            if referrer not in self.graph or target not in self.graph:
+                continue
+            if referrer == target:
+                continue
+            self._merge_edge(referrer, target, REFERENCES, line=link.line)
 
     def _add_contains_edges(self) -> None:
         for symbol in self.index.symbols.values():

@@ -64,3 +64,56 @@
   left: (attribute
           object: (identifier) @assign.receiver
           attribute: (identifier) @assign.name)) @assign.site
+
+;; --------------------------------------------------------------------------
+;; References -- a callable NAMED without being called (tic-89fa).
+;;
+;; `path("o/m/<slug>/", views.menu_items)` names a view; it does not call it,
+;; so the call-site patterns above never see it and the view looks like dead
+;; code.  Same shape wherever a callback is registered: Thread(target=worker),
+;; signal.connect(handler), a dispatch table `[_cmd_state, _cmd_validate]`.
+;;
+;; Three positions, chosen by measuring what each rescues on two real
+;; codebases (see tic-89fa's notes): an argument, an assigned value, and a
+;; collection literal.  Decorators, parameter defaults and returns were
+;; measured too and rescue nothing at all on either, so they are not here.
+;;
+;; These patterns are deliberately loose -- `f(x)` matches for any `x` -- and
+;; the noise is filtered downstream: the parser drops any name the enclosing
+;; function binds, and the resolver keeps only what lands on an in-project
+;; callable.  Measured, that takes carnot's 753 candidate sites to 91 edges.
+;; --------------------------------------------------------------------------
+(argument_list [(identifier) (attribute)] @ref.name) @ref.argument
+(keyword_argument value: [(identifier) (attribute)] @ref.name) @ref.argument
+(assignment right: [(identifier) (attribute)] @ref.name) @ref.assign
+(list [(identifier) (attribute)] @ref.name) @ref.collection
+(set [(identifier) (attribute)] @ref.name) @ref.collection
+(tuple [(identifier) (attribute)] @ref.name) @ref.collection
+(pair value: [(identifier) (attribute)] @ref.name) @ref.collection
+
+;; --------------------------------------------------------------------------
+;; Names a scope BINDS (tic-89fa), so a reference to one can be refused.
+;;
+;; `def test_x(session): do(session)` must not report a reference to a
+;; module-level `session` -- it is the parameter.  Measured on ../carnot,
+;; leaving this out made 85% of the argument references wrong.
+;;
+;; Over-broad on purpose: a binding form missed here becomes a false
+;; reference, while one caught unnecessarily only costs a true reference we
+;; decline to draw.  Parameters, nested definitions and import aliases are not
+;; here because the parser already has them from the patterns above.
+;; --------------------------------------------------------------------------
+(assignment left: (identifier) @bind.name)
+(assignment left: (pattern_list (identifier) @bind.name))
+(assignment left: (tuple_pattern (identifier) @bind.name))
+(augmented_assignment left: (identifier) @bind.name)
+(named_expression name: (identifier) @bind.name)
+(for_statement left: (identifier) @bind.name)
+(for_statement left: (pattern_list (identifier) @bind.name))
+(for_statement left: (tuple_pattern (identifier) @bind.name))
+(for_in_clause left: (identifier) @bind.name)
+(for_in_clause left: (pattern_list (identifier) @bind.name))
+(for_in_clause left: (tuple_pattern (identifier) @bind.name))
+(as_pattern alias: (as_pattern_target (identifier) @bind.name))
+(global_statement (identifier) @bind.name)
+(nonlocal_statement (identifier) @bind.name)

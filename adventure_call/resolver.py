@@ -26,6 +26,8 @@ from adventure_call.models import (
     ImportRecord,
     LocalBinding,
     ParsedFile,
+    Reference,
+    ReferenceLink,
     Resolution,
     SymbolDef,
 )
@@ -138,6 +140,11 @@ class ResolutionIndex:
     modules: dict[str, ParsedFile] = field(default_factory=dict)
     bindings: dict[str, dict[str, Binding]] = field(default_factory=dict)
     resolutions: list[Resolution] = field(default_factory=list)
+    #: Callables NAMED without being called (tic-89fa), resolved.  Kept apart
+    #: from `resolutions` because a reference is not a call: it is evidence
+    #: that something can reach a callable, never evidence that anything does,
+    #: and anything reasoning about flow must be able to ignore them.
+    references: list[ReferenceLink] = field(default_factory=list)
     builtin_calls: int = 0
 
     @property
@@ -380,7 +387,59 @@ class SymbolResolver:
                     index.builtin_calls += 1
                 index.resolutions.append(resolution)
 
+            for reference in parsed.references:
+                link = self._resolve_reference(reference)
+                if link is not None:
+                    index.references.append(link)
+
         return index
+
+    def _resolve_reference(self, ref: Reference) -> ReferenceLink | None:
+        """Resolve a named-but-not-called callable, or None to drop it.
+
+        Deliberately all-or-nothing, with no `unresolved` counterpart.  An
+        unresolved CALL is a finding -- the code does something we could not
+        follow -- but an unresolved reference is almost always just a variable
+        being read, and the query that produced it is loose on purpose:
+        `f(x)` matches for every `x` there is.  Measured, that is 753
+        candidate sites on ../carnot for 91 real references, and recording the
+        other 662 as unresolved would swamp the coverage figures with noise
+        that means nothing.
+
+        The target must be an in-project CALLABLE.  A reference to a constant
+        or a module is not the thing this edge type is about.
+        """
+        scope_id = ref.scope_id or ref.module
+        if not ref.root:
+            return None
+
+        if ref.attr_path:
+            base = self._root_target(ref.module, scope_id, ref.root)
+            target = self._walk_dotted(base, ref.attr_path) if base else None
+        else:
+            # A nested definition wins over a module-level one of the same
+            # name, exactly as it does for a call -- which is why the parser
+            # does not need to treat a nested `def` as a shadowing binding.
+            target = self._lookup_local(scope_id, ref.root)
+            if target is None:
+                target = self.module_members.get(ref.module, {}).get(ref.root)
+            if target is None:
+                binding = self.bindings.get(ref.module, {}).get(ref.root)
+                if binding is not None and binding.kind == "symbol":
+                    target = binding.target
+
+        if target is None or not self._is_callable(target):
+            return None
+        if target == scope_id:
+            return None  # a function naming itself is recursion, not a reference
+        return ReferenceLink(
+            referrer_id=scope_id,
+            target_id=target,
+            raw_name=ref.raw_name,
+            line=ref.line,
+            file_path=ref.file_path,
+            position=ref.position,
+        )
 
     def _resolve_call(self, call: CallSite, caller_id: str) -> Resolution:
         def outcome(

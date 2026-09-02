@@ -174,7 +174,7 @@ export const EXTERNAL_PREFIX = 'ext:'
 /** Mode-private payload `select` hands to `style`, which never sees the data
  *  or the ui state (the same trick importGraph uses for its cycle flags). */
 interface FlowNodeData {
-  role: 'entry' | 'framework-entry' | 'internal' | 'orphan' | 'external'
+  role: 'entry' | 'framework-entry' | 'referenced' | 'internal' | 'orphan' | 'external'
   /** Members of a cyclic component; 1 for an ordinary function. */
   size: number
   /** The function calls itself directly (tic-a8a6). */
@@ -694,7 +694,7 @@ function callEdgesBetween(
 
 function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec {
   const graph = data.callGraph
-  const entryPoints = deriveEntryPoints(graph, data.index)
+  const entryPoints = deriveEntryPoints(graph, data.index, undefined, data.references)
   // The registry rides on the workspace (tic-171f), so coverage fills in the
   // moment it has been fetched and is null -- visibly absent, never zero --
   // before that.
@@ -1175,7 +1175,7 @@ export function nodeStyleFor(data: FlowNodeData): NodeStyle {
   const accent =
     data.size > 1 || data.recursive
       ? THEME.cycle
-      : data.role === 'framework-entry' || data.role === 'entry'
+      : data.role === 'framework-entry' || data.role === 'referenced' || data.role === 'entry'
         ? KIND_COLOR.function
         : KIND_COLOR.method
   return { fill: THEME.surface2, stroke: THEME.line, accent, draggable: true }

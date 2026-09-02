@@ -22,7 +22,7 @@ DiagnosticKind = Literal[
 ]
 Confidence = Literal["exact", "heuristic", "unresolved"]
 CallType = Literal["call", "constructor", "method"]
-EdgeType = Literal["CALLS", "IMPORTS", "CONTAINS"]
+EdgeType = Literal["CALLS", "IMPORTS", "CONTAINS", "REFERENCES"]
 
 JSONDict = dict[str, Any]
 
@@ -292,6 +292,67 @@ class LocalBinding:
         return asdict(self)
 
 
+#: Where a reference was written.  Chosen by measurement, not by taste: see
+#: tic-89fa's notes for what each position rescues, and for the three
+#: positions (decorator, parameter default, return) that rescue nothing at all
+#: on either codebase and are therefore not captured.
+RefPosition = Literal["argument", "assign-value", "collection"]
+
+
+@dataclass(frozen=True)
+class Reference:
+    """A callable NAMED somewhere without being called (tic-89fa).
+
+    ``path("o/m/<slug>/", views.menu_items)`` names a view and does not call
+    it, so a call graph never sees it and the view reads as dead code.  The
+    same shape covers every callback registration -- ``Thread(target=worker)``,
+    ``signal.connect(handler)``, a dispatch table ``[_cmd_state, _cmd_add]``.
+
+    A reference is emphatically NOT a call, and is kept as its own edge type
+    for that reason: it is evidence that something can reach this callable,
+    not evidence that anything does.  Consumers reasoning about FLOW must
+    ignore these; consumers asking "is this dead" must not.
+
+    The dotted expression is stored as ``root`` plus ``attr_path``, exactly as
+    :class:`CallSite` stores a callee, so the resolver can walk it with the
+    same machinery rather than a second name lookup that could disagree.
+    """
+
+    module: str
+    file_path: str
+    #: The expression as written, e.g. ``views.menu_items``.
+    raw_name: str
+    root: str
+    attr_path: list[str] = field(default_factory=list)
+    #: The definition containing the reference; None at module or class level,
+    #: which is where framework configuration usually lives.
+    scope_id: str | None = None
+    position: RefPosition = "argument"
+    line: int = 1
+    start_byte: int = 0
+    end_byte: int = 0
+
+    def to_dict(self) -> JSONDict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReferenceLink:
+    """A resolved :class:`Reference`: who named which in-project callable."""
+
+    #: The definition containing the reference, or the module when it sits at
+    #: module or class level.
+    referrer_id: str
+    target_id: str
+    raw_name: str
+    line: int
+    file_path: str
+    position: RefPosition
+
+    def to_dict(self) -> JSONDict:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
 class ParseDiagnostic:
     """Something the parser could not fully understand.
@@ -324,6 +385,8 @@ class ParsedFile:
     #: exported; this exists only so the resolver can classify method calls
     #: on a receiver it would otherwise call an unknown name.
     locals: list[LocalBinding] = field(default_factory=list)
+    #: Callables named without being called (tic-89fa).
+    references: list[Reference] = field(default_factory=list)
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
     module_docstring: str | None = None
 

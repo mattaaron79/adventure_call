@@ -29,7 +29,7 @@
  * can: `framework-entry` is evidence-backed, `entry` and `orphan` are the
  * absence of evidence and inherit all of the export's uncertainty.
  */
-import type { CallGraph, SymbolIndex } from './derive'
+import type { CallGraph, ReferenceIndex, SymbolIndex } from './derive'
 import { DEFAULT_ROLE_RULES, matchRole, type RoleRule } from './roles'
 
 /**
@@ -39,13 +39,19 @@ import { DEFAULT_ROLE_RULES, matchRole, type RoleRule } from './roles'
  * - `framework-entry` -- nothing in the project calls it, but a rule explains
  *   why: a decorator, a test-runner naming convention, the dunder protocol.
  *   A real root, with evidence.
+ * - `referenced` -- nothing CALLS it, but something in the project NAMES it:
+ *   a Django URLconf entry, a `Thread(target=...)`, a dispatch table
+ *   (tic-89fa).  Evidence-backed like `framework-entry`, and deliberately
+ *   distinct from it: a rule says "the framework calls this", a reference
+ *   says "this code hands it somewhere".  It is NOT proof the callable ever
+ *   runs, only that it is wired up.
  * - `entry` -- nothing calls it and no rule explains it, but it does call
  *   things, so it is the top of some flow.  A `__main__` block's helper, a
  *   script, or a function whose only callers went unresolved.
  * - `orphan` -- nothing calls it, it calls nothing, and no rule explains it.
  *   POSSIBLY unused; never state it more strongly than that.
  */
-export type EntryRole = 'internal' | 'framework-entry' | 'entry' | 'orphan'
+export type EntryRole = 'internal' | 'framework-entry' | 'referenced' | 'entry' | 'orphan'
 
 export interface SymbolRole {
   role: EntryRole
@@ -80,7 +86,13 @@ export interface EntryPoints {
   rescued: number
 }
 
-const entryPointCache = new WeakMap<CallGraph, WeakMap<readonly RoleRule[], EntryPoints>>()
+/** Stands in for "no reference data", so the memo key is always an object. */
+const EMPTY_REFERENCES: ReferenceIndex = { referrers: new Map() }
+
+const entryPointCache = new WeakMap<
+  CallGraph,
+  WeakMap<readonly RoleRule[], WeakMap<ReferenceIndex, EntryPoints>>
+>()
 
 /**
  * Classify every node of the call graph by how execution reaches it.
@@ -96,13 +108,22 @@ export function deriveEntryPoints(
   callGraph: CallGraph,
   index: SymbolIndex,
   rules: readonly RoleRule[] = DEFAULT_ROLE_RULES,
+  /** Who names each callable without calling it (tic-89fa).  Omitted keeps
+   *  the pre-references behaviour exactly, which is what a caller with only
+   *  a call graph in hand should get. */
+  references: ReferenceIndex = EMPTY_REFERENCES,
 ): EntryPoints {
   let perRules = entryPointCache.get(callGraph)
   if (!perRules) {
     perRules = new WeakMap()
     entryPointCache.set(callGraph, perRules)
   }
-  const cached = perRules.get(rules)
+  let perReferences = perRules.get(rules)
+  if (!perReferences) {
+    perReferences = new WeakMap()
+    perRules.set(rules, perReferences)
+  }
+  const cached = perReferences.get(references)
   if (cached) return cached
 
   const roleOf = new Map<string, SymbolRole>()
@@ -136,6 +157,22 @@ export function deriveEntryPoints(
       continue
     }
 
+    // Something names it without calling it (tic-89fa).  Evidence, so it
+    // ranks above `entry` and `orphan`, which are both the ABSENCE of
+    // evidence -- and below a role rule, which names the mechanism rather
+    // than merely pointing at the wiring.
+    const namedBy = references.referrers.get(id)
+    if (namedBy !== undefined && namedBy.length > 0) {
+      roleOf.set(id, {
+        role: 'referenced',
+        framework,
+        reason: referenceReason(namedBy, index),
+      })
+      entries.push(id)
+      rescued++
+      continue
+    }
+
     if (callsSomethingOtherThanItself(callGraph, id)) {
       roleOf.set(id, { role: 'entry', framework: null, reason: null })
       entries.push(id)
@@ -147,8 +184,16 @@ export function deriveEntryPoints(
   }
 
   const result: EntryPoints = { roleOf, entries, orphans, rescued }
-  perRules.set(rules, result)
+  perReferences.set(references, result)
   return result
+}
+
+/** Evidence a UI can show: who named it, by their own short names. */
+function referenceReason(namedBy: readonly string[], index: SymbolIndex): string {
+  const names = namedBy.map((id) => index.byId.get(id)?.name ?? id)
+  if (names.length === 1) return `named by ${names[0]}`
+  if (names.length === 2) return `named by ${names[0]} and ${names[1]}`
+  return `named by ${names[0]} and ${names.length - 1} others`
 }
 
 /** Whether anything OTHER than the symbol itself calls it. */

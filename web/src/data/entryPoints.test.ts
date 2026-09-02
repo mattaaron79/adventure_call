@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveCallGraph, indexSymbols } from './derive'
+import { deriveCallGraph, deriveReferences, indexSymbols } from './derive'
 import { deriveEntryPoints } from './entryPoints'
 import type { RoleRule } from './roles'
 import type { GraphEdge, GraphNode, SymbolKind } from './types'
@@ -196,5 +196,135 @@ describe('deriveEntryPoints and self-recursion (tic-d8a8)', () => {
       calls('recurse', 'recurse'),
     ])
     expect(points.roleOf.get('recurse')?.role).toBe('internal')
+  })
+})
+
+
+// -- references (tic-89fa) --------------------------------------------------
+
+function references(source: string, target: string): GraphEdge {
+  return {
+    source,
+    target,
+    type: 'REFERENCES',
+    types: ['REFERENCES'],
+    count: 1,
+    lines: [1],
+    confidence: 'exact',
+    call_types: [],
+    aliases: [],
+  } as GraphEdge
+}
+
+describe('deriveReferences (tic-89fa)', () => {
+  const NODES = [fn('m.urls'), fn('m.home'), fn('m.detail')]
+  const index = indexSymbols(NODES)
+
+  it('indexes who names each callable', () => {
+    const edges = [references('m.urls', 'm.home'), references('m.urls', 'm.detail')]
+    const derived = deriveReferences(edges, index)
+    expect(derived.referrers.get('m.home')).toEqual(['m.urls'])
+    expect(derived.referrers.get('m.detail')).toEqual(['m.urls'])
+  })
+
+  it('lists each referrer once however many times it names the target', () => {
+    const edges = [references('m.urls', 'm.home'), references('m.urls', 'm.home')]
+    expect(deriveReferences(edges, index).referrers.get('m.home')).toEqual(['m.urls'])
+  })
+
+  it('ignores CALLS edges, which are a different claim entirely', () => {
+    expect(deriveReferences([calls('m.urls', 'm.home')], index).referrers.size).toBe(0)
+  })
+
+  it('drops an edge whose end the excludes or the file query removed', () => {
+    // The same guard every derivation here applies; its absence crashed elk
+    // in tic-56b2.
+    const edges = [references('m.urls', 'm.gone'), references('m.vanished', 'm.home')]
+    expect(deriveReferences(edges, index).referrers.size).toBe(0)
+  })
+
+  it('drops a self-reference, which says nothing', () => {
+    expect(deriveReferences([references('m.home', 'm.home')], index).referrers.size).toBe(0)
+  })
+
+  it('is memoised per (edges, index) pair', () => {
+    const edges = [references('m.urls', 'm.home')]
+    expect(deriveReferences(edges, index)).toBe(deriveReferences(edges, index))
+  })
+})
+
+describe('entry points and references (tic-89fa)', () => {
+  const NODES = [fn('m.urls'), fn('m.home'), fn('m.lonely'), fn('m.helper')]
+  const index = indexSymbols(NODES)
+  const CALL_EDGES = [calls('m.urls', 'm.helper')]
+  const graph = deriveCallGraph(CALL_EDGES, index)
+
+  it('calls a named-but-uncalled function `referenced`, not an orphan', () => {
+    // Django's URLconf: nothing CALLS the view, and it calls nothing itself,
+    // so before this it was indistinguishable from dead code.
+    const refs = deriveReferences([references('m.urls', 'm.home')], index)
+    const points = deriveEntryPoints(graph, index, undefined, refs)
+    expect(points.roleOf.get('m.home')!.role).toBe('referenced')
+    expect(points.entries).toContain('m.home')
+    expect(points.orphans).not.toContain('m.home')
+  })
+
+  it('leaves a function nothing names an orphan', () => {
+    const refs = deriveReferences([references('m.urls', 'm.home')], index)
+    const points = deriveEntryPoints(graph, index, undefined, refs)
+    expect(points.roleOf.get('m.lonely')!.role).toBe('orphan')
+  })
+
+  it('says who named it, so a UI can explain rather than assert', () => {
+    const refs = deriveReferences([references('m.urls', 'm.home')], index)
+    const points = deriveEntryPoints(graph, index, undefined, refs)
+    expect(points.roleOf.get('m.home')!.reason).toBe('named by urls')
+  })
+
+  it('names two referrers, and counts beyond that', () => {
+    const edges = [
+      references('m.urls', 'm.home'),
+      references('m.lonely', 'm.home'),
+      references('m.helper', 'm.home'),
+    ]
+    const refs = deriveReferences(edges, index)
+    const points = deriveEntryPoints(graph, index, undefined, refs)
+    expect(points.roleOf.get('m.home')!.reason).toBe('named by urls and 2 others')
+  })
+
+  it('lets a CALL outrank a reference, because a call is the stronger fact', () => {
+    const refs = deriveReferences([references('m.urls', 'm.helper')], index)
+    const points = deriveEntryPoints(graph, index, undefined, refs)
+    expect(points.roleOf.get('m.helper')!.role).toBe('internal')
+  })
+
+  it('lets a role RULE outrank a reference, because it names the mechanism', () => {
+    // A rule says "the framework calls this"; a reference only says "this
+    // code hands it somewhere".  Both are evidence; the rule is specific.
+    const rules: RoleRule[] = [{ role: 'route', name: '^home$' }]
+    const refs = deriveReferences([references('m.urls', 'm.home')], index)
+    const points = deriveEntryPoints(graph, index, rules, refs)
+    expect(points.roleOf.get('m.home')!.role).toBe('framework-entry')
+  })
+
+  it('behaves exactly as before when no reference data is supplied', () => {
+    const points = deriveEntryPoints(graph, index)
+    expect(points.roleOf.get('m.home')!.role).toBe('orphan')
+    expect(points.orphans).toContain('m.home')
+  })
+
+  it('counts a reference among the rescues, since that is what it is', () => {
+    const refs = deriveReferences([references('m.urls', 'm.home')], index)
+    expect(deriveEntryPoints(graph, index, undefined, refs).rescued).toBe(1)
+  })
+
+  it('memoises per reference index as well as per rule list', () => {
+    const refs = deriveReferences([references('m.urls', 'm.home')], index)
+    expect(deriveEntryPoints(graph, index, undefined, refs)).toBe(
+      deriveEntryPoints(graph, index, undefined, refs),
+    )
+    expect(deriveEntryPoints(graph, index, undefined, refs)).not.toBe(
+      deriveEntryPoints(graph, index),
+    )
   })
 })

@@ -821,3 +821,112 @@ def test_a_tuple_with_target_is_not_bound(parse_source):
     """A destructured element's type is not the expression's type."""
     bound = _locals(parse_source, "def go():\n    with pair() as (a, b):\n        pass\n")
     assert bound == {}
+
+
+# -- references (tic-89fa) -------------------------------------------------
+#
+# A callable NAMED without being called.  The value is in what is REFUSED as
+# much as in what is captured: a name the enclosing scope binds is that local,
+# and emitting it anyway made 85% of ../carnot's references wrong.
+
+
+def _refs(parse_source, source: str):
+    return {(r.raw_name, r.position, r.scope_id) for r in parse_source(source).references}
+
+
+def test_a_callable_named_as_an_argument_is_a_reference(parse_source):
+    """Django's URLconf, which is the case this exists for."""
+    found = _refs(
+        parse_source,
+        "from . import views\n"
+        "from django.urls import path\n"
+        "urlpatterns = [path('', views.home, name='home')]\n",
+    )
+    assert ("views.home", "argument", None) in found
+
+
+def test_an_import_alias_is_not_treated_as_a_binding(parse_source):
+    """The import is what MAKES `views.home` mean the view.
+
+    Treating the alias as a binding suppressed every URLconf reference -- the
+    entire point of the ticket -- so it is deliberately absent from the bound
+    set.
+    """
+    found = _refs(parse_source, "from . import views\nrun(views.home)\n")
+    assert ("views.home", "argument", None) in found
+
+
+def test_a_keyword_argument_counts(parse_source):
+    found = _refs(parse_source, "def worker(): pass\nThread(target=worker)\n")
+    assert ("worker", "argument", None) in found
+
+
+def test_an_assigned_value_and_a_collection_count(parse_source):
+    found = _refs(
+        parse_source,
+        "def a(): pass\ndef b(): pass\nchosen = a\ntable = {'x': a}\nlisted = [a, b]\n",
+    )
+    assert ("a", "assign-value", None) in found
+    assert ("a", "collection", None) in found
+    assert ("b", "collection", None) in found
+
+
+def test_a_dispatch_table_inside_a_function_counts(parse_source):
+    """../carnot's plan_command builds one, and every command in it is
+    caller-less in the call graph."""
+    found = _refs(
+        parse_source,
+        "def _cmd_state(): pass\ndef run():\n    for cmd in [_cmd_state]:\n        cmd()\n",
+    )
+    assert ("_cmd_state", "collection", "m.run") in found
+
+
+def test_a_name_the_function_binds_is_that_local_and_not_a_reference(parse_source):
+    """`def go(session): do(session)` names its parameter, not the
+    module-level function it shares a spelling with."""
+    source = "def session(): pass\ndef go(session):\n    do(session)\n"
+    assert _refs(parse_source, source) == set()
+
+
+def test_every_binding_form_suppresses_a_reference(parse_source):
+    # A binding form missed here becomes a false reference, so each is checked
+    # rather than assumed.
+    forms = {
+        "assignment": "    x = 1\n    use(x)\n",
+        "tuple unpack": "    x, y = 1, 2\n    use(x)\n",
+        "augmented": "    x = 0\n    x += 1\n    use(x)\n",
+        "walrus": "    if (x := f()):\n        use(x)\n",
+        "for target": "    for x in xs:\n        use(x)\n",
+        "for tuple": "    for x, y in xs:\n        use(x)\n",
+        "comprehension": "    vals = [use(x) for x in xs]\n",
+        "with as": "    with open('f') as x:\n        use(x)\n",
+        "except as": "    try:\n        pass\n    except E as x:\n        use(x)\n",
+        "global": "    global x\n    use(x)\n",
+    }
+    for label, body in forms.items():
+        source = "def x(): pass\ndef go():\n" + body
+        assert _refs(parse_source, source) == set(), f"{label} did not suppress"
+
+
+def test_a_nested_definition_is_a_real_reference(parse_source):
+    """It shadows the outer name, but the resolver scopes it correctly, so the
+    reference resolves to the nested one rather than to something wrong."""
+    found = _refs(parse_source, "def go():\n    def inner(): pass\n    use(inner)\n")
+    assert ("inner", "argument", "m.go") in found
+
+
+def test_a_superclass_is_not_a_reference(parse_source):
+    """`class Greet(Tool)` is an argument_list in this grammar, so it looks
+    exactly like `f(Tool)`.  Inheritance is already on SymbolDef.bases, and on
+    ../carnot this was 231 of 434 references -- more than half the edge type
+    restating something the export already said."""
+    assert _refs(parse_source, "class Tool: pass\nclass Greet(Tool): pass\n") == set()
+
+
+def test_self_and_cls_are_never_references(parse_source):
+    assert _refs(parse_source, "class A:\n    def m(self):\n        use(self)\n") == set()
+
+
+def test_a_calls_callee_is_not_a_reference(parse_source):
+    """It is a call; the call machinery already has it."""
+    assert _refs(parse_source, "def a(): pass\ndef go():\n    a()\n") == set()

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   deriveCallGraph,
+  deriveReferences,
   deriveFileImporters,
   type FileImportEdge,
   type FsDir,
@@ -86,6 +87,8 @@ const WORKSPACE: Workspace = {
   // Likewise real rather than hand-written (tic-a8a6); this fixture carries no
   // CALLS edges, so the derivation yields an empty graph over the index.
   callGraph: deriveCallGraph([], index),
+  // Likewise real (tic-89fa); no REFERENCES edges here either.
+  references: deriveReferences([], index),
   // No registry-derived call data in this fixture (tic-d8a8).  The registry
   // itself rides on the workspace since tic-171f; null keeps this fixture on
   // the codebase_graph.json-only footing it has always modelled.

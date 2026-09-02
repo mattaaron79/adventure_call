@@ -845,3 +845,110 @@ def test_one_functions_locals_do_not_leak_into_a_sibling(analyse):
     )
     # `two` knows nothing about `one`'s local, so this is the old fallback.
     assert _edge(idx, "m.two", "engine.start").reason == "unique name in project"
+
+
+# -- references (tic-89fa) -------------------------------------------------
+
+
+def _refs(idx):
+    return {(r.referrer_id, r.target_id) for r in idx.references}
+
+
+def test_a_django_urlconf_reaches_its_views(analyse):
+    """The case the ticket was filed for: `path(..., views.home)` NAMES the
+    view, so a call graph never sees it and the view reads as dead code."""
+    _, _, idx = analyse(
+        {
+            "app/__init__.py": "",
+            "app/views.py": "def home(request):\n    return 1\n",
+            "app/urls.py": (
+                "from . import views\n"
+                "urlpatterns = [path('', views.home, name='home')]\n"
+            ),
+        }
+    )
+    assert ("app.urls", "app.views.home") in _refs(idx)
+
+
+def test_a_reference_is_never_recorded_as_a_call(analyse):
+    """Different edge types because they say different things: a call is
+    flow, a reference is only evidence that something could reach it."""
+    _, _, idx = analyse(
+        {"m.py": "def worker(): pass\ndef go():\n    Thread(target=worker)\n"}
+    )
+    assert ("m.go", "m.worker") in _refs(idx)
+    assert all(r.callee_id != "m.worker" for r in idx.resolutions)
+
+
+def test_a_reference_to_a_nested_definition_resolves_to_the_nested_one(analyse):
+    """Which is why the parser does not need to treat a nested `def` as a
+    shadowing binding -- the resolver already scopes it."""
+    _, _, idx = analyse(
+        {
+            "m.py": (
+                "def helper(): pass\n"
+                "def go():\n"
+                "    def helper(): pass\n"
+                "    register(helper)\n"
+            )
+        }
+    )
+    assert ("m.go", "m.go.helper") in _refs(idx)
+
+
+def test_a_name_that_resolves_to_nothing_is_dropped_silently(analyse):
+    """Deliberately no `unresolved` counterpart.  The query is loose on
+    purpose -- `f(x)` matches for every `x` -- so on ../carnot that is 753
+    candidate sites for 91 real references, and recording the rest as
+    unresolved would swamp the coverage figures with noise."""
+    _, _, idx = analyse({"m.py": "def go(a):\n    use(undefined_thing)\n"})
+    assert _refs(idx) == set()
+
+
+def test_a_reference_to_a_non_callable_is_dropped(analyse):
+    """Naming a constant is not what this edge type is about."""
+    _, _, idx = analyse({"m.py": "LIMIT = 5\ndef go():\n    use(LIMIT)\n"})
+    assert _refs(idx) == set()
+
+
+def test_a_function_naming_itself_is_recursion_not_a_reference(analyse):
+    _, _, idx = analyse({"m.py": "def go():\n    retry(go)\n"})
+    assert _refs(idx) == set()
+
+
+def test_a_reference_to_a_class_counts(analyse):
+    """`HTTPServer(("", 0), _Handler)` hands over a class to be constructed
+    later; ../carnot does exactly this in four test servers."""
+    _, _, idx = analyse(
+        {"m.py": "class Handler: pass\ndef serve():\n    HTTPServer(addr, Handler)\n"}
+    )
+    assert ("m.serve", "m.Handler") in _refs(idx)
+
+
+def test_the_graph_carries_references_as_their_own_edge_type(analyse):
+    builder, _, _ = analyse(
+        {
+            "app/__init__.py": "",
+            "app/views.py": "def home(request):\n    return 1\n",
+            "app/urls.py": "from . import views\nurlpatterns = [path('', views.home)]\n",
+        }
+    )
+    data = builder.graph.edges["app.urls", "app.views.home"]
+    assert data["types"] == ["REFERENCES"]
+    assert "CALLS" not in data["types"]
+
+
+def test_a_module_level_referrer_survives_the_module_call_edge_flag(analyse):
+    """Framework configuration -- a URLconf, an admin registration, a router
+    table -- is module-level BY NATURE, and that flag is about calls executed
+    at import time.  Dropping references with it would discard the case this
+    edge type exists for."""
+    builder, _, _ = analyse(
+        {
+            "app/__init__.py": "",
+            "app/views.py": "def home(request):\n    return 1\n",
+            "app/urls.py": "from . import views\nurlpatterns = [path('', views.home)]\n",
+        },
+        module_call_edges=False,
+    )
+    assert builder.graph.has_edge("app.urls", "app.views.home")

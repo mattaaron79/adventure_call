@@ -6,7 +6,7 @@
  * emits them (see tic-82b0); consumers must tolerate their absence.
  */
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 export type SymbolKind =
   | 'module'
@@ -16,7 +16,14 @@ export type SymbolKind =
   | 'variable'
   | 'attribute'
 
-export type EdgeType = 'CALLS' | 'IMPORTS' | 'CONTAINS'
+/**
+ * `REFERENCES` (tic-89fa) is a callable NAMED without being called --
+ * `path("...", views.menu_items)`, `Thread(target=worker)`, a dispatch table.
+ * It is evidence that something can reach the target, never evidence that
+ * anything does, so anything reasoning about FLOW must ignore it and anything
+ * asking "is this dead" must not.
+ */
+export type EdgeType = 'CALLS' | 'IMPORTS' | 'CONTAINS' | 'REFERENCES'
 export type Confidence = 'exact' | 'heuristic' | 'unresolved'
 export type CallType = 'call' | 'constructor' | 'method'
 export type ParamKind = 'positional' | 'posonly' | 'kwonly' | 'vararg' | 'kwarg'
