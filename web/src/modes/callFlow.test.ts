@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveCallMetrics } from '../data/callMetrics'
+import { deriveCallMetrics, destinationOf } from '../data/callMetrics'
 import { deriveWorkspace, indexSymbols } from '../data/derive'
 import { deriveEntryPoints } from '../data/entryPoints'
 import type {
@@ -129,6 +129,9 @@ const GRAPH: CodebaseGraph = {
 function registryWith(
   external: [caller: string, target: string][],
   computed: [caller: string, times: number][] = [],
+  /** Raw reasons, for coverage tests that care about the bucket a reason
+   *  falls in rather than about which caller made the call (tic-f21f). */
+  reasons: string[] = [],
 ): SymbolRegistry {
   const unresolved_calls = external.map(([caller_id, target]) => ({
     caller_id,
@@ -153,6 +156,18 @@ function registryWith(
         file_path: 'm.py',
       })
     }
+  }
+  for (const reason of reasons) {
+    unresolved_calls.push({
+      caller_id: 'm.a',
+      raw_name: 'x',
+      line: 1,
+      callee_id: null,
+      confidence: 'unresolved' as const,
+      call_type: 'call' as const,
+      reason,
+      file_path: 'm.py',
+    })
   }
   return {
     // deriveWorkspace also runs the import-side derivations over this, so the
@@ -846,37 +861,109 @@ describe('heuristic edges (tic-171f)', () => {
   }
 })
 
-describe('the global coverage figure (tic-171f)', () => {
+describe('destinationOf (tic-f21f)', () => {
+  it('names the reasons that mean the call simply leaves the project', () => {
+    expect(destinationOf('external: rich.console.Console')).toBe('out-of-project')
+    expect(destinationOf('stdlib method on list')).toBe('out-of-project')
+    expect(destinationOf('foreign base: textual.app.App')).toBe('out-of-project')
+  })
+
+  it('keeps a computed callee apart, because that one really is a hole', () => {
+    expect(destinationOf('computed callee')).toBe('computed')
+  })
+
+  it('treats every other reason, and no reason at all, as unknown', () => {
+    expect(destinationOf("unknown receiver 'pilot'")).toBe('unknown')
+    expect(destinationOf("ambiguous: 3 symbols named 'go'")).toBe('unknown')
+    expect(destinationOf("no member 'stop' on m.Engine")).toBe('unknown')
+    expect(destinationOf(null)).toBe('unknown')
+    expect(destinationOf(undefined)).toBe('unknown')
+  })
+})
+
+describe('the global coverage figure (tic-171f, rebucketed by tic-f21f)', () => {
+  // ../carnot's real figures, so the arithmetic below is checkable against a
+  // codebase rather than against invented numbers.
   const STATS: GraphStats = {
-    calls_resolved: 4201,
-    calls_heuristic: 725,
-    calls_unresolved: 6248,
-    calls_builtin: 1888,
+    calls_resolved: 4279,
+    calls_heuristic: 786,
+    calls_unresolved: 6226,
+    calls_builtin: 1900,
   } as GraphStats
 
-  it('reads every bucket live from the export, builtins kept apart', () => {
-    // Builtins are known calls to things with no map, not holes in the map,
-    // so the total counts them but they never masquerade as unresolved.
+  /** Unresolved reasons in carnot's real proportions: 1956 out-of-project,
+   *  847 computed, 3423 neither. */
+  const CARNOT_REASONS = registryWith(
+    [],
+    [],
+    [
+      ...Array<string>(1956).fill('external: rich.console.Console'),
+      ...Array<string>(847).fill('computed callee'),
+      ...Array<string>(3423).fill("unknown receiver 'pilot'"),
+    ],
+  )
+
+  it('counts every call site exactly once', () => {
+    // `calls_heuristic` is a SUBSET of `calls_resolved` (writer.py counts the
+    // resolved list, then filters it by confidence).  Adding the two made a
+    // total 786 larger than the number of call sites carnot has, and inflated
+    // the headline from 34% to 38%.
+    const coverage = callFlowCoverage(STATS, null)
+    expect(coverage.total).toBe(4279 + 6226 + 1900)
+    expect(coverage.inProject + coverage.outOfProject + coverage.unknown).toBe(coverage.total)
+    expect(coverage.heuristic).toBeLessThan(coverage.inProject)
+  })
+
+  it('claims only builtins as out-of-project until the reasons arrive', () => {
+    // Understating the split is honest; inventing one is not.
     expect(callFlowCoverage(STATS, null)).toEqual({
-      exact: 4201,
-      heuristic: 725,
-      unresolved: 6248,
-      builtin: 1888,
+      inProject: 4279,
+      heuristic: 786,
+      outOfProject: 1900,
+      unknown: 6226,
       computed: null,
-      total: 13062,
+      total: 12405,
+      classified: false,
     })
   })
 
-  it('counts computed callees from the unresolved reasons in the registry', () => {
-    const registry = registryWith([], [['m.a', 2]])
-    expect(callFlowCoverage(STATS, registry).computed).toBe(2)
+  it('splits the unresolved sites by reason once the registry is in', () => {
+    const coverage = callFlowCoverage(STATS, CARNOT_REASONS)
+    expect(coverage.outOfProject).toBe(1900 + 1956)
+    expect(coverage.unknown).toBe(6226 - 1956)
+    expect(coverage.computed).toBe(847)
+    expect(coverage.classified).toBe(true)
+    expect(coverage.inProject + coverage.outOfProject + coverage.unknown).toBe(coverage.total)
   })
 
-  it('formats one always-visible line, and only promises computed figures it has', () => {
-    const line = formatCoverageHud(callFlowCoverage(STATS, registryWith([], [['m.a', 2]])))
-    expect(line).toContain('38% of call sites resolved (4201 exact + 725 heuristic of 13062)')
-    expect(line).toContain('2 computed callees leave the map')
-    expect(formatCoverageHud(callFlowCoverage(STATS, null))).not.toContain('computed')
+  it('leaves a computed callee in `unknown`, where it belongs', () => {
+    // It is the subset of unknown we can say most about, not a fourth bucket:
+    // flow provably leaves the map there, which is still not knowing where.
+    const coverage = callFlowCoverage(STATS, CARNOT_REASONS)
+    expect(coverage.computed).toBeLessThan(coverage.unknown)
+  })
+
+  it('states three proportions that add up, and the computed count beside them', () => {
+    const line = formatCoverageHud(callFlowCoverage(STATS, CARNOT_REASONS))
+    expect(line).toContain('12,405 call sites')
+    expect(line).toContain('34% in project')
+    expect(line).toContain('31% out of project')
+    expect(line).toContain('34% unknown')
+    expect(line).toContain('847 computed callees')
+  })
+
+  it('says the split is still coming rather than publishing one that will move', () => {
+    const line = formatCoverageHud(callFlowCoverage(STATS, null))
+    expect(line).toContain('34% in project')
+    expect(line).toContain('classifying')
+    expect(line).not.toContain('out of project')
+    expect(line).not.toContain('computed')
+  })
+
+  it('survives an export with no calls at all rather than dividing by zero', () => {
+    const empty = callFlowCoverage({} as GraphStats, null)
+    expect(empty.total).toBe(0)
+    expect(formatCoverageHud(empty)).toContain('0 call sites')
   })
 })
 

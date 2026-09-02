@@ -49,7 +49,7 @@
  */
 import type { CallGraph, ExternalCall, Workspace } from '../data/derive'
 import {
-  COMPUTED_CALLEE_REASON,
+  destinationOf,
   deriveCallMetrics,
   type CallCoverage,
   type CallMetricsIndex,
@@ -1125,34 +1125,69 @@ function style(spec: SceneSpec): StyleMap {
 }
 
 /**
- * The view-level coverage figure (tic-171f): how much of the export's call
- * sites the resolver actually placed, read LIVE from the export's stats so
- * the number moves as the exporter improves -- never a figure copied from a
- * ticket at one point in time.
+ * The view-level coverage figure (tic-171f, rebuilt for tic-f21f): what the
+ * export knows about where this codebase's calls go.
  *
- * `computed` needs the registry (only `unresolved_calls` carries reasons),
- * so it is null until that has been fetched; the rest come from
- * `codebase_graph.json`, which is always loaded.  Builtins are reported as
- * their own bucket rather than folded into "unresolved": the writer counts
- * them separately, and a call to `len()` is not a hole in the map, it is a
- * call to a thing with no map.
+ * Read LIVE from the export's stats so the number moves as the exporter
+ * improves -- never a figure copied from a ticket at one point in time.
+ *
+ * ## Three buckets, because two were pessimistic
+ *
+ * The original split was "resolved" against "unresolved", which files a call
+ * to `len()`, to `django.shortcuts.render` and to `lines.append` under the
+ * same heading as a call we genuinely cannot place.  Those are not the same
+ * thing: the first three have a destination we can NAME, and naming it is
+ * most of what a reader wanted.  Since tic-97ce the resolver says which is
+ * which, so:
+ *
+ * - `inProject`   -- landed on a project symbol; the edges the graph draws.
+ * - `outOfProject`-- destination known, outside the project: builtins, plus
+ *                    tic-97ce's `external:` / `stdlib method on` /
+ *                    `foreign base:` classifications.
+ * - `unknown`     -- destination not known, `computed` being the subset where
+ *                    flow provably leaves the map rather than merely not
+ *                    being followed.
+ *
+ * Measured, the difference is the whole story rather than a rounding:
+ *
+ *   carnot     12,405 sites   34% in project · 31% out of project · 34% unknown
+ *   hypermenu   4,879 sites   19% in project · 36% out of project · 45% unknown
+ *
+ * Reported as "19% resolved", hypermenu looks like an analysis that failed.
+ * It is not: a third of its calls go into django, and we can say so.
+ *
+ * ## The old figure also double-counted
+ *
+ * `stats.calls_heuristic` is a SUBSET of `stats.calls_resolved` (writer.py
+ * counts `resolved` then filters it by confidence), so summing the two
+ * inflated both halves of the fraction -- carnot read 38% where the honest
+ * number is 34%, against a total 786 larger than the number of call sites
+ * that exist.  `heuristic` is kept, as the subset it is.
  */
 export interface FlowCoverage {
-  /** Sites resolved with certainty. */
-  exact: number
-  /** Sites resolved by a heuristic (unique-name matches and the like). */
+  /** Sites that landed on a project symbol -- the edges the graph draws. */
+  inProject: number
+  /** How many of {@link inProject} a heuristic resolved rather than a
+   *  binding.  A SUBSET, never an addend. */
   heuristic: number
-  /** Sites the resolver could not place, builtins excluded. */
-  unresolved: number
-  /** Calls to builtins, which are known and simply not in the project. */
-  builtin: number
-  /**
-   * Unresolved sites whose callee was computed at runtime -- flow provably
-   * leaves the map there.  Null until the registry has been fetched.
-   */
+  /** Sites whose destination is known and is not in this project. */
+  outOfProject: number
+  /** Sites whose destination is not known. */
+  unknown: number
+  /** The subset of {@link unknown} whose callee is computed at runtime.
+   *  Null until the registry has been fetched. */
   computed: number | null
-  /** `exact + heuristic + unresolved + builtin` -- every call site there is. */
+  /** Every call site there is: `inProject + outOfProject + unknown`. */
   total: number
+  /**
+   * Whether the unresolved sites have been split by reason yet.
+   *
+   * False until the registry lands, and then everything unresolved sits in
+   * `unknown` -- because nothing has said otherwise.  That understates
+   * `outOfProject` rather than inventing a split, and the HUD says so rather
+   * than showing a proportion that is about to change meaning.
+   */
+  classified: boolean
 }
 
 /** Read the coverage buckets out of the export (and the registry, if in). */
@@ -1160,30 +1195,70 @@ export function callFlowCoverage(
   stats: GraphStats,
   registry: SymbolRegistry | null,
 ): FlowCoverage {
-  const exact = stats.calls_resolved ?? 0
+  const inProject = stats.calls_resolved ?? 0
   const heuristic = stats.calls_heuristic ?? 0
   const unresolved = stats.calls_unresolved ?? 0
   const builtin = stats.calls_builtin ?? 0
-  const computed = registry
-    ? registry.unresolved_calls.filter((call) => call.reason === COMPUTED_CALLEE_REASON).length
-    : null
-  return { exact, heuristic, unresolved, builtin, computed, total: exact + heuristic + unresolved + builtin }
+  const total = inProject + unresolved + builtin
+
+  if (!registry) {
+    // Builtins are the one out-of-project bucket `codebase_graph.json` counts
+    // on its own, so it is honest even before the reasons arrive.
+    return {
+      inProject,
+      heuristic,
+      outOfProject: builtin,
+      unknown: unresolved,
+      computed: null,
+      total,
+      classified: false,
+    }
+  }
+
+  let out = 0
+  let computed = 0
+  for (const call of registry.unresolved_calls) {
+    const destination = destinationOf(call.reason)
+    if (destination === 'out-of-project') out++
+    else if (destination === 'computed') computed++
+  }
+  return {
+    inProject,
+    heuristic,
+    outOfProject: builtin + out,
+    unknown: unresolved - out,
+    computed,
+    total,
+    classified: true,
+  }
 }
 
 /**
  * The one always-visible line the mode wears while it is active (tic-171f).
+ *
  * States proportions, never excuses: partial resolution is the normal
  * condition of static analysis on a dynamic language, and the line reads as
- * a fact about the data, not a fault in the tool.
+ * a fact about the data rather than a fault in the tool.  Until the reasons
+ * are in it shows the split it can stand behind and says the rest is coming,
+ * instead of publishing an `unknown` share that will drop by half a second
+ * later.
  */
 export function formatCoverageHud(coverage: FlowCoverage): string {
-  const pct = coverage.total > 0 ? Math.round(((coverage.exact + coverage.heuristic) / coverage.total) * 100) : 0
+  const share = (n: number): string =>
+    coverage.total > 0 ? `${Math.round((n / coverage.total) * 100)}%` : '0%'
   const parts = [
-    `${pct}% of call sites resolved (${coverage.exact} exact + ${coverage.heuristic} heuristic of ${coverage.total})`,
-    `${coverage.unresolved} unresolved`,
-    `${coverage.builtin} builtin`,
+    `${coverage.total.toLocaleString()} call sites`,
+    `${share(coverage.inProject)} in project`,
   ]
-  if (coverage.computed !== null) parts.push(`${coverage.computed} computed callees leave the map`)
+  if (!coverage.classified) {
+    parts.push(`${share(coverage.outOfProject + coverage.unknown)} elsewhere — classifying…`)
+    return parts.join(' · ')
+  }
+  parts.push(`${share(coverage.outOfProject)} out of project`)
+  parts.push(`${share(coverage.unknown)} unknown`)
+  if (coverage.computed !== null && coverage.computed > 0) {
+    parts.push(`${coverage.computed.toLocaleString()} computed callees`)
+  }
   return parts.join(' · ')
 }
 

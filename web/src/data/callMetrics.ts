@@ -56,6 +56,42 @@ export type CallShape = 'leaf' | 'pipe' | 'hub' | 'facade' | 'orchestrator' | 'p
  */
 export const COMPUTED_CALLEE_REASON = 'computed callee'
 
+/**
+ * Reason prefixes the resolver uses for a call whose destination it KNOWS and
+ * that simply is not in this project (tic-97ce).  Mirrors the literals in
+ * adventure_call/resolver.py.
+ *
+ * - `external: ` -- a third-party or stdlib module, by dotted path.
+ * - `stdlib method on ` -- a method on a builtin container: `lines.append`.
+ * - `foreign base: ` -- a member inherited from a base class we hold no
+ *   definition of, which is where nearly every method call on a project
+ *   object in framework-heavy code actually lands: textual's App under
+ *   carnot's CarnotApp, django's ModelForm under hypermenu's ItemForm.
+ */
+export const OUT_OF_PROJECT_REASONS = [
+  'external: ',
+  'stdlib method on ',
+  'foreign base: ',
+] as const
+
+/**
+ * Where a call site goes, for a site the graph holds no edge for.
+ *
+ * The distinction the coverage figure turns on (tic-f21f): `out-of-project`
+ * is a call we can NAME and simply cannot follow, which is not a gap in the
+ * analysis; only `computed` and `unknown` are.
+ */
+export type CallDestination = 'out-of-project' | 'computed' | 'unknown'
+
+/** Bucket one unresolved call site by its recorded reason. */
+export function destinationOf(reason: string | null | undefined): CallDestination {
+  if (!reason) return 'unknown'
+  if (reason === COMPUTED_CALLEE_REASON) return 'computed'
+  return OUT_OF_PROJECT_REASONS.some((prefix) => reason.startsWith(prefix))
+    ? 'out-of-project'
+    : 'unknown'
+}
+
 /** How much of one function's outgoing flow the export actually resolved. */
 export interface CallCoverage {
   /** Call sites that resolved to an in-project symbol. */
