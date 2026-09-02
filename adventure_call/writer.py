@@ -20,7 +20,10 @@ import networkx as nx
 from adventure_call.models import ParsedFile
 from adventure_call.resolver import ResolutionIndex
 
-SCHEMA_VERSION = 4
+# 5 (tic-7189): the effect-propagation layer reads the registry; the exports it
+# consumes (unresolved_calls with external reasons) are unchanged, but the
+# web app's typed mirror of this schema is versioned alongside it.
+SCHEMA_VERSION = 5
 GRAPH_FILENAME = "codebase_graph.json"
 REGISTRY_FILENAME = "symbol_registry.json"
 

@@ -1,12 +1,17 @@
 /**
- * TypeScript mirrors of the adventure-call JSON exports (schema_version 3).
+ * TypeScript mirrors of the adventure-call JSON exports (schema_version 5).
  *
  * Written from adventure_call/models.py and adventure_call/writer.py.  Two
  * kinds -- `variable` and `attribute` -- are declared ahead of the parser that
  * emits them (see tic-82b0); consumers must tolerate their absence.
+ *
+ * Version history: 4 added `GraphEdge.controls`; 5 (tic-7189) carries no
+ * field changes -- the effects layer reads the existing `unresolved_calls`
+ * external reasons -- but is bumped to keep the two mirrors of this constant
+ * in lockstep with adventure_call/writer.py.
  */
 
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 export type SymbolKind =
   | 'module'
