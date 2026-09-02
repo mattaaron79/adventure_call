@@ -248,6 +248,25 @@ describe('sublabelFor', () => {
   it('names the framework role when there is one', () => {
     expect(sublabelFor(['a'], 'm', 'route', 1, false)).toContain('route')
   })
+
+  it('puts the chokepoint figure beside the reach, because the pair is the point', () => {
+    // Reaches thirty, and twenty-eight of them have no other way in.
+    expect(sublabelFor(['a'], 'm', null, 30, false, null, null, 28)).toBe(
+      'm · reaches 30 · gates 28',
+    )
+  })
+
+  it('stays silent when a function gates nothing, which is most of them', () => {
+    expect(sublabelFor(['a'], 'm', null, 3, false, null, null, 0)).toBe('m · reaches 3')
+  })
+
+  it('states the claim before the reason to doubt it', () => {
+    // tic-d8f2 is computed over the RESOLVED call graph, so the coverage
+    // clause has to be readable as a qualifier on the gates figure.
+    expect(
+      sublabelFor(['a'], 'm', null, 9, false, { resolved: 4, total: 9, unresolved: 5, dynamic: 0 }, null, 6),
+    ).toBe('m · reaches 9 · gates 6 · 4/9 sites resolved')
+  })
 })
 
 describe('frontierOf', () => {
@@ -1082,6 +1101,96 @@ describe('rootSublabelFor', () => {
     expect(rootSublabelFor(['m.a', 'm.b'], 'm', 'route', false, 0, false)).toBe(
       'm · 2 mutually recursive · route',
     )
+  })
+
+  it('keeps the chokepoint figure, which the drawn cone cannot show', () => {
+    // `reaches` was dropped from a root because it invites subtracting two
+    // numbers that measure opposite directions.  `gates` is not a direction:
+    // it says how much of the codebase depends on this root exclusively.
+    expect(rootSublabelFor(['m.a'], 'm', null, false, 4, false, null, 12)).toBe(
+      'm · gates 12 · 4 not shown',
+    )
+  })
+})
+
+
+describe('chokepoints on the scene (tic-d8f2)', () => {
+  // m.wide is the only way into m.loops and into the {m.ping, m.pong} knot,
+  // so it gates three.  m.shared has three callers and gates nothing, which
+  // is the fan-in/dominance difference in miniature.
+  const chipFor = (spec: ReturnType<typeof select>, label: string) =>
+    spec.root.children.find((child) => child.label === label)!
+
+  it('wears the figure on the chip that is the whole component', () => {
+    const spec = select({ entryLimit: 8, depth: 4, includeTests: true })
+    expect(chipFor(spec, 'wide').sublabel).toContain('gates 3')
+  })
+
+  it('says nothing on a popular function that gates nothing', () => {
+    const spec = select({ entryLimit: 8, depth: 4, includeTests: true })
+    expect(chipFor(spec, 'shared').sublabel).not.toContain('gates')
+  })
+
+  it('drops the figure when a knot is expanded into its members', () => {
+    // A knot that DOES gate something: m.wide -> m.ping <-> m.pong -> m.only,
+    // where m.only has no other way in.  Drawn whole the knot reads
+    // `gates 1`; the members it expands into must not, because removing
+    // m.ping alone leaves m.pong standing and the claim belongs to the group.
+    const gating = deriveWorkspace(
+      {
+        ...GRAPH,
+        nodes: [...NODES, node('m.only', 'function')],
+        edges: [...EDGES, calls('m.pong', 'm.only')],
+      } as CodebaseGraph,
+      [],
+    )
+    // Rooted on m.wide, so the knot is drawn by the ordinary chip path rather
+    // than by the root chip, which carries its own copy of the same rule.
+    const at = (over = {}) =>
+      callFlowMode.select(gating, params({ rootDepth: 3, ...over }), {
+        expanded: {},
+        focusPath: 'm.wide',
+      })
+
+    const whole = at().root.children.find((child) => child.label === '2 functions (cycle)')!
+    expect(whole.sublabel).toContain('gates 1')
+
+    const members = at({ expandCycles: true }).root.children.filter(
+      (child) => child.label === 'ping' || child.label === 'pong',
+    )
+    expect(members).toHaveLength(2)
+    for (const member of members) expect(member.sublabel).not.toContain('gates')
+  })
+
+  it('carries it onto the root of a rooted view', () => {
+    const spec = rooted('m.wide')
+    const root = spec.root.children.find((child) => child.label === 'wide')!
+    expect(root.sublabel).toContain('gates 3')
+  })
+
+  it('applies the same rule to a root that is itself an expanded knot', () => {
+    // The root chip rewrites its own sublabel, so it carries its own copy of
+    // the whole-component rule and needs its own check.
+    const gating = deriveWorkspace(
+      {
+        ...GRAPH,
+        nodes: [...NODES, node('m.only', 'function')],
+        edges: [...EDGES, calls('m.pong', 'm.only')],
+      } as CodebaseGraph,
+      [],
+    )
+    const at = (over = {}) =>
+      callFlowMode.select(gating, params(over), { expanded: {}, focusPath: 'm.ping' })
+
+    expect(
+      at().root.children.find((child) => child.label === '2 functions (cycle)')!.sublabel,
+    ).toContain('gates 1')
+
+    const members = at({ expandCycles: true }).root.children.filter(
+      (child) => child.label === 'ping' || child.label === 'pong',
+    )
+    expect(members).toHaveLength(2)
+    for (const member of members) expect(member.sublabel).not.toContain('gates')
   })
 })
 

@@ -61,6 +61,7 @@ import {
   type EdgeTags,
   type NodeControlTags,
 } from '../data/controlFlow'
+import { deriveDominators, type DominatorIndex } from '../data/dominators'
 import { deriveEntryPoints, type EntryPoints } from '../data/entryPoints'
 import { isTestPath } from '../data/roles'
 import { KIND_COLOR, THEME } from '../canvas/theme'
@@ -567,6 +568,7 @@ function drawComponent(
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
   control: ControlFlowTags,
+  dominators: DominatorIndex,
   component: number,
   expand: boolean,
   children: SpecNode[],
@@ -600,6 +602,11 @@ function drawComponent(
         recursive,
         groupCoverage(group, metrics),
         groupControl(group, control),
+        // Only when the chip IS the component.  `gates` is a claim about a
+        // whole strongly-connected group -- removing one member of a cycle
+        // leaves the others standing -- so an expanded knot's per-member chips
+        // have no honest figure to wear and go without one.
+        group.length === members.length ? (dominators.gatesOf.get(group[0]) ?? 0) : 0,
       ),
       symbolId: group.length === 1 ? group[0] : null,
       expandable: false,
@@ -708,6 +715,7 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   // before that.
   const metrics = deriveCallMetrics(graph, data.index, entryPoints, data.registry)
   const control = deriveControlFlowTags(graph)
+  const dominators = deriveDominators(graph, entryPoints)
 
   // The focus path names a SYMBOL here (see the module docstring).  One the
   // call graph does not hold -- a stale id, a directory from something that
@@ -717,8 +725,18 @@ function select(data: Workspace, params: CallFlowParams, ui: UiState): SceneSpec
   const focusPath = ui.focusPath ?? ''
   const rootComponent = focusPath === '' ? undefined : graph.componentOf.get(focusPath)
   return rootComponent === undefined
-    ? selectOverview(data, params, graph, entryPoints, metrics, control)
-    : selectRooted(data, params, graph, entryPoints, metrics, control, focusPath, rootComponent)
+    ? selectOverview(data, params, graph, entryPoints, metrics, control, dominators)
+    : selectRooted(
+        data,
+        params,
+        graph,
+        entryPoints,
+        metrics,
+        control,
+        dominators,
+        focusPath,
+        rootComponent,
+      )
 }
 
 function selectOverview(
@@ -728,6 +746,7 @@ function selectOverview(
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
   control: ControlFlowTags,
+  dominators: DominatorIndex,
 ): SceneSpec {
   // Filtered by FILE, not by the `test` role.  The role is name-based
   // (`^test_`), which misses the helpers a test module defines around its
@@ -756,6 +775,7 @@ function selectOverview(
       entryPoints,
       metrics,
       control,
+      dominators,
       component,
       false,
       children,
@@ -793,6 +813,7 @@ function selectRooted(
   entryPoints: EntryPoints,
   metrics: CallMetricsIndex,
   control: ControlFlowTags,
+  dominators: DominatorIndex,
   focusPath: string,
   rootComponent: number,
 ): SceneSpec {
@@ -810,6 +831,7 @@ function selectRooted(
       entryPoints,
       metrics,
       control,
+      dominators,
       component,
       params.expandCycles,
       children,
@@ -838,6 +860,7 @@ function selectRooted(
       cone.beyond,
       cone.truncated,
       groupCoverage(group, metrics),
+      group.length === members.length ? (dominators.gatesOf.get(group[0]) ?? 0) : 0,
     )
   }
 
@@ -978,11 +1001,34 @@ export function sublabelFor(
   recursive: boolean,
   coverage: CallCoverage | null = null,
   control: NodeControlTags | null = null,
+  gates = 0,
 ): string {
   const parts = identityParts(members, module, framework, recursive, control)
   parts.push(`reaches ${reachDown}`)
+  appendGates(parts, gates)
   appendCoverage(parts, coverage)
   return parts.join(' · ')
+}
+
+/**
+ * The chokepoint figure (tic-d8f2), next to `reaches` because the pair is the
+ * point: `reaches 30 · gates 28` says this function can get to thirty things
+ * and twenty-eight of them have no other way in.  Reach is blast radius,
+ * `gates` is exclusivity, and on ../carnot they rank almost disjoint sets: the
+ * top twenty by `gates` share one symbol with the top twenty by fan-in and
+ * none at all with the top twenty by reach.
+ *
+ * Omitted at zero, which is 89% of the codebase.  A badge that common says
+ * nothing, and the honest reading of a missing one is "nothing depends on
+ * this exclusively", not "unknown".
+ *
+ * It sits BEFORE the coverage clause on purpose: dominance is computed over
+ * the resolved call graph, so `gates 28 · 4/9 sites resolved` puts the claim
+ * and the reason to doubt it side by side, which is the phrasing tic-d8f2
+ * asks a UI for.
+ */
+function appendGates(parts: string[], gates: number): void {
+  if (gates > 0) parts.push(`gates ${gates}`)
 }
 
 /** Where a node lives and what it is, without any claim about its reach --
@@ -1030,8 +1076,14 @@ export function rootSublabelFor(
   beyond: number,
   truncated: boolean,
   coverage: CallCoverage | null = null,
+  gates = 0,
 ): string {
   const parts = identityParts(members, module, framework, recursive)
+  // `gates` survives here where `reaches` did not, because it is not a
+  // direction: it says how much of the codebase depends on this root
+  // exclusively, which is exactly what a reader who just re-rooted on it wants
+  // and exactly what the drawn cone cannot show.
+  appendGates(parts, gates)
   if (beyond > 0) {
     parts.push(truncated ? `${beyond} not shown (depth capped)` : `${beyond} not shown`)
   }
