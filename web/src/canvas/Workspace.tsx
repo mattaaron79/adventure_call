@@ -47,6 +47,7 @@ import { Grid } from './Grid'
 import { CanvasIconButton } from './IconButton'
 import { actionAffordance, iconSlots } from './iconButtonLogic'
 import { lodOf } from './lod'
+import { wedgeLabelFit, wedgeLabelWidth } from './wedgeLabel'
 import {
   ANTS_DASH,
   antsDashOffset,
@@ -1099,12 +1100,14 @@ export function Workspace({
                   hovered={isHovered}
                   connected={connected}
                   showLabel={showLabel}
+                  showSublabel={lod === 0}
                   showGoIn={showGoIn}
                   focusPath={focusPath}
                   onTooltip={handleIconTooltip}
                   handlers={handlers}
                   register={register}
                   onGoIn={onGoIn}
+                  onOpenIn={onOpenIn}
                 />
               ) : (
                 <NodeChip
@@ -1669,6 +1672,9 @@ interface WedgeProps {
   connected: boolean
   /** Zoom LOD (tic-fa56): labels thin out as the camera pulls back. */
   showLabel: boolean
+  /** Zoom LOD for the count sublabels (tic-bc09): a second line only at lod 0,
+   *  and it doubles as the 'reveal' flag that relaxes the label-fit floors. */
+  showSublabel: boolean
   /** Zoom LOD for the icon buttons; dropped when labels go. */
   showGoIn: boolean
   /** The active focus path: a folder never offers to go into itself
@@ -1679,6 +1685,7 @@ interface WedgeProps {
   handlers: NodeHandlers
   register: (id: string, node: Konva.Group | null) => void
   onGoIn: (target: string) => void
+  onOpenIn: (modeId: string, target: string) => void
 }
 
 /**
@@ -1695,10 +1702,17 @@ interface WedgeProps {
  *
  * Slices are pinned (not draggable): a sunburst is one rigid object, and
  * letting a slice drag away would tear the chart apart rather than rearrange
- * it.  A directory slice carries the same 'go into' affordance a folder chip
- * does (drawn at the slice's midpoint), so the mode stays navigable from the
- * canvas; a slice big enough to host text shows its label instead, so the two
- * never collide.
+ * it.
+ *
+ * Since tic-bc09 a slice can name itself, as a chip does: it shows its label
+ * (and, at lod 0, a count sublabel) when the wedge can host text, so the pie
+ * chunks are readable instead of anonymous colour.  The hub -- the innermost
+ * disk, which is the focused folder once the sunburst is scoped -- is always
+ * roomy enough for a centred name, which is what tells you where a zoomed-in
+ * view is sitting without reading the toolbar.  A directory slice keeps the
+ * same 'go into' affordance a folder chip has, and a file wedge now offers the
+ * Local View open-in (tic-e738); the icon rides the wedge's outer arc while
+ * the name and count own the radial middle, so the two never collide.
  */
 const WedgeNode = memo(function WedgeNode({
   node,
@@ -1708,12 +1722,14 @@ const WedgeNode = memo(function WedgeNode({
   hovered,
   connected,
   showLabel,
+  showSublabel,
   showGoIn,
   focusPath,
   onTooltip,
   handlers,
   register,
   onGoIn,
+  onOpenIn,
 }: WedgeProps) {
   // Border precedence is the same as a chip's (tic-ece1): selection, then the
   // pointer, then "at the end of a lit line", then the mode's own stroke.
@@ -1756,23 +1772,58 @@ const WedgeNode = memo(function WedgeNode({
   const span = wedge.end - wedge.start
   const midAngle = (wedge.start + wedge.end) / 2
   const midRadius = (wedge.innerRadius + wedge.outerRadius) / 2
-  const thickness = wedge.outerRadius - wedge.innerRadius
 
-  // A slice is labelled only when it can actually host text: a wide enough
-  // angle for a readable chord at the mid radius, and a ring thick enough for
-  // a line of it.  The text is centred on the slice's midpoint.
-  const chord = 2 * midRadius * Math.sin(span / 2)
-  const canLabel = span >= 0.16 && thickness >= 26 && chord >= 60
-  const labelX = lcx + Math.cos(midAngle) * midRadius
-  const labelY = lcy + Math.sin(midAngle) * midRadius
+  // What the wedge can host is decided purely (wedgeLabel.ts, tic-bc09): a
+  // name when the span/chord/thickness clear the floors, a count line beneath
+  // it when there is room for a second line, and an affordance icon once the
+  // slice is a decent angular chunk.  At lod 0 (showSublabel) the label floors
+  // relax, so the small outer file slices of a real codebase reveal their
+  // names when the camera is in close enough to read them.  The hub -- the
+  // innermost disk, the focused folder once scoped -- always fits its centred
+  // name.
+  const fit = wedgeLabelFit(wedge, showSublabel)
+  const labelWidth = wedgeLabelWidth(wedge)
+  // The name and its count line are centred on the slice's midpoint; for the
+  // full-disk hub the midpoint of the annulus is a point on a ring, not the
+  // centre, so its label anchors on the disk's centre instead -- that is where
+  // a zoomed-in view's folder name reads.
+  const labelX = fit.hub ? lcx : lcx + Math.cos(midAngle) * midRadius
+  const labelY = fit.hub ? lcy : lcy + Math.sin(midAngle) * midRadius
 
-  // A directory slice offers the same drill-down a folder chip does, at the
-  // slice's midpoint, and only when the slice is not the scope it would drill
-  // into (a focused folder never offers to go into itself, tic-4d7c) and is
-  // big enough to host the icon.  When it shows, it owns the midpoint, so the
-  // label stays off.
-  const hasFocus = node.focusTo !== undefined && node.focusTo !== focusPath
-  const showButton = showGoIn && hasFocus && span >= 0.32 && thickness >= 34
+  // The one action affordance a wedge can wear: a directory's 'go into'
+  // (tic-e7d2, hidden on the focused folder per tic-4d7c) or a file's Local
+  // View open-in (tic-e738).  A wedge can host text AND an affordance without
+  // colliding by giving each its own radial band -- the name (+ count) reads at
+  // the ring's middle, the icon sits just inside the outer arc, exactly as a
+  // chip puts its buttons at the edge.  When the wedge is too small to be named
+  // the icon falls back to the middle.
+  const goIn = node.focusTo !== undefined && node.focusTo !== focusPath
+  const openIn = node.openIn !== undefined
+  const hasAffordance = goIn || openIn
+  const showAffordance = showGoIn && hasAffordance && fit.button && !fit.hub
+  // The label (and, at lod 0, its count sublabel) owns the radial middle.
+  const labelOn = showLabel && fit.label && node.label !== ''
+  const subOn = showSublabel && fit.sublabel && labelOn && node.sublabel !== undefined
+
+  // Where the content sits.  The hub is a full disk, so its midpoint is the
+  // disk's centre and the text block reads there; the label width for a ring
+  // slice is its chord (ellipsised past 220), for the hub a hair under the
+  // disk's diameter.  The affordance rides the outer arc when a label shares
+  // the slice, so the two live in different radial bands.
+  const nameX = labelX - labelWidth / 2
+  const nameTop = labelY - (subOn ? 12 : 6)
+  const subTop = labelY + (subOn ? 2 : 6)
+  const affordanceRadius = labelOn ? wedge.outerRadius - 20 : midRadius
+  const affordanceX = lcx + Math.cos(midAngle) * affordanceRadius - 9
+  const affordanceY = lcy + Math.sin(midAngle) * affordanceRadius - 9
+  const isGoIn = goIn && showAffordance
+  const affordancePaths = isGoIn
+    ? GO_IN_ICON_PATHS
+    : (node.openIn?.icon !== undefined ? FOCUS_ICON_PATHS[node.openIn!.icon] : undefined) ??
+      LOCAL_VIEW_ICON_PATHS
+  const affordanceTooltip = isGoIn
+    ? node.focusLabel ?? `Go into ${node.focusTo === '' ? '/' : node.focusTo}`
+    : node.openIn?.label ?? `Open in ${node.openIn?.modeId ?? ''}`
 
   return (
     <Group
@@ -1803,11 +1854,11 @@ const WedgeNode = memo(function WedgeNode({
         perfectDrawEnabled={false}
         shadowForStrokeEnabled={false}
       />
-      {showLabel && canLabel && !showButton && (
+      {labelOn && (
         <Text
-          x={labelX - Math.min(chord, 220) / 2}
-          y={labelY - 5}
-          width={Math.min(chord, 220)}
+          x={nameX}
+          y={nameTop}
+          width={labelWidth}
           text={node.label}
           align="center"
           fontFamily={FONT}
@@ -1819,14 +1870,34 @@ const WedgeNode = memo(function WedgeNode({
           wrap="none"
         />
       )}
-      {showButton && (
+      {subOn && (
+        <Text
+          x={nameX}
+          y={subTop}
+          width={labelWidth}
+          text={node.sublabel}
+          align="center"
+          fontFamily={FONT}
+          fontSize={10.5}
+          fill={THEME.textFaint}
+          listening={false}
+          perfectDrawEnabled={false}
+          ellipsis
+          wrap="none"
+        />
+      )}
+      {showAffordance && (
         <CanvasIconButton
-          x={labelX - 9}
-          y={labelY - 9}
-          paths={GO_IN_ICON_PATHS}
-          tooltip={node.focusLabel ?? `Go into ${node.focusTo === '' ? '/' : node.focusTo}`}
+          x={affordanceX}
+          y={affordanceY}
+          paths={affordancePaths}
+          tooltip={affordanceTooltip}
           onTooltip={onTooltip}
-          onClick={() => onGoIn(node.focusTo!)}
+          onClick={
+            isGoIn
+              ? () => onGoIn(node.focusTo!)
+              : () => onOpenIn(node.openIn!.modeId, node.openIn!.target)
+          }
         />
       )}
     </Group>

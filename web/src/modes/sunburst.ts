@@ -31,7 +31,7 @@ import type { WedgeGeom } from '../canvas/scene'
 import { THEME } from '../canvas/theme'
 import type { Rect } from '../canvas/viewport'
 import type { FsDir, FsFile, FsNode, Workspace } from '../data/derive'
-import { SUNBURST_MODE_ID } from './ids'
+import { IMPORT_GRAPH_MODE_ID, SUNBURST_MODE_ID } from './ids'
 import type {
   NodeStyle,
   Positioned,
@@ -150,12 +150,24 @@ function select(data: Workspace, params: SunburstParams, ui: UiState): SceneSpec
     if (value <= 0) return null
     if (fs.type === 'file') {
       goto.set(fs.path, fs.path)
+      const symbols = data.index.byModule.get(fs.module.id)?.length ?? 0
       return {
         id: fs.path,
         role: 'file',
         label: fs.name,
+        // The same count the fs-tree puts on a file chip (tic-bc09), so a
+        // wedge says what it measures without needing the inspector.
+        sublabel: `${symbols} symbol${symbols === 1 ? '' : 's'}`,
         symbolId: null,
         expandable: false,
+        // Cross-mode parity with the fs-tree file chip (tic-e738): a file
+        // wedge offers the same Local View jump into its import graph.
+        openIn: {
+          modeId: IMPORT_GRAPH_MODE_ID,
+          target: fs.path,
+          icon: 'local-view',
+          label: `Local View of ${fs.name} in the import graph`,
+        },
         children: [],
         data: slice(fs.path, fs.name, 'file', value, branch, depth),
       }
@@ -170,6 +182,10 @@ function select(data: Workspace, params: SunburstParams, ui: UiState): SceneSpec
       id: `dir:${fs.path}`,
       role: 'dir',
       label: fs.name,
+      // Directory slices carry their file count, as the fs-tree dir chip does
+      // (tic-bc09): the wedge already knows how much code it holds, so it
+      // should say how many files that is.
+      sublabel: `${fs.fileCount} file${fs.fileCount === 1 ? '' : 's'}`,
       symbolId: null,
       expandable: false,
       // A directory with drawn children is drillable: the go-into affordance
@@ -193,11 +209,25 @@ function select(data: Workspace, params: SunburstParams, ui: UiState): SceneSpec
     }
   }
 
-  const rootData = slice(scope.path, scope.path === '' ? '/' : scope.name, 'dir', values.get(scope.path) ?? 0, -1, 0)
+  // The hub is the scoped root (the whole tree when unscoped).  Once a folder
+  // is focused its name moves to the hub, so the canvas itself says where the
+  // zoomed-in view sits -- no longer only the breadcrumb toolbar above
+  // (tic-bc09).  An unscoped root has nothing to name, so it is left empty
+  // rather than printing '/'.
+  const scoped = scope.path !== ''
+  const rootData = slice(
+    scope.path,
+    scoped ? scope.name : '',
+    'dir',
+    values.get(scope.path) ?? 0,
+    -1,
+    0,
+  )
   const root: SpecNode = {
     id: idOf(scope),
     role: 'dir',
     label: rootData.name,
+    sublabel: scoped ? `${scope.fileCount} file${scope.fileCount === 1 ? '' : 's'}` : undefined,
     symbolId: null,
     expandable: false,
     children,
@@ -297,25 +327,22 @@ function layout(spec: SceneSpec, _sizes: SizeMap, _params: SunburstParams): Posi
 
 // -- style -------------------------------------------------------------------
 
-/** One palette row per top-level slice, drawn from the app's cool hues so a
- *  sunburst never reads as warmer or more alarming than the code it shows. */
-const BRANCH_COLORS: readonly string[] = [
-  '#89b4fa', // blue
-  '#a6e3a1', // green
-  '#f9e2af', // yellow
-  '#fab387', // peach
-  '#cba6f7', // mauve
-  '#94e2d5', // teal
-  '#f38ba8', // pink
-  '#b4befe', // lavender
-]
+/**
+ * The one hue every slice is a shade of (tic-bc09): the module/file cell blue
+ * the rest of the app already uses for a file's accent and for selection
+ * (THEME.accent === KIND_COLOR.module === the selection colour).  A rainbow of
+ * per-branch hues was hard to read; keeping the chart inside one colour family
+ * lets the eye follow the rings, and the labels this mode now draws stay
+ * legible because the fills stay mid-to-dark rather than washing pale.
+ */
+const CELL_COLOR = THEME.accent
 
-/** Mix `hex` toward white by `t` in [0, 1], so deeper rings read lighter
- *  than their ancestors' slice without leaving the branch's hue family. */
-function lighten(hex: string, t: number): string {
+/** Mix `hex` toward `target` by `t` in [0, 1]. */
+function mix(hex: string, target: string, t: number): string {
   const channel = (offset: number): number => {
-    const value = parseInt(hex.slice(offset, offset + 2), 16)
-    return Math.round(value + (255 - value) * t)
+    const from = parseInt(hex.slice(offset, offset + 2), 16)
+    const to = parseInt(target.slice(offset, offset + 2), 16)
+    return Math.round(from + (to - from) * t)
   }
   const r = channel(1)
   const g = channel(3)
@@ -325,13 +352,25 @@ function lighten(hex: string, t: number): string {
 
 const HUB_FILL = THEME.surface2
 
+/**
+ * A slice's fill: the module/file cell blue pushed toward black, a little
+ * more with every ring out so depth reads as a steady darkening, and nudged by
+ * branch parity so the top-level slices that sit next to each other are not
+ * the identical colour.  Pure and exported so the mode's tests can assert the
+ * whole chart stays inside the one hue family.
+ */
+export function sliceShade(branch: number, depth: number): string {
+  // Deeper rings step down ~5% per ring; even/odd top-level branches separate
+  // by a ~9% step so neighbours stay distinguishable without changing hue.
+  const t = Math.min(0.66, 0.4 + depth * 0.05 + (branch % 2 === 0 ? 0 : 0.09))
+  return mix(CELL_COLOR, '#000000', t)
+}
+
 function style(spec: SceneSpec, _params: SunburstParams): StyleMap {
   const nodes = new Map<string, NodeStyle>()
   const fillOf = (slice: Slice): string => {
     if (slice.branch < 0) return HUB_FILL
-    const base = BRANCH_COLORS[slice.branch % BRANCH_COLORS.length]
-    // The hub is ring 0; each further ring lightens a step.
-    return lighten(base, Math.min(0.5, slice.depth * 0.16))
+    return sliceShade(slice.branch, slice.depth)
   }
   const visit = (node: SpecNode): void => {
     const slice = node.data as Slice

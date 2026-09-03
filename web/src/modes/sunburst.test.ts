@@ -276,11 +276,87 @@ describe('sunburst scoping and styling', () => {
     expect(hub.fill).not.toBe(child.fill)
   })
 
+  it('shades every slice from the single module/file blue, never a rainbow', () => {
+    // tic-bc09: per-branch rainbow hues were hard to read, so each slice is a
+    // shade of THEME.accent (the module/file cell blue).  Assert the chart
+    // stays inside that one hue family: every slice's blue channel dominates
+    // its red channel (a green/yellow/peach/pink slice would not), and the hub
+    // stays the neutral surface tone.
+    const out = render()
+    const channel = (hex: string, offset: number): number =>
+      parseInt(hex.slice(offset, offset + 2), 16)
+    for (const n of out.scene.nodes) {
+      if (n.id === 'dir:') {
+        expect(n.fill).toBe('#1e1e2e') // THEME.surface2, the neutral hub
+        continue
+      }
+      const r = channel(n.fill, 1)
+      const g = channel(n.fill, 3)
+      const b = channel(n.fill, 5)
+      expect(b).toBeGreaterThan(r)
+      expect(b).toBeGreaterThanOrEqual(g)
+    }
+  })
+
+  it('varies a slice shade by ring depth and by top-level branch parity', () => {
+    const out = render()
+    // Two top-level slices at the same depth are distinguishable shades, not
+    // the same fill.
+    const src = nodeById(out, 'dir:src')!
+    const lib = nodeById(out, 'dir:lib')!
+    expect(src.fill).not.toBe(lib.fill)
+    // A deeper slice (a file under src) is a darker shade than its top-level
+    // folder: rings read as a steady darkening out from the hub.
+    const loop = nodeById(out, 'src/app/loop.py')!
+    const darker = (a: string, b: string): boolean =>
+      parseInt(a.slice(1, 3), 16) + parseInt(a.slice(3, 5), 16) + parseInt(a.slice(5, 7), 16) <
+      parseInt(b.slice(1, 3), 16) + parseInt(b.slice(3, 5), 16) + parseInt(b.slice(5, 7), 16)
+    expect(darker(loop.fill, src.fill)).toBe(true)
+  })
+
   it('keeps directory wedges drillable and file wedges not', () => {
     const out = render()
     expect(nodeById(out, 'dir:src/app')!.focusTo).toBe('src/app')
     expect(nodeById(out, 'src/app/loop.py')!.focusTo).toBeUndefined()
     expect(nodeById(out, 'dir:src/app/cli')!.focusTo).toBe('src/app/cli')
+  })
+})
+
+describe('sunburst labels, sublabels and open-in (tic-bc09)', () => {
+  it('gives file wedges a symbol-count sublabel and the Local View open-in', () => {
+    const out = render()
+    // loop.py exports 5 non-module symbols (see the corpus comment above).
+    const loop = nodeById(out, 'src/app/loop.py')!
+    expect(loop.sublabel).toBe('5 symbols')
+    expect(loop.openIn).toMatchObject({
+      modeId: 'import-graph',
+      target: 'src/app/loop.py',
+      icon: 'local-view',
+    })
+    // A file with no definitions still reads as a file, and its count is 0.
+    const main = nodeById(out, 'src/app/cli/main.py')!
+    expect(main.sublabel).toBe('0 symbols')
+  })
+
+  it('gives directory wedges a file-count sublabel and keeps go-into', () => {
+    const out = render()
+    // src holds loop.py + errors.py + cli/main.py beneath it.
+    const src = nodeById(out, 'dir:src')!
+    expect(src.sublabel).toBe('3 files')
+    expect(src.focusTo).toBe('src')
+  })
+
+  it('names the hub with the focused folder when scoped (zoom scope label)', () => {
+    const whole = render()
+    // Unscoped root has nothing to name; the centre stays clean.
+    expect(nodeById(whole, 'dir:')!.label).toBe('')
+    expect(nodeById(whole, 'dir:')!.sublabel).toBeUndefined()
+
+    // Scoped into src/app, the hub is that folder: name + file count.
+    const scoped = render({}, 'src/app')
+    const hub = nodeById(scoped, 'dir:src/app')!
+    expect(hub.label).toBe('app')
+    expect(hub.sublabel).toBe('3 files')
   })
 })
 
