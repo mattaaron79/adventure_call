@@ -693,7 +693,7 @@ class Workspace:
             out["code"] = self.source_of(node_id)
         return out
 
-    def file(self, ref: str, *, limit: int = 60) -> dict[str, Any]:
+    def file(self, ref: str, *, kind: str | None = None, match: str | None = None, outline_only: bool = False, limit: int = 60) -> dict[str, Any]:
         """A file's detail rows: import relationships and an outline."""
         path = self.normalise_path(ref)
         if path is None:
@@ -706,21 +706,35 @@ class Workspace:
         out: dict[str, Any] = {"file": path, "module": module}
         if node.get("docstring"):
             out["doc"] = _first_paragraph(node["docstring"])
-        _put_list(out, "imported_by", sorted(self.importers_of.get(path, [])), limit)
-        imports = {
-            target: [s.rsplit(".", 1)[-1] for s in self.file_imports[(path, target)]]
-            for target in sorted(self.imports_of.get(path, []))
-        }
-        if imports:
-            out["imports"] = imports
-        if self.registry:
-            _put_list(out, "external", self.external_imports(path), limit)
+        if not outline_only:
+            _put_list(out, "imported_by", sorted(self.importers_of.get(path, [])), limit)
+            imports = {
+                target: [s.rsplit(".", 1)[-1] for s in self.file_imports[(path, target)]]
+                for target in sorted(self.imports_of.get(path, []))
+            }
+            if imports:
+                out["imports"] = imports
+            if self.registry:
+                _put_list(out, "external", self.external_imports(path), limit)
+        kinds = set(kind.split(",")) if kind else None
+        allowed = {"class", "function", "method", "variable", "attribute"}
+        if kinds and (invalid := kinds - allowed):
+            raise QueryError(f"unknown outline kind(s): {', '.join(sorted(invalid))}")
+        needle = match.lower() if match else None
+        visible = lambda symbol: (not kinds or symbol["kind"] in kinds) and (not needle or needle in _outline_label(symbol).lower())
+        symbols = [symbol for symbol in self.by_module.get(module, []) if not symbol.get("parent") or self.nodes.get(symbol["parent"], {}).get("kind") == "class"]
         outline = []
-        for symbol in self.by_module.get(module, []):
-            if symbol.get("parent") and self.nodes.get(symbol["parent"], {}).get("kind") != "class":
-                continue  # nested functions: reachable through `symbol`
-            indent = "  " if symbol.get("parent") else ""
-            outline.append(f"{indent}L{_span(symbol)} {_outline_label(symbol)}")
+        for symbol in symbols:
+            if symbol.get("parent"):
+                continue
+            if symbol["kind"] == "class":
+                members = [member for member in symbols if member.get("parent") == symbol["id"] and visible(member)]
+                if not visible(symbol) and not members:
+                    continue
+                outline.append(f"L{_span(symbol)} {_outline_label(symbol)}")
+                outline.extend(f"  L{_span(member)} {_outline_label(member)}" for member in members)
+            elif visible(symbol):
+                outline.append(f"L{_span(symbol)} {_outline_label(symbol)}")
         if outline:
             out["outline"] = outline
         cycle = next((c for c in self.import_cycles if path in c), None)

@@ -255,11 +255,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "A file's detail view: which files import it, which in-project files and symbols it "
         "imports, its external imports, an outline of its definitions ('L<start>-<end> "
         "<signature>', class members indented) and the import cycle it sits in, if any.",
-        "example:\n  adventure-call file src/api.py",
+        "examples:\n  adventure-call file src/api.py\n  adventure-call file src/api.py --kind method --outline-only",
     )
     p.add_argument("path", help="file path, or any symbol id inside the file")
+    p.add_argument("--kind", help="comma-separated outline kinds: class,function,method,variable,attribute")
+    p.add_argument("--match", help="case-insensitive substring filter for outline labels")
+    p.add_argument("--outline-only", action="store_true", help="omit imports, importers and external imports")
     p.add_argument("--limit", type=int, default=60, help="most entries per list (default: 60)")
-    p.set_defaults(handler=_query(lambda ws, a: ws.file(a.path, limit=a.limit)))
+    p.set_defaults(handler=_query(lambda ws, a: ws.file(a.path, kind=a.kind, match=a.match, outline_only=a.outline_only, limit=a.limit)))
 
     p = query_parser(
         "tree", "directory tree sized by symbols, lines or files",

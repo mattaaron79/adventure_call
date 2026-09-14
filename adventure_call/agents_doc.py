@@ -34,7 +34,7 @@ is a short alias for `adventure-call`.
 | `find TEXT [--kind K,K] [-r]` | Where is it? `ID KIND path:line` per match |
 | `symbol ID [--code]` | Signature, doc, role, metrics, callers (including `module_callers`), callees, reads/writes, effects, external/unresolved calls; `--code` appends plain source |
 | `source ID [ID...]` | Exact source text of symbols (current file contents) |
-| `file PATH` | Importers, imports (file -> names), externals, outline `L<start>-<end> <signature>` |
+| `file PATH [--kind K] [--match TEXT] [--outline-only]` | Importers/imports/externals and a filterable outline |
 | `refs NAME [--kind attr\\|name\\|string]` | Current syntactic name matches, grouped by file and enclosing symbol; attributes are not type-checked |
 | `calls ID [--direction down\\|up\\|both] [--depth N]` | Call-flow cone: `nodes` = `ID: "<hop> path:line"`, +N callees, -N callers; `edges` |
 | `impact ID [--all]` | Blast radius: direct callers (call sites), transitive count (`--all` lists), readers/writers or importers; `files`, `test_files` |

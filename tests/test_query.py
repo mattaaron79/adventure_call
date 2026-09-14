@@ -105,6 +105,10 @@ def test_file_outline_and_imports(ws):
     assert any("def handle_login(payload: str) -> str" in row for row in out["outline"])
     assert any(row.startswith("  L") and "dispatch" in row for row in out["outline"])
     assert ws.file("src/auth.py")["imported_by"] == ["src/api.py"]
+    methods = ws.file("src/api.py", kind="method", outline_only=True)
+    assert methods["outline"] == ["L22-32 class Router", "  L25-29 def dispatch(self, route: str, payload: str) -> object", "  L31-32 def fallback(self, route: str) -> object"]
+    assert set(methods) == {"file", "module", "doc", "outline"}
+    assert ws.file("src/api.py", match="login")["outline"] == ["L10-15 def handle_login(payload: str) -> str"]
 
 
 def test_tree_sizes_by_metric_and_depth(ws):
