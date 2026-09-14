@@ -21,8 +21,10 @@ calls it, what it reaches, what a change affects, then read only the lines named
 
 Run from anywhere inside the project. Output is compact JSON on stdout (`source`
 prints plain text). If sources changed since the last analysis, the next query
-re-analyses first (a few seconds; notice on stderr). `-h` on any command gives
-full options. `vcall` is a short alias for `adventure-call`.
+re-analyses first (a few seconds; notice on stderr). Do NOT run `analyze` for
+queries: it writes standalone JSON that queries never read. Use `update` only
+after changing analysis options. `-h` on any command gives full options. `vcall`
+is a short alias for `adventure-call`.
 
 ## Commands
 
@@ -30,7 +32,7 @@ full options. `vcall` is a short alias for `adventure-call`.
 | --- | --- |
 | `overview` | Codebase map: counts, top dirs, top entry points, most-called, most complex, most-imported, import cycles |
 | `find TEXT [--kind K,K] [-r]` | Where is it? `ID KIND path:line` per match |
-| `symbol ID [--code]` | Signature, doc, role, metrics, callers (including `module_callers`), callees, reads/writes, effects, external/unresolved calls |
+| `symbol ID [--code]` | Signature, doc, role, metrics, callers (including `module_callers`), callees, reads/writes, effects, external/unresolved calls; `--code` appends plain source |
 | `source ID [ID...]` | Exact source text of symbols (current file contents) |
 | `file PATH` | Importers, imports (file -> names), externals, outline `L<start>-<end> <signature>` |
 | `refs NAME [--kind attr\\|name\\|string]` | Current syntactic name matches, grouped by file and enclosing symbol; attributes are not type-checked |
@@ -70,7 +72,7 @@ function's `unresolved` calls. Confirm with the source before deleting or renami
 
 ## Recipes
 
-- Understand a function: `symbol ID`, then `source ID` or `source` on its callees.
+- Understand a function: `symbol ID --code`.
 - Before changing a signature: `impact ID` -> edit every `direct_callers` site -> run `test_files`.
 - Trace a feature: `find TEXT` -> `calls ID --depth 3` -> `source` the relevant nodes.
 - Find consumers of a field: `refs FIELD --kind attr` (then confirm name-based hits in source).

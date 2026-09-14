@@ -102,6 +102,20 @@ def test_source_prints_plain_text(initialised, capsys):
     assert "# src.models.make_user" in out
 
 
+def test_symbol_code_appends_plain_source_after_json(initialised, capsys):
+    code, out, _ = run(capsys, "symbol", "login_user", "--code")
+    metadata, source = out.split("\n\n", 1)
+    payload = json.loads(metadata)
+    assert code == 0 and "code" not in payload
+    assert source.startswith("# src.auth.login_user src/auth.py:8-15\ndef login_user(")
+
+
+def test_analyze_warns_when_a_store_already_exists(initialised, capsys):
+    code, _, err = run(capsys, "analyze", str(initialised), "--no-write")
+    assert code == 0
+    assert "queries use .adventure-call/ and refresh automatically" in err
+
+
 def test_exit_codes(initialised, capsys, tmp_path, monkeypatch):
     assert run_json(capsys, "find", "zzz_nothing")[0] == 2
     code, out = run_json(capsys, "symbol", "greet")
@@ -163,3 +177,4 @@ def test_help_for_every_command(capsys):
 def test_guide_matches_generated_agents_md(initialised, capsys):
     _, out, _ = run(capsys, "guide")
     assert out == (initialised / STORE_DIRNAME / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Do NOT run `analyze`" in out

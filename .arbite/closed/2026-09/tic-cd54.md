@@ -2,7 +2,7 @@
 id: tic-cd54
 title: symbol --code prints source as raw text after the JSON; clarify AGENTS.md (--code,
   no analyze)
-status: open
+status: closed
 type: feature
 tier: medium
 domain: io
@@ -13,12 +13,12 @@ tags:
 - docs
 - agents-md
 - vcall-feedback
-assignee: null
+assignee: openai.gpt-5.6.root
 depends_on: []
 blocked_by: null
 created: '2026-09-14T14:21:56'
-updated: '2026-09-14T14:21:56'
-closed: null
+updated: '2026-09-14T15:44:18'
+closed: '2026-09-14T15:44:18'
 ---
 
 ## Description
@@ -33,3 +33,4 @@ Change:
 Acceptance: tests for the text layout of symbol --code; guide output contains the no-analyze note; AGENTS.md stays concise (the maintainer note at its top applies).
 
 ## Notes
+- 2026-09-14T15:44:18 openai.gpt-5.6.root: symbol --code now emits JSON metadata without code, a blank line, then a raw # ID path:start-end source block (with --pretty preserved). The generated guide documents it and explicitly says queries auto-refresh and should not use analyze; update is for option changes. analyze now warns when run at a store root without -o. Full suite passes (326).

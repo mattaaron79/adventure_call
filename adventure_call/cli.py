@@ -136,7 +136,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "  adventure-call analyze . --no-write --room pkg.mod.func",
     )
     p.add_argument("root", type=Path, help="directory (or single file) to analyse")
-    p.add_argument("-o", "--out-dir", type=Path, default=Path("."),
+    p.add_argument("-o", "--out-dir", type=Path,
                    help="where the JSON files are written (default: .)")
     p.add_argument("--no-write", action="store_true", help="analyse without writing files")
     p.add_argument("--room", metavar="SYMBOL_ID",
@@ -248,7 +248,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--code", action="store_true", help="include the symbol's source")
     p.add_argument("--full-doc", action="store_true", help="the whole docstring, not its first paragraph")
     p.add_argument("--limit", type=int, default=25, help="most entries per list (default: 25)")
-    p.set_defaults(handler=_query(lambda ws, a: ws.symbol(a.id, code=a.code, full_doc=a.full_doc, limit=a.limit)))
+    p.set_defaults(handler=cmd_symbol)
 
     p = query_parser(
         "file", "one file: importers, imports, externals, outline",
@@ -416,16 +416,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         return EXIT_NOT_FOUND
     # Stores default to module calls; preserve analyze's compact web-graph
     # default unless the caller explicitly asks for them.
+    out_dir = args.out_dir or Path(".")
     result = analyse(
         args.root,
         _options_from_args(args, AnalysisOptions(module_calls=False)),
-        None if args.no_write else args.out_dir,
+        None if args.no_write else out_dir,
     )
     if result is None:
         logger.error("found no parseable source files under %s", args.root)
         return EXIT_ERROR
     for kind, path in result.written.items():
         logger.info("wrote %s -> %s", kind, path)
+    if args.out_dir is None and (args.root / STORE_DIRNAME).is_dir():
+        logger.warning("queries use %s/ and refresh automatically; you probably want vcall update", STORE_DIRNAME)
     _report(result, verbose=args.verbose)
 
     if args.room:
@@ -547,6 +550,24 @@ def _query(run: Callable[[Workspace, argparse.Namespace], Any]) -> Callable[[arg
         return EXIT_OK
 
     return handler
+
+
+def cmd_symbol(args: argparse.Namespace) -> int:
+    """Emit symbol metadata, appending its source as readable text on request."""
+    try:
+        ws = _open_workspace(args)
+        payload = ws.symbol(args.id, code=args.code, full_doc=args.full_doc, limit=args.limit)
+    except StoreError as exc:
+        _emit({"error": str(exc)}, pretty=args.pretty)
+        return EXIT_NO_STORE
+    except QueryError as exc:
+        _emit(exc.payload, pretty=args.pretty)
+        return exc.exit_code
+    source = payload.pop("code", None) if args.code else None
+    _emit(payload, pretty=args.pretty)
+    if source is not None:
+        sys.stdout.write(f"\n# {payload['id']} {payload['at']}\n{source.rstrip()}\n")
+    return EXIT_OK
 
 
 def _imports(ws: Workspace, args: argparse.Namespace) -> dict[str, Any]:
