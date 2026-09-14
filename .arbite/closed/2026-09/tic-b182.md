@@ -1,7 +1,7 @@
 ---
 id: tic-b182
 title: 'File tree rows: local-view icon to the right of the goto icon'
-status: open
+status: closed
 type: feature
 tier: low
 domain: ui
@@ -12,12 +12,12 @@ tags:
 - sidebar
 - icons
 - open-in
-assignee: null
+assignee: openai.gpt-5.6.root
 depends_on: []
 blocked_by: null
 created: '2026-09-01T06:29:25'
-updated: '2026-09-02T11:17:45'
-closed: null
+updated: '2026-09-14T15:49:36'
+closed: '2026-09-14T15:49:36'
 ---
 
 ## Description
@@ -36,3 +36,4 @@ Acceptance criteria:
 - Behaviour is unit-testable in the project's node-test pattern (pure logic extracted where the existing tests do).
 
 ## Notes
+- 2026-09-14T15:49:36 openai.gpt-5.6.root: Added the file-tree Local View button in Import graph mode. It uses LOCAL_VIEW_ICON_PATHS through a new HTML icon component and calls openInMode(import-graph, file path), with propagation stopped like existing row actions. It is immediately to the right of goto on file rows and covered by pure mode gating tests. Python suite passes (328); web suite passes (1003) and production build succeeds.

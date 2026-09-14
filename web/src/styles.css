@@ -846,6 +846,7 @@ html, body, #root {
    stay distinct (crosshair vs folder+arrow vs file+link). */
 .goto-icon,
 .go-in-icon,
+.local-view-icon,
 .file-symlink-icon {
   flex: none;
   display: inline-flex;
@@ -862,6 +863,7 @@ html, body, #root {
 }
 .goto-icon:hover,
 .go-in-icon:hover,
+.local-view-icon:hover,
 .file-symlink-icon:hover {
   color: var(--accent);
   background: var(--surface-2);
@@ -869,6 +871,7 @@ html, body, #root {
 /* In the tree all three are a hover/focus reveal so rows stay clean. */
 .tree .goto-icon,
 .tree .go-in-icon,
+.tree .local-view-icon,
 .tree .file-symlink-icon {
   opacity: 0;
 }
@@ -876,6 +879,8 @@ html, body, #root {
 .tree-row:focus-within .goto-icon,
 .tree-row:hover .go-in-icon,
 .tree-row:focus-within .go-in-icon,
+.tree-row:hover .local-view-icon,
+.tree-row:focus-within .local-view-icon,
 .tree-row:hover .file-symlink-icon,
 .tree-row:focus-within .file-symlink-icon {
   opacity: 1;

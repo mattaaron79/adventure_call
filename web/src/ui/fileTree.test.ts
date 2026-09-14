@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FsDir, FsFile } from '../data/derive'
-import { ancestorDirs, matchTree } from './FileTree'
+import { ancestorDirs, localViewTarget, matchTree } from './FileTree'
 
 const file = (path: string): FsFile => {
   const name = path.split('/').pop()!
@@ -96,5 +96,12 @@ describe('ancestorDirs', () => {
 
   it('tolerates a leading slash, normalising to root-relative dirs', () => {
     expect(ancestorDirs('/src/app/cli.py')).toEqual(['src', 'src/app'])
+  })
+})
+
+describe('localViewTarget', () => {
+  it('offers a file Local View only while browsing the import graph', () => {
+    expect(localViewTarget('import-graph', 'src/app/loop.py')).toBe('src/app/loop.py')
+    expect(localViewTarget('fs-tree', 'src/app/loop.py')).toBeNull()
   })
 })

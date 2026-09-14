@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { FsDir, FsFile, FsNode } from '../data/derive'
 import { onGoto } from '../data/goto'
+import { IMPORT_GRAPH_MODE_ID } from '../modes/ids'
 import { GoInIcon } from './GoInIcon'
 import { GotoIcon } from './GotoIcon'
+import { LocalViewIcon } from './LocalViewIcon'
+import { useWorkspace } from '../state/store'
 
 /**
  * Subtree pruned to the files `matches` accepts (tic-9098: the predicate is
@@ -56,6 +59,11 @@ export function ancestorDirs(path: string): string[] {
   return dirs
 }
 
+/** The Local View icon belongs to the import-graph tree, never other modes. */
+export function localViewTarget(modeId: string, path: string): string | null {
+  return modeId === IMPORT_GRAPH_MODE_ID ? path : null
+}
+
 /**
  * The derived directory tree. Top-level directories start open and everything
  * below starts collapsed, which is the only way ~150 files stay readable in a
@@ -69,6 +77,7 @@ export function ancestorDirs(path: string): string[] {
  */
 export function FileTree({ root }: { root: FsDir }) {
   const [overrides, setOverrides] = useState<Record<string, boolean>>({})
+  const modeId = useWorkspace((state) => state.modeId)
 
   useEffect(() => {
     return onGoto((target) => {
@@ -92,6 +101,7 @@ export function FileTree({ root }: { root: FsDir }) {
           depth={0}
           overrides={overrides}
           setOverrides={setOverrides}
+          showLocalView={localViewTarget(modeId, child.path) !== null}
         />
       ))}
     </ul>
@@ -103,9 +113,10 @@ interface NodeProps {
   depth: number
   overrides: Record<string, boolean>
   setOverrides: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
+  showLocalView: boolean
 }
 
-function TreeNode({ node, depth, overrides, setOverrides }: NodeProps) {
+function TreeNode({ node, depth, overrides, setOverrides, showLocalView }: NodeProps) {
   const indent = { paddingLeft: `${depth * 11 + 4}px` }
 
   if (node.type === 'file') {
@@ -115,6 +126,7 @@ function TreeNode({ node, depth, overrides, setOverrides }: NodeProps) {
           <span className="tree-caret" />
           <span className="tree-label">{node.name}</span>
           <GotoIcon target={node.path} label={`Go to ${node.path}`} />
+          {showLocalView && <LocalViewIcon target={node.path} label={`Open Local View for ${node.path}`} />}
         </div>
       </li>
     )
@@ -147,6 +159,7 @@ function TreeNode({ node, depth, overrides, setOverrides }: NodeProps) {
               depth={depth + 1}
               overrides={overrides}
               setOverrides={setOverrides}
+              showLocalView={showLocalView}
             />
           ))}
         </ul>
