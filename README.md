@@ -21,6 +21,20 @@ uv pip install -e ".[dev]"
 Requires Python 3.10+. Runtime dependencies are `tree-sitter` (0.25.x), `tree-sitter-python` and
 `networkx`.
 
+### Deploy
+
+Install `adventure-call` (and the `adventure_call` alias) as a global command from this checkout,
+using [uv](https://docs.astral.sh/uv/) (pipx as a fallback). Re-run to update.
+
+| | Install / reinstall from checkout | Pull latest, then reinstall |
+| --- | --- | --- |
+| Linux / macOS | `scripts/install.sh` | `scripts/update.sh` |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts\install.ps1` | `...\scripts\update.ps1` |
+
+Options: `--editable`/`-Editable` (checkout edits apply live, no reinstall needed), `--js`/`-Js`
+(JavaScript/TypeScript grammars), `--python 3.12`/`-Python 3.12`. If the command is not found
+afterwards, run `uv tool update-shell` and open a new terminal.
+
 To install `adventure-call` globally (usable from any directory), see
 [Deploy](#deploy).
 
