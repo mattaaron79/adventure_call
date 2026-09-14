@@ -23,7 +23,7 @@ Requires Python 3.10+. Runtime dependencies are `tree-sitter` (0.25.x), `tree-si
 
 ### Deploy
 
-Install `adventure-call` (and the `adventure_call` alias) as a global command from this checkout,
+Install `adventure-call` (and the short alias `vcall`) as a global command from this checkout,
 using [uv](https://docs.astral.sh/uv/) (pipx as a fallback). Re-run to update.
 
 | | Install / reinstall from checkout | Pull latest, then reinstall |

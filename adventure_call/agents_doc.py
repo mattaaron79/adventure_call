@@ -22,7 +22,7 @@ calls it, what it reaches, what a change affects, then read only the lines named
 Run from anywhere inside the project. Output is compact JSON on stdout (`source`
 prints plain text). If sources changed since the last analysis, the next query
 re-analyses first (a few seconds; notice on stderr). `-h` on any command gives
-full options.
+full options. `vcall` is a short alias for `adventure-call`.
 
 ## Commands
 

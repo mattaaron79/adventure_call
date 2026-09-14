@@ -4,7 +4,7 @@ Install or update adventure-call as a global command (Windows).
 
 .DESCRIPTION
 Installs this checkout with `uv tool` (or pipx if uv is missing), so
-`adventure-call` / `adventure_call` work from any directory. Re-running it is
+`adventure-call` (alias `vcall`) works from any directory. Re-running it is
 how you update: it reinstalls from the checkout's current state.
 
 .EXAMPLE

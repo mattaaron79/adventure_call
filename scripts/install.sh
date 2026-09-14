@@ -2,7 +2,7 @@
 # Install or update adventure-call as a global command (Linux, macOS).
 #
 # Installs this checkout with `uv tool` (or pipx if uv is missing), so
-# `adventure-call` / `adventure_call` work from any directory. Re-running it
+# `adventure-call` (alias `vcall`) works from any directory. Re-running it
 # is how you update: it reinstalls from the checkout's current state.
 #
 #   scripts/install.sh              install/update from this checkout
@@ -35,6 +35,22 @@ done
 if [ "$pull" = 1 ]; then
   echo "==> git pull ($repo)"
   git -C "$repo" pull --ff-only
+fi
+
+# A snap-packaged terminal (e.g. VS Code installed as a snap) points
+# XDG_DATA_HOME at ~/snap/<app>/<revision>/, and uv/pipx would install there:
+# off the normal shell's PATH, and gone when the snap refreshes. Pin the
+# standard locations under the real home unless the caller chose their own.
+if [ -n "${SNAP:-}" ]; then
+  real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
+  real_home="${real_home:-$HOME}"
+  export UV_TOOL_DIR="${UV_TOOL_DIR:-$real_home/.local/share/uv/tools}"
+  export UV_TOOL_BIN_DIR="${UV_TOOL_BIN_DIR:-$real_home/.local/bin}"
+  export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$real_home/.local/share/uv/python}"
+  export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$real_home/.local/bin}"
+  export PIPX_HOME="${PIPX_HOME:-$real_home/.local/share/pipx}"
+  export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$real_home/.local/bin}"
+  echo "==> snap environment detected ($SNAP); installing under $real_home/.local"
 fi
 
 spec="$repo$extras"
