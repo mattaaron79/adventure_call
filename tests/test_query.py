@@ -64,6 +64,21 @@ def test_find_ranks_exact_name_first(ws):
     assert all("greet" in m for m in matches)
 
 
+def test_refs_finds_attributes_and_strings_with_enclosing_symbols(analyse, tmp_path):
+    builder, files, index = analyse(
+        {
+            "models.py": "class User:\n    def read(self):\n        return self.name\n",
+            "api.py": "class Router:\n    def dispatch(self):\n        return 'login'\n",
+        }
+    )
+    OutputWriter(tmp_path).write_all(builder.graph, index, files, root=tmp_path)
+    workspace = Workspace.load(tmp_path)
+    attrs = workspace.refs("name", kinds="attr")
+    assert attrs["hits"]["models.py"] == ["L3 r models.User.read"]
+    strings = workspace.refs("login", kinds="string")
+    assert strings["hits"]["api.py"] == ["L3 r api.Router.dispatch 'login'"]
+
+
 def test_symbol_reports_callers_callees_and_state(ws):
     out = ws.symbol("login_user")
     assert out["at"] == "src/auth.py:8-15"

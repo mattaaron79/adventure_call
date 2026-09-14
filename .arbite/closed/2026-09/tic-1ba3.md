@@ -2,7 +2,7 @@
 id: tic-1ba3
 title: 'vcall refs NAME: syntactic occurrences (attributes, identifiers, string literals)
   attributed to enclosing symbols'
-status: open
+status: closed
 type: feature
 tier: high
 domain: io
@@ -14,12 +14,12 @@ tags:
 - attributes
 - strings
 - vcall-feedback
-assignee: null
+assignee: openai.gpt-5.6.root
 depends_on: []
 blocked_by: null
 created: '2026-09-14T14:21:55'
-updated: '2026-09-14T14:21:55'
-closed: null
+updated: '2026-09-14T15:43:13'
+closed: '2026-09-14T15:43:13'
 ---
 
 ## Description
@@ -35,3 +35,4 @@ Build the honest version: a structured grep.
 Acceptance: tests on the sample fixture (e.g. refs name --kind attr finds user.name reads in models/api with enclosing symbols; refs 'login' --kind string finds the route literal in Router.dispatch); CLI help + AGENTS.md table row + a recipe ('find consumers of a field: refs FIELD --kind attr').
 
 ## Notes
+- 2026-09-14T15:43:13 openai.gpt-5.6.root: Added Workspace.refs and the refs CLI command. It parses current source with the configured Tree-sitter grammar, groups attrs/names/strings by file, attributes hits to the innermost symbol, supports exact/substring/regex/path/limit, and labels graph-confirmed attribute access exact. Documented its name-based limitation and field-consumer recipe. Full suite passes (324).

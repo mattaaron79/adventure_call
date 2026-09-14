@@ -85,6 +85,7 @@ def test_query_output_is_compact_json(initialised, capsys):
 def test_every_query_command_runs(initialised, capsys):
     for argv in (
         ["overview"], ["find", "user"], ["symbol", "src/api.py:12"], ["file", "src/auth.py"],
+        ["refs", "name", "--kind", "attr"],
         ["tree", "--metric", "lines"], ["imports", "src/auth.py", "--depth", "2"],
         ["imports", "--cycles"], ["calls", "handle_login", "--direction", "both"],
         ["entries", "--include-tests"], ["impact", "SESSIONS"], ["state", "handle_login"],

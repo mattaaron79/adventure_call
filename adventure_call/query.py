@@ -29,13 +29,16 @@ Everything returned is JSON-serialisable.
 
 from __future__ import annotations
 
+import ast
 import difflib
+import fnmatch
 import json
 import re
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from adventure_call.languages import GrammarUnavailable, load_language, spec_for_path
 from adventure_call.writer import GRAPH_FILENAME, REGISTRY_FILENAME
 
 #: Kinds that can sit at either end of a call edge.  Classes are here because
@@ -531,6 +534,90 @@ class Workspace:
         if len(hits) > limit:
             out["total"] = len(hits)
         return out
+
+    def refs(self, name: str, *, kinds: str = "all", match: str = "exact", path: str | None = None, limit: int = 100) -> dict[str, Any]:
+        """Current syntactic occurrences, grouped by file.
+
+        This is deliberately structured grep, rather than type inference: an
+        attribute hit tells us its spelling and enclosing symbol, not that
+        every receiver has the same type. Files are read at query time so the
+        answer follows the working tree even before a store refresh.
+        """
+        selected = set(kinds.split(","))
+        if "all" in selected:
+            selected = {"attr", "name", "string"}
+        invalid = selected - {"attr", "name", "string"}
+        if invalid:
+            raise QueryError(f"unknown ref kind(s): {', '.join(sorted(invalid))}")
+        if match not in {"exact", "substring", "regex"}:
+            raise QueryError("match must be exact, substring or regex")
+        if limit < 1:
+            raise QueryError("limit must be at least 1")
+        if match == "regex":
+            try:
+                matcher = re.compile(name, re.IGNORECASE).search
+            except re.error as exc:
+                raise QueryError(f"bad regex: {exc}") from None
+        elif match == "substring":
+            needle = name.lower()
+            matcher = lambda text: needle in text.lower()
+        else:
+            matcher = lambda text: text == name
+
+        records: list[tuple[str, int, str]] = []
+        for file_path, module_id in sorted(self.module_of_file.items()):
+            if path and not fnmatch.fnmatch(file_path, path):
+                continue
+            spec = spec_for_path(file_path)
+            if spec is None:
+                continue
+            try:
+                source = (self.root / file_path).read_bytes()
+                tree = load_language(spec).parser.parse(source)
+            except (OSError, GrammarUnavailable):
+                continue
+            for node in _walk_nodes(tree.root_node):
+                if node.type == "attribute" and "attr" in selected:
+                    attribute = node.child_by_field_name("attribute")
+                    text = _node_text(source, attribute)
+                    if text and matcher(text):
+                        owner = self._enclosing_symbol(module_id, node.start_point.row + 1)
+                        mode = _attribute_mode(node)
+                        exact = any(
+                            edge["source"] == owner and edge["target"].rsplit(".", 1)[-1] == text
+                            for kind in ("READS", "WRITES") for edge in self._typed(kind)
+                        )
+                        label = f"L{node.start_point.row + 1} {mode}{' exact' if exact else ''} {owner}"
+                        records.append((file_path, node.start_point.row + 1, label))
+                elif node.type == "identifier" and "name" in selected and node.parent and node.parent.type != "attribute":
+                    text = _node_text(source, node)
+                    if text and matcher(text):
+                        owner = self._enclosing_symbol(module_id, node.start_point.row + 1)
+                        records.append((file_path, node.start_point.row + 1, f"L{node.start_point.row + 1} r {owner}"))
+                elif node.type == "string" and "string" in selected:
+                    text = _string_value(_node_text(source, node))
+                    if text is not None and matcher(text):
+                        owner = self._enclosing_symbol(module_id, node.start_point.row + 1)
+                        snippet = text.replace("\n", " ").strip()
+                        if len(snippet) > 80:
+                            snippet = snippet[:77] + "..."
+                        records.append((file_path, node.start_point.row + 1, f"L{node.start_point.row + 1} r {owner} {snippet!r}"))
+
+        records.sort()
+        hits: dict[str, list[str]] = {}
+        for file_path, _, label in records[:limit]:
+            hits.setdefault(file_path, []).append(label)
+        out: dict[str, Any] = {"name": name, "total": len(records), "hits": hits}
+        if len(records) > limit:
+            out["_more"] = len(records) - limit
+        return out
+
+    def _enclosing_symbol(self, module_id: str, line: int) -> str:
+        """The innermost callable or class owning a current source line."""
+        hits = [node for node in self.by_module.get(module_id, []) if node["kind"] in _CALL_KINDS and node["start_line"] <= line <= node["end_line"]]
+        if not hits:
+            return module_id
+        return min(hits, key=lambda node: (node["end_line"] - node["start_line"], -node["start_line"]))["id"]
 
     def symbol(self, ref: str, *, code: bool = False, full_doc: bool = False, limit: int = 25) -> dict[str, Any]:
         """Everything the inspector knows about one symbol, one hop out."""
@@ -1187,6 +1274,42 @@ class CallGraph:
 
 def _first_paragraph(doc: str) -> str:
     return doc.strip().split("\n\n", 1)[0].strip()
+
+
+def _walk_nodes(node):
+    """Yield a Tree-sitter node and every descendant without query coupling."""
+    yield node
+    for child in node.children:
+        yield from _walk_nodes(child)
+
+
+def _node_text(source: bytes, node) -> str:
+    if node is None:
+        return ""
+    return source[node.start_byte : node.end_byte].decode("utf-8", "replace")
+
+
+def _string_value(source: str) -> str | None:
+    try:
+        value = ast.literal_eval(source)
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _attribute_mode(node) -> str:
+    """r/w/c for an attribute expression, using immediate syntax only."""
+    parent = node.parent
+    if parent and parent.type == "call" and parent.child_by_field_name("function") == node:
+        return "c"
+    current = node
+    while current.parent and current.parent.type in {"assignment", "augmented_assignment"}:
+        parent = current.parent
+        left = parent.child_by_field_name("left")
+        if left and left.start_byte <= node.start_byte and node.end_byte <= left.end_byte:
+            return "w"
+        current = parent
+    return "r"
 
 
 def _span(node: dict[str, Any]) -> str:

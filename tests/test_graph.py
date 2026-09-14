@@ -78,13 +78,13 @@ def test_module_level_calls_are_edgeless_by_default(analyse):
 
 def test_heuristic_edges_can_be_dropped(analyse):
     files_map = {
-        "a.py": "def only_one_of_these(): ...\n",
+        "a.py": "class A:\n    def only_one_of_these(self): ...\n",
         "b.py": "def go(thing):\n    return thing.only_one_of_these()\n",
     }
     builder, files, index = analyse(files_map)
-    assert builder.graph.has_edge("b.go", "a.only_one_of_these")
+    assert builder.graph.has_edge("b.go", "a.A.only_one_of_these")
     strict = GraphBuilder(files, index, include_heuristic=False).build()
-    assert not strict.has_edge("b.go", "a.only_one_of_these")
+    assert not strict.has_edge("b.go", "a.A.only_one_of_these")
 
 
 def test_contains_edges_are_opt_in(parsed_files, index):

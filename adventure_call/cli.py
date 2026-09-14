@@ -221,6 +221,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=_query(lambda ws, a: ws.find(a.pattern, kind=a.kind, regex=a.regex, limit=a.limit)))
 
     p = query_parser(
+        "refs", "syntactic occurrences of an attribute, identifier or string",
+        "Structured grep over current analysed files. Attribute matches are name-based, not type-checked; "
+        "an 'exact' marker means an existing READS/WRITES edge confirms it. Use impact for known graph callers.",
+        "examples:\n  adventure-call refs FIELD --kind attr\n  adventure-call refs login --kind string --match substring",
+    )
+    p.add_argument("name", help="attribute, identifier, or string text to find")
+    p.add_argument("--kind", default="all", help="comma-separated: attr,name,string,all (default: all)")
+    p.add_argument("--match", choices=("exact", "substring", "regex"), default="exact",
+                   help="how NAME matches (default: exact)")
+    p.add_argument("--path", help="glob restricting files, e.g. 'src/**/*.py'")
+    p.add_argument("--limit", type=int, default=100, help="most hits to return (default: 100)")
+    p.set_defaults(handler=_query(lambda ws, a: ws.refs(a.name, kinds=a.kind, match=a.match, path=a.path, limit=a.limit)))
+
+    p = query_parser(
         "symbol", "one symbol: signature, doc, role, metrics, callers, callees, state",
         "Everything known about one symbol, one hop out: location, signature, first docstring "
         "paragraph, decorators, role (how execution reaches it), metrics (fan in/out, transitive "
@@ -362,7 +376,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 # -- entry ----------------------------------------------------------------------
 
 _COMMANDS = frozenset({
-    "analyze", "init", "update", "guide", "overview", "find", "symbol", "file", "tree",
+    "analyze", "init", "update", "guide", "overview", "find", "refs", "symbol", "file", "tree",
     "imports", "calls", "entries", "impact", "state", "orphans", "source",
 })
 

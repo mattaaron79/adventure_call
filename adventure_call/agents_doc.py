@@ -33,6 +33,7 @@ full options. `vcall` is a short alias for `adventure-call`.
 | `symbol ID [--code]` | Signature, doc, role, metrics, callers (including `module_callers`), callees, reads/writes, effects, external/unresolved calls |
 | `source ID [ID...]` | Exact source text of symbols (current file contents) |
 | `file PATH` | Importers, imports (file -> names), externals, outline `L<start>-<end> <signature>` |
+| `refs NAME [--kind attr\\|name\\|string]` | Current syntactic name matches, grouped by file and enclosing symbol; attributes are not type-checked |
 | `calls ID [--direction down\\|up\\|both] [--depth N]` | Call-flow cone: `nodes` = `ID: "<hop> path:line"`, +N callees, -N callers; `edges` |
 | `impact ID [--all]` | Blast radius: direct callers (call sites), transitive count (`--all` lists), readers/writers or importers; `files`, `test_files` |
 | `state ID` | Module/class state read or written, directly and `through_calls` (`name:r\\|w\\|rw`) |
@@ -72,6 +73,7 @@ function's `unresolved` calls. Confirm with the source before deleting or renami
 - Understand a function: `symbol ID`, then `source ID` or `source` on its callees.
 - Before changing a signature: `impact ID` -> edit every `direct_callers` site -> run `test_files`.
 - Trace a feature: `find TEXT` -> `calls ID --depth 3` -> `source` the relevant nodes.
+- Find consumers of a field: `refs FIELD --kind attr` (then confirm name-based hits in source).
 - Orient in an unfamiliar area: `tree DIR --depth 1`, `file PATH`, `imports PATH`.
 - Exit codes: 0 ok, 1 error/ambiguous, 2 not found, 3 no `.adventure-call/` (run `adventure-call init`).
 """
