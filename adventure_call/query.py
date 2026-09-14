@@ -32,7 +32,6 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from collections import deque
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -524,6 +523,8 @@ class Workspace:
                 score = (name != pattern.lower(), not name.startswith(pattern.lower()), len(node_id))
                 hits.append((score, node_id))
         hits.sort()
+        if not hits:
+            raise NotFound(f"nothing matches {pattern!r}")
         out: dict[str, Any] = {
             "matches": [f"{i} {self.nodes[i]['kind']} {self.loc(i)}" for _, i in hits[:limit]]
         }
@@ -638,13 +639,7 @@ class Workspace:
         """The directory tree sized by ``metric`` (fs-tree + sunburst)."""
         if metric not in ("symbols", "lines", "files"):
             raise QueryError(f"unknown metric {metric!r}; use symbols, lines or files")
-        prefix = directory.replace("\\", "/").strip("/")
-        if Path(directory).is_absolute():
-            try:
-                prefix = Path(directory).resolve().relative_to(self.root.resolve()).as_posix()
-            except (ValueError, OSError):
-                pass
-        prefix = "" if prefix == "." else prefix.removeprefix("./")
+        prefix = self._dir_prefix(directory)
         root: dict[str, Any] = {}
         matched = False
         for path, module in self.module_of_file.items():
@@ -678,6 +673,22 @@ class Workspace:
 
         body, total = fold(root, 1)
         return {"root": prefix or ".", "metric": metric, "tree": body}
+
+    def _dir_prefix(self, directory: str) -> str:
+        """A root-relative directory prefix: as typed if files live under it,
+        else resolved against the current directory."""
+        typed = directory.replace("\\", "/").strip("/").removeprefix("./")
+        if typed in ("", "."):
+            return ""
+        if not Path(directory).is_absolute() and any(
+            p == typed or p.startswith(typed + "/") for p in self.module_of_file
+        ):
+            return typed
+        try:
+            rel = Path(directory).expanduser().resolve().relative_to(self.root.resolve()).as_posix()
+        except (ValueError, OSError):
+            return typed
+        return "" if rel == "." else rel
 
     def _file_value(self, module: str, metric: str) -> int:
         if metric == "files":
@@ -807,8 +818,11 @@ class Workspace:
                 out["externals"] = ext
         return out
 
-    def impact(self, ref: str, *, budget: int = CLOSURE_BUDGET) -> dict[str, Any]:
-        """What is affected if this changes: transitive callers, readers or importers."""
+    def impact(self, ref: str, *, budget: int = CLOSURE_BUDGET, full: bool = False) -> dict[str, Any]:
+        """What is affected if this changes: transitive callers, readers or importers.
+
+        The transitive set is a count unless ``full``: the file lists already
+        say where to look, and the ids are most of the bytes."""
         node_id = self.resolve(ref)
         node = self.nodes[node_id]
         graph = self.call_graph
@@ -833,7 +847,7 @@ class Workspace:
             reached, _, truncated = closure(direct, callers_step, budget)
             _put_list(out, "readers", [self.ref(i) for i in readers], budget)
             _put_list(out, "writers", [self.ref(i) for i in writers], budget)
-            _put_list(out, "reached_via_calls", reached, budget)
+            _put_many(out, "reached_via_calls", reached, full)
             files = sorted({self.file_of(i) or "" for i in [*direct, *reached]} - {""})
         else:
             seeds = [node_id]
@@ -841,9 +855,16 @@ class Workspace:
                 seeds += [m["id"] for m in self.by_parent.get(node_id, []) if m["id"] in graph.component_of]
             referrers = self.references[1].get(node_id, [])
             reached, hops, truncated = closure(seeds, callers_step, budget)
-            direct = [i for i in reached if hops[i] == 1]
-            _put_list(out, "direct_callers", [self.ref(i) for i in direct], budget)
-            _put_list(out, "transitive_callers", [i for i in reached if hops[i] > 1], budget)
+            # Call sites, not definitions: the lines to edit when a signature changes.
+            sites = [
+                self.ref(e["source"], line) + _conf(e)
+                for seed in seeds
+                for e in graph.callers.get(seed, [])
+                if not e.get("implicit") and e["source"] not in seeds
+                for line in (e.get("lines") or [None])
+            ]
+            _put_list(out, "direct_callers", list(dict.fromkeys(sites)), budget)
+            _put_many(out, "transitive_callers", [i for i in reached if hops[i] > 1], full)
             _put_list(out, "referenced_by", [self.ref(i) for i in referrers], budget)
             files = sorted({self.file_of(i) or "" for i in [*reached, *referrers]} - {""})
 
@@ -1167,6 +1188,11 @@ def _put_list(out: dict[str, Any], key: str, items: list[Any], limit: int) -> No
     out[key] = items[:limit]
     if len(items) > limit:
         out[f"{key}_more"] = len(items) - limit
+
+
+def _put_many(out: dict[str, Any], key: str, items: list[Any], full: bool) -> None:
+    if items:
+        out[key] = items if full else len(items)
 
 
 def _check_direction(direction: str, allowed: tuple[str, ...]) -> None:

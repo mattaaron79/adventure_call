@@ -146,8 +146,16 @@ def test_entries_and_orphans(ws):
 def test_impact_of_variable_walks_callers(ws):
     out = ws.impact("src.auth.SESSIONS")
     assert any(r.startswith("src.auth.login_user") for r in out["readers"])
-    assert "src.api.handle_login" in out["reached_via_calls"]
+    assert out["reached_via_calls"] >= 1
+    assert "src.api.handle_login" in ws.impact("src.auth.SESSIONS", full=True)["reached_via_calls"]
     assert "src/api.py" in out["files"]
+
+
+def test_impact_of_function_lists_call_sites(ws):
+    out = ws.impact("src.models.make_user")
+    assert out["direct_callers"] == ["src.auth.login_user src/auth.py:13"]
+    assert out["transitive_callers"] == 2  # handle_login, Router.dispatch
+    assert out["files"] == ["src/api.py", "src/auth.py"]
 
 
 def test_impact_of_file_walks_importers(ws):

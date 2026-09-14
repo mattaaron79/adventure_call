@@ -21,6 +21,27 @@ uv pip install -e ".[dev]"
 Requires Python 3.10+. Runtime dependencies are `tree-sitter` (0.25.x), `tree-sitter-python` and
 `networkx`.
 
+To install `adventure-call` globally (usable from any directory), see
+[Deploy](#deploy).
+
+## Agent CLI
+
+```bash
+cd /path/to/project
+adventure-call init              # creates .adventure-call/ at the git root and analyses
+adventure-call overview          # codebase map, compact JSON
+adventure-call symbol auth.login_user
+adventure-call imports src/api.py --depth 2
+adventure-call calls handle_login --direction both
+adventure-call impact models.User
+adventure-call update            # re-analyse (queries also refresh automatically on change)
+```
+
+`init` writes `.adventure-call/AGENTS.md` describing every query for agents (also printed by
+`adventure-call guide`); point the project's `CLAUDE.md`/`AGENTS.md` at it. Every command has
+full `-h` help. The queries are Python ports of the web views' derivations
+([`query.py`](adventure_call/query.py)).
+
 ## Usage
 
 ```bash
