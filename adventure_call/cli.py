@@ -208,8 +208,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p = query_parser(
         "find", "search symbols and files by name",
-        "Case-insensitive substring search over symbol ids, names and file paths. Exact name "
-        "matches rank first. Each match is 'ID KIND path:line'.",
+        "Case-insensitive substring search over definitions (symbol ids, names and file paths). Exact name "
+        "matches rank first. Comma-separated patterns match any definition; use impact or refs for usages. "
+        "Each match is 'ID KIND path:line'.",
         "examples:\n  adventure-call find login\n  adventure-call find '^get_' --regex --kind "
         "function,method",
     )
@@ -390,7 +391,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     _reconfigure_streams()
     # The pre-subcommand form, `adventure-call ROOT [options]`.
     if argv and not argv[0].startswith("-") and argv[0] not in _COMMANDS:
-        argv.insert(0, "analyze")
+        command = argv[0]
+        # Keep the old path form's useful "no such path" diagnostic even for
+        # a missing path; command-looking tokens (notably `find,room`) get the
+        # clearer command error below.
+        if Path(command).exists() or Path(command).is_absolute() or "/" in command or "\\" in command:
+            argv.insert(0, "analyze")
+        else:
+            message = f"unknown command {command!r}"
+            if "," in command:
+                first, rest = command.split(",", 1)
+                if first in _COMMANDS and rest:
+                    message += f" -- did you mean {(first + ' ' + rest)!r}?"
+            sys.stderr.write(message + "\n")
+            return EXIT_ERROR
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "handler", None):

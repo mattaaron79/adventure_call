@@ -509,25 +509,46 @@ class Workspace:
                 rx = re.compile(pattern, re.IGNORECASE)
             except re.error as exc:
                 raise QueryError(f"bad regex: {exc}") from None
-            test = lambda text: bool(rx.search(text))  # noqa: E731
+            patterns = [pattern]
+            tests = [lambda text: bool(rx.search(text))]
         else:
-            low = pattern.lower()
-            test = lambda text: low in text.lower()  # noqa: E731
+            patterns = [part.strip() for part in pattern.split(",") if part.strip()]
+            if not patterns:
+                raise NotFound(f"nothing matches {pattern!r}", parts=[])
+            tests = [lambda text, low=part.lower(): low in text.lower() for part in patterns]
         kinds = set(kind.split(",")) if kind else None
-        hits = []
-        for node_id, node in self.nodes.items():
-            if kinds and node["kind"] not in kinds:
-                continue
-            if node["kind"] == "external":
-                continue
-            haystack = node.get("file_path", "") if node["kind"] == "module" else node_id
-            if test(haystack) or test(node.get("name", "")):
-                name = node.get("name", "").lower()
-                score = (name != pattern.lower(), not name.startswith(pattern.lower()), len(node_id))
-                hits.append((score, node_id))
-        hits.sort()
+        per_pattern: list[list[tuple[tuple[bool, bool, int], str]]] = []
+        for part, test in zip(patterns, tests):
+            hits = []
+            for node_id, node in self.nodes.items():
+                if kinds and node["kind"] not in kinds:
+                    continue
+                if node["kind"] == "external":
+                    continue
+                haystack = node.get("file_path", "") if node["kind"] == "module" else node_id
+                if test(haystack) or test(node.get("name", "")):
+                    name = node.get("name", "").lower()
+                    score = (name != part.lower(), not name.startswith(part.lower()), len(node_id))
+                    hits.append((score, node_id))
+            per_pattern.append(sorted(hits))
+        # A round-robin preserves each pattern's normal ranking while keeping
+        # a broad first match from starving the later requested names.
+        hits, seen = [], set()
+        row = 0
+        while True:
+            added = False
+            for bucket in per_pattern:
+                if row < len(bucket):
+                    added = True
+                    score, node_id = bucket[row]
+                    if node_id not in seen:
+                        seen.add(node_id)
+                        hits.append((score, node_id))
+            if not added:
+                break
+            row += 1
         if not hits:
-            raise NotFound(f"nothing matches {pattern!r}")
+            raise NotFound(f"nothing matches {pattern!r}", parts=patterns)
         out: dict[str, Any] = {
             "matches": [f"{i} {self.nodes[i]['kind']} {self.loc(i)}" for _, i in hits[:limit]]
         }

@@ -156,6 +156,12 @@ def test_legacy_positional_form_still_analyses(project, capsys, tmp_path):
     assert (out_dir / "codebase_graph.json").is_file()
 
 
+def test_joined_command_and_pattern_suggests_a_space(capsys):
+    code, _, err = run(capsys, "find,room")
+    assert code == 1
+    assert "unknown command 'find,room' -- did you mean 'find room'?" in err
+
+
 def test_legacy_room(project, capsys):
     code, out, _ = run(capsys, "analyze", str(project), "--no-write", "-q", "--room", "src.auth.login_user")
     assert code == 0 and "# src.auth.login_user" in out

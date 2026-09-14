@@ -64,6 +64,15 @@ def test_find_ranks_exact_name_first(ws):
     assert all("greet" in m for m in matches)
 
 
+def test_find_comma_separated_patterns_interleave_and_explain_misses(ws):
+    matches = ws.find("login_user,make_user")["matches"]
+    assert matches[0].startswith("src.auth.login_user")
+    assert matches[1].startswith("src.models.make_user")
+    with pytest.raises(NotFound) as caught:
+        ws.find("nope,still_nope")
+    assert caught.value.payload["parts"] == ["nope", "still_nope"]
+
+
 def test_refs_finds_attributes_and_strings_with_enclosing_symbols(analyse, tmp_path):
     builder, files, index = analyse(
         {
