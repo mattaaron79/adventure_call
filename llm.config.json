@@ -1,0 +1,11 @@
+{
+  "_notes": "Copy this file to llm.config.json at the repo root (git-ignored). The API key is read from the env var named by apiKeyEnv and NEVER ships to the browser -- export it in the shell that runs the dev server (e.g. $env:OPENAI_API_KEY=\"sk-...\"). To use Anthropic instead, set provider to \"anthropic\" and endpoint to https://api.anthropic.com/v1/messages. Per-operation overrides key by operation name: { \"<operation>\": { \"model\": \"...\", \"temperature\": 0.1, \"maxTokens\": 4000 } }.",
+  "provider": "openai",
+  "endpoint": "https://api.deepseek.com/v1/chat/completions",
+  "model": "deepseek-v4-flash",
+  "temperature": 0.2,
+  "maxTokens": 2000,
+  "timeoutMs": 300000,
+  "overrides": {},
+  "apiKey": "sk-2bebc7044edc405ebb228ac84362744b"
+}
