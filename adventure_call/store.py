@@ -58,7 +58,10 @@ class AnalysisOptions:
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     no_source: bool = False
     no_heuristic: bool = False
-    module_calls: bool = False
+    # Stores include module-level calls so entry-point scripts remain visible
+    # to agent queries.  The one-shot `analyze` command explicitly retains its
+    # historical False default for the web call-flow view.
+    module_calls: bool = True
     contains_edges: bool = False
     external_imports: bool = False
 

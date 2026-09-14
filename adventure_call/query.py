@@ -567,8 +567,14 @@ class Workspace:
                 self.ref(e["source"], e["lines"][0] if e.get("lines") else None) + _conf(e)
                 for e in graph.callers.get(node_id, []) if not e.get("implicit")
             ]
+            module_callers = [
+                f"{self.nodes[e['source']]['file_path']}:{line}"
+                for e in graph.module_callers.get(node_id, [])
+                for line in (e.get("lines") or [None])
+            ]
             callees = [self.ref(e["target"]) + _conf(e) for e in graph.callees.get(node_id, [])]
             _put_list(out, "callers", callers, limit)
+            _put_list(out, "module_callers", module_callers, limit)
             _put_list(out, "callees", callees, limit)
             if graph.recursive_of(node_id):
                 out["recursion"] = graph.recursive_of(node_id)
@@ -863,10 +869,20 @@ class Workspace:
                 if not e.get("implicit") and e["source"] not in seeds
                 for line in (e.get("lines") or [None])
             ]
-            _put_list(out, "direct_callers", list(dict.fromkeys(sites)), budget)
+            module_sites = [
+                f"{e['source']} {self.nodes[e['source']]['file_path']}:{line} (module)"
+                for seed in seeds
+                for e in graph.module_callers.get(seed, [])
+                for line in (e.get("lines") or [None])
+            ]
+            _put_list(out, "direct_callers", list(dict.fromkeys([*sites, *module_sites])), budget)
             _put_many(out, "transitive_callers", [i for i in reached if hops[i] > 1], full)
             _put_list(out, "referenced_by", [self.ref(i) for i in referrers], budget)
-            files = sorted({self.file_of(i) or "" for i in [*reached, *referrers]} - {""})
+            files = sorted(
+                {self.file_of(i) or "" for i in [*reached, *referrers]}
+                | {self.nodes[e["source"]]["file_path"] for e in graph.module_callers.get(node_id, [])}
+                - {""}
+            )
 
         tests = [f for f in files if is_test_path(f)]
         _put_list(out, "files", [f for f in files if not is_test_path(f)], budget)
@@ -976,12 +992,20 @@ class CallGraph:
         }
         self.callees: dict[str, list[dict[str, Any]]] = {}
         self.callers: dict[str, list[dict[str, Any]]] = {}
+        # Module calls are evidence for agents, but deliberately excluded from
+        # call-flow components: a module is not a call-flow node.
+        self.module_callers: dict[str, list[dict[str, Any]]] = {}
         self.recursive: set[str] = set()
         constructed: set[str] = set()
         edges: list[dict[str, Any]] = []
         for edge in ws._typed("CALLS"):
             s, t = nodes.get(edge["source"]), nodes.get(edge["target"])
-            if s is None or t is None or s["kind"] not in _CALL_KINDS or t["kind"] not in _CALL_KINDS:
+            if s is None or t is None:
+                continue
+            if s["kind"] == "module" and t["kind"] in _CALL_KINDS:
+                self.module_callers.setdefault(t["id"], []).append(edge)
+                continue
+            if s["kind"] not in _CALL_KINDS or t["kind"] not in _CALL_KINDS:
                 continue
             order[s["id"]] = None
             order[t["id"]] = None
@@ -1035,7 +1059,7 @@ class CallGraph:
         out: dict[str, tuple[str, str | None]] = {}
         for node_id in self.component_of:
             match = match_role(self.ws.nodes[node_id])
-            if self.callers_step(node_id):
+            if self.callers_step(node_id) or self.module_callers.get(node_id):
                 out[node_id] = ("internal", f"{match[0]}: {match[1]}" if match else None)
             elif match:
                 out[node_id] = ("framework-entry", f"{match[0]} {match[1]}")

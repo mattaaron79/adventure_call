@@ -30,7 +30,7 @@ full options. `vcall` is a short alias for `adventure-call`.
 | --- | --- |
 | `overview` | Codebase map: counts, top dirs, top entry points, most-called, most complex, most-imported, import cycles |
 | `find TEXT [--kind K,K] [-r]` | Where is it? `ID KIND path:line` per match |
-| `symbol ID [--code]` | Signature, doc, role, metrics, callers, callees, reads/writes, effects, external/unresolved calls |
+| `symbol ID [--code]` | Signature, doc, role, metrics, callers (including `module_callers`), callees, reads/writes, effects, external/unresolved calls |
 | `source ID [ID...]` | Exact source text of symbols (current file contents) |
 | `file PATH` | Importers, imports (file -> names), externals, outline `L<start>-<end> <signature>` |
 | `calls ID [--direction down\\|up\\|both] [--depth N]` | Call-flow cone: `nodes` = `ID: "<hop> path:line"`, +N callees, -N callers; `edges` |
@@ -54,7 +54,7 @@ symbol on that line. Ambiguous input exits 1 with `candidates`; unknown exits 2 
 - References are `"ID path:line"`. In `callers` the line is the call site; elsewhere it is
   the definition. A trailing ` ?` marks a heuristic (name-only) resolution.
 - Empty fields are omitted. `<list>_more: N` means N entries were cut (raise `--limit`).
-- `role`: `internal` (called in-project), `entry` (no known caller), `framework-entry`
+- `role`: `internal` (called in-project, including from a module script), `entry` (no known caller), `framework-entry`
   (test/route/command/dunder/property...), `referenced` (passed as a value), `orphan`.
 - `metrics`: `fan_in`/`fan_out` direct callers/callees; `reach_down`/`reach_up`
   transitive; `complexity` cyclomatic-style.

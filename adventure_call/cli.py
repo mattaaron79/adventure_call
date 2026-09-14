@@ -400,7 +400,13 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     if not args.root.exists():
         logger.error("no such path: %s", args.root)
         return EXIT_NOT_FOUND
-    result = analyse(args.root, _options_from_args(args), None if args.no_write else args.out_dir)
+    # Stores default to module calls; preserve analyze's compact web-graph
+    # default unless the caller explicitly asks for them.
+    result = analyse(
+        args.root,
+        _options_from_args(args, AnalysisOptions(module_calls=False)),
+        None if args.no_write else args.out_dir,
+    )
     if result is None:
         logger.error("found no parseable source files under %s", args.root)
         return EXIT_ERROR

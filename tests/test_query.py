@@ -143,6 +143,21 @@ def test_entries_and_orphans(ws):
     assert "src.auth.login_user" not in ids  # it has a caller
 
 
+def test_module_callers_are_reported_without_changing_call_flow(analyse, tmp_path):
+    builder, files, index = analyse(
+        {"serve.py": "def main():\n    pass\n\nif __name__ == '__main__':\n    main()\n"},
+        module_call_edges=True,
+    )
+    OutputWriter(tmp_path).write_all(builder.graph, index, files, root=tmp_path)
+    workspace = Workspace.load(tmp_path)
+
+    assert workspace.symbol("main")["module_callers"] == ["serve.py:5"]
+    impact = workspace.impact("main")
+    assert impact["direct_callers"] == ["serve serve.py:5 (module)"]
+    assert impact["files"] == ["serve.py"]
+    assert "serve.main" not in workspace.orphans()["possibly_unused"]
+
+
 def test_impact_of_variable_walks_callers(ws):
     out = ws.impact("src.auth.SESSIONS")
     assert any(r.startswith("src.auth.login_user") for r in out["readers"])
