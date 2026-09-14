@@ -2,7 +2,7 @@
 id: tic-970c
 title: 'Resolver: unique-name fallback turns x.get()/strip() etc. into bogus project
   calls'
-status: open
+status: closed
 type: bug
 tier: high
 domain: io
@@ -12,12 +12,12 @@ tags:
 - resolver
 - heuristic
 - vcall-feedback
-assignee: null
+assignee: openai.gpt-5.6.root
 depends_on: []
 blocked_by: null
 created: '2026-09-14T14:21:55'
-updated: '2026-09-14T14:21:55'
-closed: null
+updated: '2026-09-14T15:38:32'
+closed: '2026-09-14T15:38:32'
 ---
 
 ## Description
@@ -33,3 +33,4 @@ Acceptance:
 - Bump writer SCHEMA_VERSION only if the export shape changes (it should not).
 
 ## Notes
+- 2026-09-14T15:38:32 openai.gpt-5.6.root: Implemented receiver-aware fallback: builtin protocol method names are unresolved, and attribute calls can only heuristically select project methods (never module functions). Verified with 79 resolver tests. diku stored pre-change snapshot: expedition.backdrop.get fan_in 86, calls_heuristic 1339. Fresh read-only analysis with this change: fan_in 3, calls_heuristic 961 (the source tree has since grown from 125 to 126 files).

@@ -160,13 +160,37 @@ def test_circular_reexports_do_not_hang(analyse):
 def test_unique_name_fallback_is_flagged_heuristic(analyse):
     _, _, idx = analyse(
         {
-            "a.py": "def only_one_of_these(): ...\n",
+            "a.py": "class A:\n    def only_one_of_these(self): ...\n",
             "b.py": "def go(thing):\n    return thing.only_one_of_these()\n",
         }
     )
     resolution = _edge(idx, "b.go", "thing.only_one_of_these")
-    assert resolution.callee_id == "a.only_one_of_these"
+    assert resolution.callee_id == "a.A.only_one_of_these"
     assert resolution.confidence == "heuristic"
+
+
+def test_attribute_fallback_skips_builtin_methods_and_module_functions(analyse):
+    _, _, idx = analyse(
+        {
+            "a.py": "def get(): ...\n\ndef strip(): ...\n",
+            "b.py": "def go(d, s):\n    d.get('key')\n    s.strip()\n",
+        }
+    )
+    get_call = _edge(idx, "b.go", "d.get")
+    strip_call = _edge(idx, "b.go", "s.strip")
+    assert (get_call.callee_id, get_call.reason) == (None, "builtin method name 'get'")
+    assert (strip_call.callee_id, strip_call.reason) == (None, "builtin method name 'strip'")
+
+
+def test_attribute_fallback_never_selects_a_module_function(analyse):
+    _, _, idx = analyse(
+        {
+            "a.py": "def custom_action(): ...\n",
+            "b.py": "def go(thing):\n    return thing.custom_action()\n",
+        }
+    )
+    resolution = _edge(idx, "b.go", "thing.custom_action")
+    assert (resolution.callee_id, resolution.reason) == (None, "unknown receiver 'thing'")
 
 
 def test_module_level_calls_are_attributed_to_the_module(analyse):
@@ -228,6 +252,8 @@ def test_unique_name_fallback_ignores_variables(analyse):
 
 
 def test_a_variable_never_shadows_a_function_of_the_same_name(analyse):
+    # A dotted call on an unknown receiver cannot target the module function;
+    # only a method is plausible at this heuristic stage.
     _, _, idx = analyse(
         {
             "a.py": "def run(): ...\n",
@@ -236,7 +262,7 @@ def test_a_variable_never_shadows_a_function_of_the_same_name(analyse):
         }
     )
     resolution = _edge(idx, "c.go", "thing.run")
-    assert resolution.callee_id == "a.run", "the constant must not make 'run' ambiguous"
+    assert (resolution.callee_id, resolution.reason) == (None, "unknown receiver 'thing'")
 
 
 # -- unresolved reasons ----------------------------------------------------
@@ -288,7 +314,7 @@ def test_computed_callees_stay_unresolved(index):
 
 def test_unresolved_calls_are_queryable_per_symbol(index):
     reasons = [r.reason for r in index.unresolved_for("src.auth.logout_user")]
-    assert reasons == ["unknown receiver 'SESSIONS'"]
+    assert reasons == ["builtin method name 'pop'"]
 
 
 def test_inheritance_loops_do_not_hang(analyse):

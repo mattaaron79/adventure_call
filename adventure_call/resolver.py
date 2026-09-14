@@ -16,6 +16,7 @@ Resolution is deliberately conservative.  Every answer carries a confidence:
 from __future__ import annotations
 
 import builtins
+import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,14 @@ _CALLABLE_KINDS = frozenset({"function", "method", "class"})
 # its own lookup tables: the two vocabularies do not overlap at all.
 _VALUE_KINDS = frozenset({"variable", "attribute"})
 _BUILTIN_NAMES = frozenset(dir(builtins))
+# Attribute calls have much less information than bare calls.  A project
+# function named ``get`` does not make ``value.get()`` a call to it: it is
+# overwhelmingly a mapping (or another builtin-ish receiver).  Keep this
+# derived from the runtime types so it follows Python's protocol surface
+# rather than becoming an incomplete, hand-maintained deny-list.
+_BUILTIN_METHOD_NAMES = frozenset().union(
+    *(dir(kind) for kind in (dict, list, set, str, bytes, tuple, object, io.IOBase))
+)
 _SELF_NAMES = frozenset({"self", "cls"})
 _MAX_MRO_DEPTH = 8
 _MAX_REEXPORT_DEPTH = 6
@@ -936,7 +945,20 @@ class SymbolResolver:
 
     def _fallback_by_name(self, name: str, outcome, receiver: str | None = None) -> Resolution:
         """Last resort: a project-unique bare name is probably the right target."""
+        if receiver and name in _BUILTIN_METHOD_NAMES:
+            return outcome(None, "unresolved", reason=f"builtin method name {name!r}")
+
         candidates = self.by_name.get(name, [])
+        # A receiver call can only be a method.  In particular, never turn
+        # ``value.get()`` into ``some_module.get()`` just because the latter
+        # happens to be unique in the project.  Module and import bindings
+        # were already considered before this final heuristic.
+        if receiver:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if self.symbols[candidate].kind == "method"
+            ]
         if len(candidates) == 1:
             return outcome(candidates[0], "heuristic", reason="unique name in project")
         if candidates:
