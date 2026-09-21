@@ -41,16 +41,24 @@ fi
 # XDG_DATA_HOME at ~/snap/<app>/<revision>/, and uv/pipx would install there:
 # off the normal shell's PATH, and gone when the snap refreshes. Pin the
 # standard locations under the real home unless the caller chose their own.
-if [ -n "${SNAP:-}" ]; then
+# SNAP itself is not reliably exported to a terminal that inherited the snap's
+# XDG directories, so the paths are checked as well.
+snap_env=0
+for candidate in "${SNAP:-}" "${XDG_DATA_HOME:-}" "${XDG_CONFIG_HOME:-}" "${HOME:-}"; do
+  case "$candidate" in *"/snap/"*) snap_env=1 ;; esac
+done
+if [ "$snap_env" = 1 ]; then
   real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
   real_home="${real_home:-$HOME}"
+  # The account lookup can itself answer with a snap-scoped home; unpick it.
+  case "$real_home" in *"/snap/"*) real_home="${HOME%%/snap/*}" ;; esac
   export UV_TOOL_DIR="${UV_TOOL_DIR:-$real_home/.local/share/uv/tools}"
   export UV_TOOL_BIN_DIR="${UV_TOOL_BIN_DIR:-$real_home/.local/bin}"
   export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$real_home/.local/share/uv/python}"
   export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$real_home/.local/bin}"
   export PIPX_HOME="${PIPX_HOME:-$real_home/.local/share/pipx}"
   export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$real_home/.local/bin}"
-  echo "==> snap environment detected ($SNAP); installing under $real_home/.local"
+  echo "==> snap environment detected (${SNAP:-XDG_DATA_HOME=$XDG_DATA_HOME}); installing under $real_home/.local"
 fi
 
 spec="$repo$extras"
@@ -72,9 +80,19 @@ else
   exit 1
 fi
 
-if command -v adventure-call >/dev/null 2>&1; then
-  echo "==> $(adventure-call --version) at $(command -v adventure-call)"
-else
+installed="$(command -v adventure-call || true)"
+if [ -z "$installed" ]; then
   echo "warning: adventure-call is not on PATH yet." >&2
   echo "  run 'uv tool update-shell' (or 'pipx ensurepath') and open a new shell." >&2
+else
+  echo "==> $(adventure-call --version) at $installed"
+  # A stale shim in another bin directory (an older install in a snap revision
+  # dir, say) can sit earlier on PATH and silently hide this one.
+  if [ -n "${UV_TOOL_BIN_DIR:-}" ] && [ -z "${VIRTUAL_ENV:-}" ] \
+     && [ "$installed" != "$UV_TOOL_BIN_DIR/adventure-call" ]; then
+    echo "warning: PATH reaches $installed, not the copy just installed" >&2
+    echo "  ($UV_TOOL_BIN_DIR/adventure-call): something earlier on PATH is shadowing it." >&2
+    echo "  Remove that copy, or put $UV_TOOL_BIN_DIR earlier on PATH; in a shell that" >&2
+    echo "  already ran it, 'hash -r' also clears a cached path that has gone away." >&2
+  fi
 fi

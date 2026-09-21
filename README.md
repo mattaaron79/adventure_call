@@ -35,6 +35,12 @@ Options: `--editable`/`-Editable` (checkout edits apply live, no reinstall neede
 (JavaScript/TypeScript grammars), `--python 3.12`/`-Python 3.12`. If the command is not found
 afterwards, run `uv tool update-shell` and open a new terminal.
 
+In a snap-packaged terminal (VS Code installed as a snap) the snap's own `XDG_DATA_HOME` would put
+the install inside `~/snap/<app>/<revision>/`, where it is invisible to normal shells and gone
+whenever the snap updates, so the script installs under your real `~/.local` instead. If a copy
+from an older location still comes first on `PATH` it says so: remove that copy, and run `hash -r`
+in any shell that has the old path cached.
+
 To install `adventure-call` globally (usable from any directory), see
 [Deploy](#deploy).
 
