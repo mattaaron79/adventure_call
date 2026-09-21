@@ -1,7 +1,7 @@
 ---
 id: tic-cfca
 title: 'Add ''vcall tests'': which test files might be affected by a change'
-status: review
+status: closed
 type: feature
 tier: medium
 domain: cli
@@ -17,8 +17,8 @@ assignee: deepseek.v4flash.001
 depends_on: []
 blocked_by: null
 created: '2026-09-20T23:45:20'
-updated: '2026-09-20T23:50:21'
-closed: null
+updated: '2026-09-21T01:12:13'
+closed: '2026-09-21T01:12:13'
 ---
 
 ## Description
@@ -54,3 +54,5 @@ Known limits to document: over-approximates through hub modules (--depth is the 
 - 2026-09-20T23:50:21 deepseek.v4flash.001: Ready for review. QA: '.venv/bin/python -m pytest -q' -> 343 passed. Integration test (this repo, store at .adventure-call/): bare 'vcall tests' prints compact JSON {"tests":[...]} for the uncommitted change set (staged + unstaged + untracked from git); '--since REV' adds the branch's committed changes (merge-base diff); explicit FILE args replace the git scan and '--git' adds it back; '--plain' prints one path per line for 'xargs -r pytest -q'; '--depth N' bounds import hops; exit 2 with 'no given file is in this analysis' when none of the given inputs resolves, exit 1 outside a git work tree with no FILE args, exit 3 unchanged when no store is found. A new (untracked) test file is returned as itself; a changed conftest.py selects every collected test under its directory; only test_*.py / *_test.py are listed, so an empty list means no collected test imports the change rather than that the change is safe. No existing command's output changes.
 
 - 2026-09-20T23:50:21 deepseek.v4flash.001: Submitted for review: new 'tests' query command; 343 tests pass
+
+- 2026-09-21T01:12:13 system: Accepted.
