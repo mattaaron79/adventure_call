@@ -206,6 +206,88 @@ def test_impact_of_file_walks_importers(ws):
     assert out["importers"] == {"src/api.py": 1, "src/auth.py": 1}
 
 
+# -- tests: which tests to run for a change (tic-cfca) ---------------------------
+
+_IMPORT_PROJECT = {
+    "src/core.py": "def run():\n    return 1\n",
+    "src/util.py": "def helper():\n    return 1\n",
+    "tests/conftest.py": "import pytest\n",
+    "tests/support.py": "from src.util import helper\n\n\ndef build():\n    return helper()\n",
+    "tests/test_core.py": "from src.core import run\n\n\ndef test_run():\n    assert run() == 1\n",
+    "tests/test_support.py": "from tests.support import build\n\n\ndef test_build():\n    assert build() == 1\n",
+    "tests/test_util.py": "from src.util import helper\n\n\ndef test_helper():\n    assert helper() == 1\n",
+}
+
+
+def _workspace(analyse, tmp_path, files) -> Workspace:
+    builder, parsed, index = analyse(files)
+    OutputWriter(tmp_path).write_all(builder.graph, index, parsed, root=tmp_path)
+    return Workspace.load(tmp_path)
+
+
+def test_tests_for_pulls_in_the_importing_tests(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, _IMPORT_PROJECT)
+    assert workspace.tests_for(["src/core.py"]) == {"tests": ["tests/test_core.py"]}
+    # tests/support.py imports src/util.py but pytest collects nothing from it.
+    assert workspace.tests_for(["src/util.py"]) == {
+        "tests": ["tests/test_support.py", "tests/test_util.py"]
+    }
+
+
+def test_tests_for_runs_a_changed_test_file_as_itself(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, _IMPORT_PROJECT)
+    # Not expanded: editing one test must not drag in its neighbours' files.
+    assert workspace.tests_for(["tests/test_core.py"]) == {"tests": ["tests/test_core.py"]}
+
+
+def test_tests_for_expands_a_changed_support_module_under_tests(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, _IMPORT_PROJECT)
+    assert workspace.tests_for(["tests/support.py"]) == {"tests": ["tests/test_support.py"]}
+
+
+def test_tests_for_expands_a_changed_conftest_to_its_directory(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, _IMPORT_PROJECT)
+    out = workspace.tests_for(["tests/conftest.py"])
+    assert out["tests"] == ["tests/test_core.py", "tests/test_support.py", "tests/test_util.py"]
+
+
+def test_tests_for_depth_bounds_the_walk(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, {
+        "src/core.py": "def run():\n    return 1\n",
+        "src/api.py": "from src.core import run\n\n\ndef handle():\n    return run()\n",
+        "tests/test_api.py": "from src.api import handle\n\n\ndef test_handle():\n    assert handle() == 1\n",
+    })
+    assert workspace.tests_for(["src/core.py"]) == {"tests": ["tests/test_api.py"]}
+    assert workspace.tests_for(["src/core.py"], depth=1) == {"tests": []}
+
+
+def test_tests_for_accepts_symbols_and_reports_skipped(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, _IMPORT_PROJECT)
+    out = workspace.tests_for(["README.md", "src.core.run"])
+    assert out == {"tests": ["tests/test_core.py"], "skipped": ["README.md"]}
+    # An absolute path under the root is echoed back relative to it.
+    assert workspace.tests_for([str(tmp_path / "docs" / "x.md"), "src/core.py"]) == {
+        "tests": ["tests/test_core.py"], "skipped": ["docs/x.md"]
+    }
+    with pytest.raises(NotFound) as caught:
+        workspace.tests_for(["README.md", "nope.py"])
+    assert caught.value.exit_code == 2
+    assert caught.value.payload["skipped"] == ["README.md", "nope.py"]
+
+
+def test_tests_for_ignores_tests_in_another_checkout(analyse, tmp_path):
+    workspace = _workspace(analyse, tmp_path, {
+        "src/core.py": "def run():\n    return 1\n",
+        "tests/test_core.py": "from src.core import run\n",
+        "worktrees/other/.git": "gitdir: /somewhere/else\n",
+        "worktrees/other/tests/test_core.py": "from src.core import run\n",
+    })
+    # The analysis walks through the nested checkout...
+    assert "worktrees/other/tests/test_core.py" in workspace.module_of_file
+    # ...but its tests belong to another tree, so they are not this change's.
+    assert workspace.tests_for(["src/core.py"]) == {"tests": ["tests/test_core.py"]}
+
+
 def test_state_through_calls(ws):
     out = ws.state("src.api.handle_login")
     assert "src.auth" in out["through_calls"]

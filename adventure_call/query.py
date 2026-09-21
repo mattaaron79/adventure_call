@@ -17,6 +17,9 @@ inspector           :meth:`Workspace.symbol`
 variable impact     :meth:`Workspace.impact`, :meth:`Workspace.state`
 ==================  =====================================================
 
+:meth:`Workspace.tests_for` is the one query with no web counterpart: "which
+tests would this change touch" is a question the CLI asks git, not a view.
+
 The TypeScript modules under ``web/src/data`` hold the reasoning behind every
 rule (why classes join the call graph only by taking part in a call, why an
 entry point is not the same as in-degree zero, why a cone is two walks and not
@@ -24,7 +27,8 @@ one).  This port keeps their semantics and does not repeat the essays.
 
 Output is shaped for a reader paying per token: no nulls, no empty lists,
 locations as ``path:line`` strings, neighbours as ``"ID path:line"`` strings.
-Everything returned is JSON-serialisable.
+Everything returned is JSON-serialisable.  :meth:`Workspace.tests_for` is the
+one exception: an empty ``tests`` list is a real answer ("nothing to run").
 """
 
 from __future__ import annotations
@@ -82,8 +86,23 @@ ROLE_RULES: tuple[tuple[str, str | None, str | None, str | None], ...] = (
 
 
 def is_test_path(path: str) -> bool:
-    """Whether a test runner collects from this root-relative path."""
+    """Whether this root-relative path holds tests (directory or name rule)."""
     return bool(_TEST_FILE_RE.search(path))
+
+
+#: What pytest collects with its default patterns: such a file runs on its own,
+#: which a helper under ``tests/`` does not.
+_COLLECTIBLE_RE = re.compile(r"^(test_.*|.*_test)\.py$")
+
+
+def is_collectible_test(path: str) -> bool:
+    """Whether running this path directly collects anything (default patterns).
+
+    Narrower than :func:`is_test_path` on purpose: ``tests/helpers.py`` holds
+    test support code but ``pytest tests/helpers.py`` collects no tests, and a
+    list of files to run must not contain such a path.
+    """
+    return bool(_COLLECTIBLE_RE.match(path.rsplit("/", 1)[-1]))
 
 
 def _decorator_head(decorator: str) -> str:
@@ -1012,6 +1031,94 @@ class Workspace:
         if truncated:
             out["truncated"] = True
         return out
+
+    def tests_for(self, refs: Iterable[str], *, depth: int = 0, budget: int = CLOSURE_BUDGET) -> dict[str, Any]:
+        """The test files a change to ``refs`` might affect: what to run.
+
+        The reverse import closure, the same relation :meth:`impact` walks for a
+        file, with the inputs classified rather than blindly expanded:
+
+        * a changed test file is the answer for itself and is *not* expanded --
+          otherwise one edited test drags in every other test sharing a helper;
+        * a changed ``conftest.py`` selects every test under its directory,
+          because pytest loads it for all of them;
+        * anything else pulls in the tests that transitively import it.
+
+        Only files pytest collects by default are listed (:func:`is_collectible_test`),
+        so every path returned is runnable as ``pytest <path>``, and a test inside
+        another checkout (an agent worktree, a vendored clone) is dropped: those
+        are some other tree's tests.  Unbounded by default: ``depth`` is the knob
+        that trades completeness for a shorter run.  Refs mapping to no analysed
+        file are reported in ``skipped``; when none of them map at all, that is a
+        :class:`NotFound`.
+        """
+        tests: set[str] = set()
+        skipped: list[str] = []
+        truncated = False
+        resolved = 0
+        for ref in dict.fromkeys(refs):
+            path = self.normalise_path(ref) or self._symbol_file(ref)
+            if path is None:
+                skipped.append(self._relative(ref))
+                continue
+            resolved += 1
+            if is_collectible_test(path):
+                tests.add(path)
+            elif path.rsplit("/", 1)[-1] == "conftest.py":
+                directory = path.rsplit("/", 1)[0] if "/" in path else ""
+                tests.update(
+                    candidate for candidate in self.module_of_file
+                    if is_collectible_test(candidate)
+                    and (not directory or candidate.startswith(directory + "/"))
+                )
+            else:
+                reached, hops, cut = closure([path], lambda f: self.importers_of.get(f, []), budget)
+                tests.update(
+                    f for f in reached
+                    if is_collectible_test(f) and (not depth or hops[f] <= depth)
+                    and not self._other_checkout(f)
+                )
+                truncated = truncated or cut
+        if skipped and not resolved:
+            raise NotFound("no given file is in this analysis", skipped=skipped)
+        out: dict[str, Any] = {"tests": sorted(tests)}
+        if skipped:
+            out["skipped"] = skipped
+        if truncated:
+            out["truncated"] = True
+        return out
+
+    def _symbol_file(self, ref: str) -> str | None:
+        """The file a symbol reference lives in, or None when it resolves to nothing."""
+        try:
+            node_id = self.resolve(ref)
+        except QueryError:
+            return None
+        path = self.file_of(node_id)
+        return path if path in self.module_of_file else None
+
+    def _other_checkout(self, path: str) -> bool:
+        """Whether a project-relative file sits inside another checkout.
+
+        An agent worktree (``.claude/worktrees/<agent>/``) or a vendored clone
+        carries its own ``.git``, and the analysis walks straight through it: its
+        tests import the same modules, so without this they appear as tests of
+        *this* change.  Running them would test a different tree.
+        """
+        directory = (self.root / path).resolve().parent
+        root = self.root.resolve()
+        while directory != root and directory != directory.parent:
+            if (directory / ".git").exists():
+                return True
+            directory = directory.parent
+        return False
+
+    def _relative(self, ref: str) -> str:
+        """``ref`` as a path relative to the analysis root, when it is under it."""
+        try:
+            return Path(ref).expanduser().resolve().relative_to(self.root.resolve()).as_posix()
+        except (ValueError, OSError):
+            return ref
 
     def state(self, ref: str, *, budget: int = CLOSURE_BUDGET) -> dict[str, Any]:
         """The module/class state a function touches, directly and through calls."""

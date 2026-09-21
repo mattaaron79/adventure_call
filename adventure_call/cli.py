@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -344,6 +345,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=_query(lambda ws, a: ws.impact(a.id, budget=a.budget, full=a.all)))
 
     p = query_parser(
+        "tests", "which tests to run for a change (changed files via git by default)",
+        "The test files a change might affect, as a short list to feed a test run. With no arguments "
+        "the changed files come from git: everything uncommitted (staged, unstaged and untracked, so "
+        "a test written for the ticket is included) plus, with --since REV, everything committed on "
+        "the branch since that revision (a merge-base diff). Explicit FILE arguments replace the git "
+        "scan; --git adds the working tree to them. A changed test file is run as itself, a changed "
+        "conftest.py selects every test under its directory, and any other file pulls in the tests "
+        "that transitively import it. Only files pytest collects by default (test_*.py, *_test.py) "
+        "are listed, so an empty list means no collected test imports the change -- not that the "
+        "change is safe.",
+        "examples:\n  adventure-call tests\n  adventure-call tests src/api.py --depth 2\n"
+        "  adventure-call tests --since main\n  adventure-call tests --plain | xargs -r pytest -q",
+    )
+    p.add_argument("files", nargs="*", metavar="FILE",
+                   help="changed files or symbols (default: the git working tree)")
+    p.add_argument("--since", metavar="REV",
+                   help="also include files committed since REV (merge-base diff, e.g. main)")
+    p.add_argument("--git", action="store_true",
+                   help="add the git working tree to explicit FILE arguments")
+    p.add_argument("--depth", type=int, default=0, metavar="N",
+                   help="import hops to follow (default: 0, no limit)")
+    p.add_argument("--budget", type=int, default=CLOSURE_BUDGET,
+                   help=f"most files to walk per input (default: {CLOSURE_BUDGET})")
+    p.add_argument("--plain", action="store_true",
+                   help="print one path per line instead of JSON, for xargs")
+    p.set_defaults(handler=cmd_tests)
+
+    p = query_parser(
         "state", "module/class state a function touches, directly and through calls",
         "Variables and attributes a callable reads and writes itself, and those touched by "
         "everything it transitively calls ('through_calls', grouped by owning class or module, "
@@ -381,7 +410,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 _COMMANDS = frozenset({
     "analyze", "init", "update", "guide", "overview", "find", "refs", "symbol", "file", "tree",
-    "imports", "calls", "entries", "impact", "state", "orphans", "source",
+    "imports", "calls", "entries", "impact", "state", "orphans", "source", "tests",
 })
 
 
@@ -591,6 +620,84 @@ def _imports(ws: Workspace, args: argparse.Namespace) -> dict[str, Any]:
     if args.cycles and not args.file:
         return {"cycles": ws.import_cycles}
     return ws.imports(args.file, depth=args.depth, direction=args.direction, symbols=args.symbols, limit=args.limit)
+
+
+def _git_paths(root: Path, *args: str) -> list[str]:
+    """The paths one git command prints, or [] when git refuses.
+
+    Tolerant on purpose: the probes below mostly mean "nothing to report", and
+    only a missing work tree or an unknown revision is worth an error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _git_changed(root: Path, since: str | None) -> list[str]:
+    """Absolute paths of every file git reports as changed under ``root``.
+
+    Uncommitted work first -- staged, unstaged and untracked -- because that is
+    what a ticket looks like before it is committed, and untracked is how a
+    freshly written test file shows up.  With ``since``, the files committed on
+    the branch since that revision are added too, as a merge-base diff so
+    ``--since main`` means "what this branch did".
+    """
+    top = _git_paths(root, "rev-parse", "--show-toplevel")
+    if not top:
+        raise StoreError(f"{root} is not inside a git work tree")
+    repo = Path(top[0])
+    paths: list[str] = []
+    if since:
+        committed = _git_paths(root, "diff", "--name-only", "-M", "--diff-filter=ACMR", f"{since}...HEAD")
+        if not committed and not _git_paths(root, "rev-parse", "--verify", "-q", f"{since}^{{commit}}"):
+            raise StoreError(f"git cannot resolve the revision {since!r}")
+        paths += committed
+    # HEAD is unborn in a repository with no commits yet; the index still knows.
+    paths += _git_paths(root, "diff", "--name-only", "-M", "--diff-filter=ACMR", "HEAD") or _git_paths(
+        root, "diff", "--name-only", "-M", "--diff-filter=ACMR", "--cached"
+    )
+    paths += _git_paths(root, "ls-files", "--others", "--exclude-standard")
+    return [str(repo / path) for path in dict.fromkeys(paths)]
+
+
+def cmd_tests(args: argparse.Namespace) -> int:
+    """Test files a change might affect; the changed files come from git by default."""
+    try:
+        ws = _open_workspace(args)
+    except StoreError as exc:
+        _emit({"error": str(exc)}, pretty=args.pretty)
+        return EXIT_NO_STORE
+    except QueryError as exc:
+        _emit(exc.payload, pretty=args.pretty)
+        return exc.exit_code
+    refs = list(args.files)
+    if not refs or args.git or args.since:
+        try:
+            refs += _git_changed(ws.root, args.since)
+        except StoreError as exc:
+            if not refs:
+                _emit({"error": str(exc)}, pretty=args.pretty)
+                return EXIT_ERROR
+            logger.warning("adventure-call: %s; using the given files only", exc)
+    if not refs:
+        _emit({"tests": [], "note": "no changed files; pass FILE... or --since REV"}, pretty=args.pretty)
+        return EXIT_OK
+    try:
+        payload = ws.tests_for(refs, depth=args.depth, budget=args.budget)
+    except QueryError as exc:
+        _emit(exc.payload, pretty=args.pretty)
+        return exc.exit_code
+    if args.plain:
+        sys.stdout.write("".join(f"{path}\n" for path in payload["tests"]))
+        return EXIT_OK
+    _emit(payload, pretty=args.pretty)
+    return EXIT_OK
 
 
 def cmd_source(args: argparse.Namespace) -> int:

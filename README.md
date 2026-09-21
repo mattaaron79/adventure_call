@@ -48,13 +48,15 @@ adventure-call symbol auth.login_user
 adventure-call imports src/api.py --depth 2
 adventure-call calls handle_login --direction both
 adventure-call impact models.User
+adventure-call tests             # which tests the uncommitted change might affect
 adventure-call update            # re-analyse (queries also refresh automatically on change)
 ```
 
 `init` writes `.adventure-call/AGENTS.md` describing every query for agents (also printed by
 `adventure-call guide`); point the project's `CLAUDE.md`/`AGENTS.md` at it. Every command has
 full `-h` help. The queries are Python ports of the web views' derivations
-([`query.py`](adventure_call/query.py)).
+([`query.py`](adventure_call/query.py)), plus `tests`, which is CLI-only: it reads the changed
+files out of git and answers with the test files a change might affect.
 
 ## Usage
 
