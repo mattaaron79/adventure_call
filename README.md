@@ -73,6 +73,27 @@ full `-h` help. The queries are Python ports of the web views' derivations
 ([`query.py`](adventure_call/query.py)), plus `tests`, which is CLI-only: it reads the changed
 files out of git and answers with the test files a change might affect.
 
+## Workspace UI
+
+```bash
+cd /path/to/project
+vcall serve                     # opens http://127.0.0.1:<port> in a browser
+vcall serve --no-open           # ...without opening one (headless, CI)
+vcall serve --port 5173         # pin the port instead of taking a free one
+```
+
+`serve` runs the same workspace the Vite dev server shows, straight from the `.adventure-call/`
+store in the current directory or above it: the built frontend ships inside the package, so no
+Node, npm or second terminal is needed. It binds loopback on an ephemeral port, streams
+`codebase_graph.json` and `symbol_registry.json` out of the store, and answers `/data/meta.json`
+with the absolute analysed root, which is what lets the inspector's `vscode://` icons open the
+real files. Edit a source file and reload the page: the store is re-analysed first
+(`--no-refresh` warns instead of analysing). `Ctrl-C` stops it, and `-v` adds an access log.
+
+Limits: one store per run, and a tab that is already open is not told about a refresh. The
+payload is your source code -- the registry embeds full function bodies -- so the bind address
+is loopback unless you ask for another, and asking for another warns.
+
 ## Usage
 
 ```bash

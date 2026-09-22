@@ -8,6 +8,8 @@ Three kinds of command:
   (tic-49da).
 * query commands -- read the store and print compact JSON for agents
   (tic-34c1).  See :mod:`adventure_call.query` for what each one computes.
+* ``serve`` -- a throwaway loopback web server over a store, for humans
+  (tic-c336).  See :mod:`adventure_call.serve`.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from adventure_call import __version__
+from adventure_call import __version__, serve
 from adventure_call.graph import CALLS, CONTAINS, IMPORTS, SymbolNotFoundError
 from adventure_call.parser import DEFAULT_MAX_FILE_BYTES
 from adventure_call.query import CLOSURE_BUDGET, CONE_BUDGET, QueryError, Workspace
@@ -59,6 +61,7 @@ Start at a project root:
   adventure-call init                  analyse the project into .adventure-call/
   adventure-call overview              one-shot map of the codebase (JSON)
   adventure-call guide                 how to use the query commands
+  adventure-call serve                 open the workspace UI in a browser (no Node)
 
 Query commands find .adventure-call/ by walking up from the current directory,
 refresh it automatically when sources changed, and print compact JSON.
@@ -189,6 +192,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Print the agent guide that init writes to .adventure-call/AGENTS.md.",
     )
     p.set_defaults(handler=cmd_guide)
+
+    # serve (tic-c336) --------------------------------------------------------
+
+    p = sub.add_parser(
+        "serve", parents=[logging_opts], formatter_class=_RAW,
+        help="serve the workspace web UI for a store over loopback HTTP",
+        description=f"Serve the built web UI -- the same workspace the Vite dev server shows -- "
+        f"from a {STORE_DIRNAME}/ store, on a temporary loopback port, with no Node and no npm. "
+        "/data/codebase_graph.json, /data/symbol_registry.json and /data/meta.json are read from "
+        "the store; every other path comes from the bundled frontend. Sources changed since the "
+        "last analysis are re-analysed before the first response, and again at most every few "
+        "seconds while it runs. The store is only ever written through that re-analysis. "
+        "Ctrl-C stops the server; -v adds an access log, and there is none by default."
+        "\n\nFor humans: agents keep to the query commands.",
+        epilog="examples:\n  adventure-call serve\n  adventure-call serve --port 5173\n"
+        "  adventure-call serve --no-open --no-refresh",
+    )
+    p.add_argument("root", type=Path, nargs="?",
+                   help=f"project root holding {STORE_DIRNAME}/ (default: the nearest one above "
+                   "the current directory)")
+    p.add_argument("--store", type=Path, metavar="DIR",
+                   help=f"the {STORE_DIRNAME}/ to serve (or the project root holding one)")
+    p.add_argument("--port", type=int, default=0, metavar="N",
+                   help="port to bind (default: 0, which lets the OS pick a free one)")
+    p.add_argument("--host", default="127.0.0.1", metavar="H",
+                   help="address to bind (default: 127.0.0.1, loopback only); anything else is "
+                   "reachable from the network and warns, because the registry embeds your source")
+    p.add_argument("--no-open", action="store_true", help="do not open a browser (headless machines)")
+    p.add_argument("--no-refresh", action="store_true",
+                   help="never re-analyse; warn about stale sources instead")
+    p.set_defaults(handler=cmd_serve)
 
     # queries ----------------------------------------------------------------
 
@@ -409,8 +443,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 # -- entry ----------------------------------------------------------------------
 
 _COMMANDS = frozenset({
-    "analyze", "init", "update", "guide", "overview", "find", "refs", "symbol", "file", "tree",
-    "imports", "calls", "entries", "impact", "state", "orphans", "source", "tests",
+    "analyze", "init", "update", "guide", "serve", "overview", "find", "refs", "symbol", "file",
+    "tree", "imports", "calls", "entries", "impact", "state", "orphans", "source", "tests",
 })
 
 
@@ -546,6 +580,42 @@ def cmd_guide(args: argparse.Namespace) -> int:
     from adventure_call.agents_doc import render_agents_md
 
     sys.stdout.write(render_agents_md())
+    return EXIT_OK
+
+
+# -- serve (tic-c336) ---------------------------------------------------------------
+
+
+def _serve_store(args: argparse.Namespace) -> Store:
+    """The store to serve: ROOT or --store, else the nearest one above the cwd."""
+    given = args.store if args.store is not None else args.root
+    if given is None:
+        return Store.find()
+    try:
+        return _find_store(given)
+    except StoreError:
+        raise StoreError(f"no {STORE_DIRNAME}/ at {given}; run 'adventure-call init' there") from None
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Serve a store's workspace until Ctrl-C; stdout carries the URL and nothing else."""
+    try:
+        store = _serve_store(args)
+    except StoreError as exc:
+        logger.error("%s", exc)
+        return EXIT_NO_STORE
+    try:
+        serve.run(
+            store,
+            host=args.host,
+            port=args.port,
+            no_refresh=args.no_refresh,
+            open_browser=not args.no_open,
+            verbose=args.verbose,
+        )
+    except serve.ServeError as exc:
+        logger.error("%s", exc)
+        return EXIT_ERROR
     return EXIT_OK
 
 
@@ -744,7 +814,9 @@ def _configure_logging(args: argparse.Namespace) -> None:
         level = logging.ERROR
     elif getattr(args, "verbose", False):
         level = logging.DEBUG
-    elif args.command in ("analyze", "init", "update"):
+    elif args.command in ("analyze", "init", "update", "serve"):
+        # serve is interactive and long-running: its lifecycle notes ('stopped')
+        # belong on stderr by default.  Its access log does not -- that is -v only.
         level = logging.INFO
     else:
         level = logging.WARNING  # queries: stdout is the JSON, stderr stays quiet

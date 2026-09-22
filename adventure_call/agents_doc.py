@@ -45,6 +45,7 @@ is a short alias for `adventure-call`.
 | `entries [--include-tests]` | Entry points ranked by transitive reach, with the evidence for each |
 | `orphans` | Callables with no callers, callees or framework role (possibly unused) |
 | `update` | Re-analyse by hand (after changing options, e.g. `update --exclude-dir gen`) |
+| `serve` | Human-only: opens the workspace web UI in a browser, from this store, on loopback. Agents stay on the JSON queries |
 
 ## IDs
 
