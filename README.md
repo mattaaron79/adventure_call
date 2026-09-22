@@ -31,9 +31,18 @@ using [uv](https://docs.astral.sh/uv/) (pipx as a fallback). Re-run to update.
 | Linux / macOS | `scripts/install.sh` | `scripts/update.sh` |
 | Windows | `powershell -ExecutionPolicy Bypass -File scripts\install.ps1` | `...\scripts\update.ps1` |
 
-Options: `--editable`/`-Editable` (checkout edits apply live, no reinstall needed), `--js`/`-Js`
+Options: `--editable`/`-Editable` (checkout edits apply live, no reinstall needed), `--no-web`/`-NoWeb`
+(skip the web bundle build), `--js`/`-Js`
 (JavaScript/TypeScript grammars), `--python 3.12`/`-Python 3.12`. If the command is not found
 afterwards, run `uv tool update-shell` and open a new terminal.
+
+Node and npm are needed **only at install time**: the installer runs `npm ci && npm run build` in
+`web/` and packs the resulting bundle into the installed package, so the installed command needs no
+Node, no checkout and no Vite. A bundle newer than its inputs is reused, so re-running the installer
+stays quick. Without npm the install still succeeds and warns: the CLI is unaffected, but the
+packaged web UI is absent until you install Node.js and re-run. The bundle is a snapshot taken at
+install time, so a frontend change needs another run -- or a plain `npm run build` in `web/`, which
+an `--editable` install picks up at once.
 
 In a snap-packaged terminal (VS Code installed as a snap) the snap's own `XDG_DATA_HOME` would put
 the install inside `~/snap/<app>/<revision>/`, where it is invisible to normal shells and gone

@@ -23,8 +23,24 @@ js = ["tree-sitter-javascript>=0.25,<0.26", "tree-sitter-typescript>=0.23"]
 adventure-call = "adventure_call.cli:main"
 vcall = "adventure_call.cli:main"
 
+# tic-c11c: ship the built frontend (web/dist, gitignored) as adventure_call/web,
+# so an installed copy serves the web UI with no Node, npm, checkout or Vite.
+# only-include + sources rather than force-include (which aborts the whole build
+# when its source is missing, and a Node-less install has no bundle), and
+# artifacts because web/dist is gitignored -- without it hatchling drops it.
 [tool.hatch.build.targets.wheel]
-packages = ["adventure_call"]
+only-include = ["adventure_call", "web/dist"]
+artifacts = ["web/dist"]
+
+[tool.hatch.build.targets.wheel.sources]
+"adventure_call" = "adventure_call"
+"web/dist" = "adventure_call/web"
+
+# The sdist carries the bundle too, so a wheel built from it -- what plain
+# `uv build` does -- still ships the frontend, and an install from the sdist
+# does not silently lose it.
+[tool.hatch.build.targets.sdist]
+artifacts = ["web/dist"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
