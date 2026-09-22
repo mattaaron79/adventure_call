@@ -90,9 +90,14 @@ with the absolute analysed root, which is what lets the inspector's `vscode://` 
 real files. Edit a source file and reload the page: the store is re-analysed first
 (`--no-refresh` warns instead of analysing). `Ctrl-C` stops it, and `-v` adds an access log.
 
-Limits: one store per run, and a tab that is already open is not told about a refresh. The
-payload is your source code -- the registry embeds full function bodies -- so the bind address
-is loopback unless you ask for another, and asking for another warns.
+An open tab refreshes itself too: `/data/events` is a Server-Sent Events stream (tic-70f3) that
+pushes the same `adventure-call:data-changed` notification the Vite dev server sends over HMR, so
+a re-analysis reaches the page without a manual reload. A deployment that cannot reach that
+endpoint -- a static file server -- still works, it just needs F5.
+
+Limits: one store per run, and only a change the server noticed is announced. The payload is your
+source code -- the registry embeds full function bodies -- so the bind address is loopback unless
+you ask for another, and asking for another warns.
 
 ## Usage
 

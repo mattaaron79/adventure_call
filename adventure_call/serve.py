@@ -14,15 +14,20 @@ which is the only other server for this app:
   ``Cache-Control: no-store``, because ``update()`` rewrites them wholesale;
 * ``GET /data/meta.json`` is synthetic: the absolute analysed root, which is what
   makes the inspector's ``vscode://`` links work (tic-4b0a);
+* ``GET /data/events`` is a Server-Sent Events stream (tic-70f3): it pushes the
+  same ``adventure-call:data-changed`` event the Vite plugin pushes over HMR, so a
+  tab that is already open refetches after a re-analysis instead of keeping stale
+  data until someone presses F5;
 * everything else comes from the bundle; an unknown path with no file extension
   is a client-side route and answers with ``index.html``.
 
-Limits worth knowing: one store per invocation, and no live update in a tab that
-is already open (tic-70f3 adds Server-Sent Events on the same throttle this module
-exposes).  The payload is your source code -- ``symbol_registry.json`` embeds full
-function bodies -- which is why the default is loopback on an ephemeral port and
-why serving anything else warns; the process holds no cache of its own and never
-writes to the store except through ``store.update()``.
+Limits worth knowing: one store per invocation, and a live tab is only told about a
+change the *server* noticed (a browser that cannot reach ``/data/events`` -- a plain
+static deployment -- keeps working, it just needs a manual reload).  The payload is
+your source code -- ``symbol_registry.json`` embeds full function bodies -- which is
+why the default is loopback on an ephemeral port and why serving anything else
+warns; the process holds no cache of its own and never writes to the store except
+through ``store.update()``.
 """
 
 from __future__ import annotations
@@ -50,10 +55,24 @@ INDEX_HTML = webassets.INDEX_HTML
 #: The store files reachable through ``/data/`` -- outData.ts keeps the same list.
 SERVED = ("codebase_graph.json", "symbol_registry.json")
 META_NAME = "meta.json"
+#: The live-update stream (tic-70f3).  Synthetic like ``meta.json``, so it is
+#: answered before the file whitelist rather than 404ing as an unknown name.
+EVENTS_NAME = "events"
+#: The name of the change event, pushed by the Vite plugin and this server alike;
+#: web/src/data/events.ts holds the one client-side copy of the wire vocabulary.
+DATA_CHANGED_EVENT = "adventure-call:data-changed"
 #: Seconds between request-driven staleness scans: the manifest walk reads every
 #: source mtime, so it is cheap but not free, and an asset request must never pay
 #: for it -- only ``/data/*`` requests check.
 STALENESS_INTERVAL = 3.0
+#: How often an open stream asks the gate for changes.  The gate throttles the
+#: scan itself, so this only decides how soon after a scan a change reaches the
+#: wire; it stays well under ``STALENESS_INTERVAL`` because a poll that is
+#: throttled costs a clock read.
+EVENT_POLL_INTERVAL = 1.0
+#: Silence tolerated on an open stream before a comment is written: long enough to
+#: be idle, short enough that a proxy or NAT does not drop the connection.
+KEEPALIVE_INTERVAL = 15.0
 #: Bind addresses that keep the registry on the machine.  Anything else is a
 #: deliberate opt-in and says so, since the payload is the project's source.
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -186,11 +205,37 @@ class RefreshGate:
 # -- the server ------------------------------------------------------------------
 
 
+class _EventStream:
+    """One open ``/data/events`` writer, and the flag that ends it.
+
+    The writer waits on this event rather than sleeping, so a shutdown ends the
+    stream at once instead of at the next keepalive.
+    """
+
+    __slots__ = ("_stop",)
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+
+    def cancel(self) -> None:
+        self._stop.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._stop.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        """True once cancelled -- the writer's loop then ends."""
+        return self._stop.wait(timeout)
+
+
 class _StoreHTTPServer(http.server.ThreadingHTTPServer):
     """A threaded server for one store and one bundle.
 
     Requests are handled in daemon threads so Ctrl-C never waits on a slow client,
-    and the address is reused so a restart is not refused after a crash.
+    and the address is reused so a restart is not refused after a crash.  An event
+    stream is a request that never finishes on its own, so the open ones are tracked
+    here and cancelled by :meth:`server_close` (tic-70f3).
     """
 
     daemon_threads = True
@@ -204,12 +249,56 @@ class _StoreHTTPServer(http.server.ThreadingHTTPServer):
         dist: Path,
         gate: RefreshGate,
         access_log: bool = False,
+        keepalive: float = KEEPALIVE_INTERVAL,
+        poll: float = EVENT_POLL_INTERVAL,
     ) -> None:
         self.store = store
         self.dist = Path(dist).resolve()
         self.gate = gate
         self.access_log = access_log
+        self.keepalive = keepalive
+        self.poll = poll
+        self._streams: set[_EventStream] = set()
+        self._streams_lock = threading.Lock()
+        self._closing = False
         super().__init__(address, _RequestHandler)
+
+    # -- live-update streams (tic-70f3) -------------------------------------------
+
+    def open_stream(self) -> _EventStream:
+        """Register the stream the calling thread is about to write.
+
+        A stream that arrives during shutdown is cancelled immediately, so a
+        request accepted just before the close cannot hold the process open.
+        """
+        stream = _EventStream()
+        with self._streams_lock:
+            if self._closing:
+                stream.cancel()
+            else:
+                self._streams.add(stream)
+        return stream
+
+    def close_stream(self, stream: _EventStream) -> None:
+        with self._streams_lock:
+            self._streams.discard(stream)
+
+    def stream_count(self) -> int:
+        """How many streams are open -- what a shutdown test observes."""
+        with self._streams_lock:
+            return len(self._streams)
+
+    def shutdown_streams(self) -> None:
+        """Cancel every open stream; idempotent, since :meth:`server_close` runs it."""
+        with self._streams_lock:
+            streams, self._streams = list(self._streams), set()
+            self._closing = True
+        for stream in streams:
+            stream.cancel()
+
+    def server_close(self) -> None:
+        self.shutdown_streams()  # a stream has no request left to finish on its own
+        super().server_close()
 
 
 class _RequestHandler(http.server.BaseHTTPRequestHandler):
@@ -246,6 +335,9 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _serve_data(self, name: str, *, with_body: bool) -> None:
         name = urllib.parse.unquote(name)
+        if name == EVENTS_NAME:
+            self._stream_events(with_body=with_body)
+            return
         # Any request may be the first one after an edit, so refresh here -- and
         # only here; an asset request never pays for a manifest walk.
         self._workspace.gate.check()
@@ -275,6 +367,77 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         if with_body:
             self._stream(target)
+
+    # -- /data/events (tic-70f3) ---------------------------------------------------
+
+    def _stream_events(self, *, with_body: bool) -> None:
+        """Hold this connection open as a Server-Sent Events stream.
+
+        The stream drives the same throttled :meth:`RefreshGate.check` the data
+        routes do, so a subscriber and a reload never disagree about freshness, and
+        it announces the same event and payload shape the Vite plugin pushes over
+        HMR (``{file: name}``, outData.ts:100).  A HEAD gets the headers and no
+        stream: there is no connection to hold open for a bodyless request.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        # An open-ended body cannot be pooled for another request; this header ends
+        # the socket (and so the subscription) as soon as the loop below returns.
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if not with_body:
+            return
+        # Named for the sake of a shutdown test and a thread dump: a leaked writer
+        # is otherwise an anonymous thread.
+        threading.current_thread().name = f"adventure-call events {self.client_address[0]}"
+        stream = self._workspace.open_stream()
+        try:
+            self._write_block(": ready\n\n")
+            self._event_loop(stream)
+        except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+            # The client vanished, or the server closed this socket under the
+            # writer: end this stream only -- the others, and the server, live on.
+            logger.debug("adventure-call: event stream ended", exc_info=True)
+        finally:
+            self._workspace.close_stream(stream)
+
+    def _event_loop(self, stream: _EventStream) -> None:
+        """Poll for changes until the client goes away or the server shuts down."""
+        workspace = self._workspace
+        warned = False
+        last_write = time.monotonic()
+        while not stream.cancelled:
+            try:
+                changes = workspace.gate.check()
+            except StoreError as exc:
+                # Nothing parseable on disk: the served data did *not* change, so no
+                # event is announced.  Warned once -- the scan repeats every tick.
+                if not warned:
+                    logger.warning("adventure-call: cannot refresh: %s", exc)
+                    warned = True
+                changes = None
+            else:
+                warned = False
+            name = ""
+            # With --no-refresh the store on disk was left alone, so a refetch would
+            # return the same bytes: the gate's warning is the whole answer.
+            if changes and not workspace.gate.no_refresh:
+                name = first_changed_file(changes)
+            if name:
+                payload = json.dumps({"file": name}, separators=(",", ":"))
+                self._write_block(f"event: {DATA_CHANGED_EVENT}\ndata: {payload}\n\n")
+                last_write = time.monotonic()
+            elif time.monotonic() - last_write >= workspace.keepalive:
+                self._write_block(": ping\n\n")
+                last_write = time.monotonic()
+            if stream.wait(workspace.poll):
+                return  # shutting down
+
+    def _write_block(self, text: str) -> None:
+        """One SSE block, flushed -- a buffered event is an event nobody sees."""
+        self.wfile.write(text.encode("utf-8"))
+        self.wfile.flush()
 
     # -- the bundle ---------------------------------------------------------------
 
@@ -336,6 +499,24 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
             logger.info("%s %s", self.address_string(), fmt % args)
 
 
+def first_changed_file(changes: dict[str, list[str]]) -> str:
+    """The one name to put on the wire: the first path the scan reported.
+
+    :meth:`Store.staleness` groups paths by what happened to them (``modified``,
+    ``added``, ``deleted``) and the client only reports "data changed", so one name
+    is enough.  A modification -- the common case -- is preferred over an addition
+    or a deletion, and ``""`` means the mapping held no path at all.
+    """
+    for kind in ("modified", "added", "deleted"):
+        paths = changes.get(kind)
+        if paths:
+            return str(paths[0])
+    for paths in changes.values():
+        if paths:
+            return str(paths[0])
+    return ""
+
+
 def _content_type(path: Path) -> str:
     return _CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
@@ -367,12 +548,16 @@ def build_server(
     host: str = "127.0.0.1",
     port: int = 0,
     access_log: bool = False,
+    keepalive: float = KEEPALIVE_INTERVAL,
+    poll: float = EVENT_POLL_INTERVAL,
 ) -> _StoreHTTPServer:
     """A server bound to ``host:port`` (port 0 lets the OS pick a free one).
 
-    Separate from :func:`run` so tests -- and a later ticket (tic-70f3) -- can drive
-    the handler without the process-level lifecycle.  A busy address raises
-    ``OSError``, which :func:`run` turns into a readable message.
+    Separate from :func:`run` so tests can drive the handler without the
+    process-level lifecycle.  ``keepalive`` and ``poll`` are exposed the same way,
+    because a test that waited out the real 15-second ping would be a slow test.
+    A busy address raises ``OSError``, which :func:`run` turns into a readable
+    message.
     """
     return _StoreHTTPServer(
         (host, port),
@@ -380,6 +565,8 @@ def build_server(
         dist=Path(dist),
         gate=gate or RefreshGate(store),
         access_log=access_log,
+        keepalive=keepalive,
+        poll=poll,
     )
 
 

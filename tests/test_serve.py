@@ -1,9 +1,11 @@
 """``vcall serve``: the stdlib web server over a store (tic-c336).
 
-Everything here goes through a real socket with ``http.client``: the routes, the
-404 bodies, the traversal refusal and the refresh-on-request behaviour are things
-a unit call would not prove.  The bundle is a stub in a tmp dir, so the contract
-is tested without ``web/dist`` existing and without a frontend build.
+Everything here goes through a real socket with ``http.client`` -- and, for the
+event stream, with a raw socket -- because the routes, the 404 bodies, the
+traversal refusal, the refresh-on-request behaviour and what arrives while a
+connection stays open are things a unit call would not prove.  The bundle is a
+stub in a tmp dir, so the contract is tested without ``web/dist`` existing and
+without a frontend build.
 """
 
 from __future__ import annotations
@@ -13,10 +15,13 @@ import http.client
 import json
 import logging
 import re
+import select
 import shutil
 import socket
 import threading
+import time
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -61,9 +66,13 @@ def bundle(tmp_path, monkeypatch) -> Path:
 
 
 @contextlib.contextmanager
-def running(store: Store, bundle: Path, gate: serve.RefreshGate | None = None):
-    """The server on a real, OS-chosen port, stopped on the way out."""
-    server = serve.build_server(store, bundle, gate)
+def running(store: Store, bundle: Path, gate: serve.RefreshGate | None = None, **options):
+    """The server on a real, OS-chosen port, stopped on the way out.
+
+    ``**options`` reaches :func:`serve.build_server`, which is how a stream test
+    shortens the keepalive and poll intervals instead of waiting them out.
+    """
+    server = serve.build_server(store, bundle, gate, **options)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -401,3 +410,210 @@ def test_the_access_log_is_off_until_verbose(store, bundle):
             server.access_log = True
             fetch(server, "/data/meta.json")
     assert any("GET /data/meta.json" in line for line in lines)
+
+
+# -- /data/events (tic-70f3) ------------------------------------------------------
+
+
+class EventReader:
+    """Lines off an open SSE connection, with deadlines instead of hangs.
+
+    A raw socket on purpose: what matters is what arrives *while* the connection
+    stays open, and ``http.client``'s buffered reader is awkward once a read has
+    timed out.  ``select`` decides when a read may block at all.
+    """
+
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock = sock
+        self.status = ""
+        self.lines: list[str] = []
+        self._buffer = b""
+
+    def handshake(self, *, timeout: float = 10.0) -> dict[str, str]:
+        """The status line and the headers of the streaming response."""
+        self.status = self.read_line(timeout=timeout)
+        headers: dict[str, str] = {}
+        while True:
+            line = self.read_line(timeout=timeout)
+            if not line:
+                return headers
+            name, _, value = line.partition(":")
+            headers[name.strip().lower()] = value.strip()
+
+    def read_line(self, *, timeout: float = 10.0) -> str:
+        """One line, or an ``AssertionError`` naming what did arrive instead."""
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self._buffer:
+            if not select.select([self.sock], [], [], max(deadline - time.monotonic(), 0.0))[0]:
+                raise AssertionError(f"no line within {timeout}s; got {self.lines}")
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise AssertionError(f"the stream closed early; got {self.lines}")
+            self._buffer += chunk
+        line, _, self._buffer = self._buffer.partition(b"\n")
+        text = line.decode("utf-8").rstrip("\r")
+        self.lines.append(text)
+        return text
+
+    def read_until(self, predicate: Callable[[str], bool], *, timeout: float = 10.0) -> str:
+        """The first line matching ``predicate``; fails once ``timeout`` is up."""
+        deadline = time.monotonic() + timeout
+        while True:
+            line = self.read_line(timeout=max(deadline - time.monotonic(), 0.0))
+            if predicate(line):
+                return line
+
+    def wait_for_close(self, *, timeout: float = 5.0) -> None:
+        """Read until the server ends the stream, by EOF or by a reset."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if not select.select([self.sock], [], [], max(deadline - time.monotonic(), 0.0))[0]:
+                raise AssertionError(f"the stream stayed open; got {self.lines}")
+            try:
+                chunk = self.sock.recv(4096)
+            except ConnectionResetError:
+                return
+            if not chunk:
+                return
+
+
+@contextlib.contextmanager
+def event_stream(server, path: str = "/data/events"):
+    """A raw ``GET`` on ``path``, held open for the caller and closed on the way out."""
+    port = server.server_address[1]
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    sock.sendall(
+        f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        "Accept: text/event-stream\r\n\r\n".encode("ascii")
+    )
+    try:
+        yield EventReader(sock)
+    finally:
+        sock.close()
+
+
+def wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0, what: str = "it") -> None:
+    """Poll ``predicate`` until it holds, then fail loudly -- never sleep blindly."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{what} never happened within {timeout}s")
+
+
+def test_the_event_names_the_first_changed_file():
+    assert serve.first_changed_file({"modified": ["src/a.py"], "added": ["src/b.py"]}) == "src/a.py"
+    assert serve.first_changed_file({"added": ["src/b.py"]}) == "src/b.py"
+    assert serve.first_changed_file({"deleted": ["src/c.py"]}) == "src/c.py"
+    assert serve.first_changed_file({}) == ""
+
+
+def test_the_stream_announces_a_touched_source_file(store, bundle):
+    gate = serve.RefreshGate(store, interval=0.05)
+    with running(store, bundle, gate, poll=0.05, keepalive=0.05) as server:
+        with event_stream(server) as events:
+            headers = events.handshake()
+            assert events.status.startswith("HTTP/1.1 200")
+            assert headers["content-type"] == "text/event-stream"
+            assert headers["cache-control"] == "no-store"
+            assert events.read_until(lambda line: line == ": ready", timeout=5) == ": ready"
+
+            (store.root / "src" / "extra.py").write_text(
+                "def brand_new():\n    return 1\n", encoding="utf-8"
+            )
+
+            event = events.read_until(lambda line: line.startswith("event:"), timeout=15)
+            assert event == f"event: {serve.DATA_CHANGED_EVENT}"
+            data = events.read_until(lambda line: line.startswith("data:"), timeout=5)
+            assert json.loads(data.removeprefix("data: ")) == {"file": "src/extra.py"}
+            assert store.staleness() == {}  # the stream re-analysed, it did not just say so
+
+
+def test_a_client_that_disappears_ends_only_its_own_stream(store, bundle):
+    gate = serve.RefreshGate(store, interval=0.05)
+    with running(store, bundle, gate, poll=0.02, keepalive=0.02) as server:
+        with event_stream(server) as events:
+            events.handshake()
+            events.read_until(lambda line: line == ": ready", timeout=5)
+            assert server.stream_count() == 1
+        # The socket is closed here; the writer notices at its next ping.
+        wait_until(lambda: server.stream_count() == 0, what="the dead stream to be dropped")
+
+        status, _, body = fetch(server, "/data/meta.json")
+        assert status == 200
+        assert json.loads(body)["root"] == store.root.resolve().as_posix()
+
+        # ...and a new subscriber is still welcomed.
+        with event_stream(server) as again:
+            again.handshake()
+            assert again.read_until(lambda line: line == ": ready", timeout=5) == ": ready"
+
+
+def test_the_stream_keeps_an_idle_connection_alive(store, bundle):
+    with running(store, bundle, serve.RefreshGate(store), poll=0.02, keepalive=0.1) as server:
+        with event_stream(server) as events:
+            events.handshake()
+            assert events.read_until(lambda line: line == ": ping", timeout=5) == ": ping"
+
+
+def test_no_refresh_warns_instead_of_announcing(store, bundle):
+    gate = serve.RefreshGate(store, no_refresh=True, interval=0.05)
+    with log_lines() as lines:
+        with running(store, bundle, gate, poll=0.05, keepalive=0.1) as server:
+            with event_stream(server) as events:
+                events.handshake()
+                events.read_until(lambda line: line == ": ready", timeout=5)
+                (store.root / "src" / "extra.py").write_text(
+                    "def brand_new():\n    return 1\n", encoding="utf-8"
+                )
+                # Two keepalives' worth of ticks: the gate has scanned by now.
+                events.read_until(lambda line: line == ": ping", timeout=5)
+                events.read_until(lambda line: line == ": ping", timeout=5)
+                # The served bytes did not change, so nothing may ask for a refetch.
+                assert not any(line.startswith("event: ") for line in events.lines)
+    assert any("analysis is stale" in line for line in lines)
+
+
+def test_head_gets_the_stream_headers_without_opening_one(store, bundle):
+    with running(store, bundle, serve.RefreshGate(store), poll=0.02, keepalive=0.02) as server:
+        status, headers, body = fetch(server, "/data/events", method="HEAD")
+        assert status == 200
+        assert headers["content-type"] == "text/event-stream"
+        assert body == b""
+        assert server.stream_count() == 0  # no subscriber, nothing to hold open
+
+
+def test_a_stream_is_not_opened_for_a_non_get_request(store, bundle):
+    with running(store, bundle, serve.RefreshGate(store), poll=0.02, keepalive=0.02) as server:
+        status, _, _ = fetch(server, "/data/events", method="POST")
+        assert status == 501  # http.server's answer to a method it has no handler for
+        assert server.stream_count() == 0
+
+
+def test_shutting_the_server_down_ends_every_open_stream(store, bundle):
+    server = serve.build_server(
+        store, bundle, serve.RefreshGate(store), poll=0.02, keepalive=0.02
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with event_stream(server) as events:
+            events.handshake()
+            events.read_until(lambda line: line == ": ready", timeout=5)
+            assert server.stream_count() == 1
+
+            server.shutdown()
+            server.server_close()
+
+            wait_until(lambda: server.stream_count() == 0, what="the writers to be cancelled")
+            events.wait_for_close(timeout=5)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        server.server_close()
+    # No writer thread is left behind: a stream outliving the server is a leak.
+    wait_until(
+        lambda: not [t for t in threading.enumerate() if t.name.startswith("adventure-call events")],
+        what="the event writer threads to finish",
+    )
