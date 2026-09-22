@@ -204,10 +204,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "the store; every other path comes from the bundled frontend. Sources changed since the "
         "last analysis are re-analysed before the first response, and again at most every few "
         "seconds while it runs. The store is only ever written through that re-analysis. "
-        "Ctrl-C stops the server; -v adds an access log, and there is none by default."
+        "Ctrl-C stops the server; -v adds an access log, and there is none by default. "
+        "With --dev the checkout's own 'npm run dev' serves the page instead, which is the loop "
+        "for working on the frontend itself (tic-ac17)."
         "\n\nFor humans: agents keep to the query commands.",
         epilog="examples:\n  adventure-call serve\n  adventure-call serve --port 5173\n"
-        "  adventure-call serve --no-open --no-refresh",
+        "  adventure-call serve --no-open --no-refresh\n  adventure-call serve --dev",
     )
     p.add_argument("root", type=Path, nargs="?",
                    help=f"project root holding {STORE_DIRNAME}/ (default: the nearest one above "
@@ -222,6 +224,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-open", action="store_true", help="do not open a browser (headless machines)")
     p.add_argument("--no-refresh", action="store_true",
                    help="never re-analyse; warn about stale sources instead")
+    p.add_argument("--dev", action="store_true",
+                   help="serve through the checkout's Vite dev server (HMR, React refresh, "
+                        "Vite's error overlay) instead of the bundled frontend; needs npm and "
+                        "'npm ci' in web/, and only works from a source checkout (tic-ac17)")
     p.set_defaults(handler=cmd_serve)
 
     # queries ----------------------------------------------------------------
@@ -604,15 +610,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
     except StoreError as exc:
         logger.error("%s", exc)
         return EXIT_NO_STORE
+    options = {
+        "host": args.host,
+        "port": args.port,
+        "no_refresh": args.no_refresh,
+        "open_browser": not args.no_open,
+        "verbose": args.verbose,
+    }
     try:
-        serve.run(
-            store,
-            host=args.host,
-            port=args.port,
-            no_refresh=args.no_refresh,
-            open_browser=not args.no_open,
-            verbose=args.verbose,
-        )
+        # The same store, freshness and lifecycle either way; only the server for
+        # the page differs (tic-ac17).
+        if args.dev:
+            serve.run_dev(store, **options)
+        else:
+            serve.run(store, **options)
     except serve.ServeError as exc:
         logger.error("%s", exc)
         return EXIT_ERROR

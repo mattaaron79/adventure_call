@@ -1,16 +1,25 @@
 import { fileURLToPath, URL } from 'node:url'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
+import { resolveHost, resolveOutDir, resolvePort } from './plugins/devServer'
 import { outData } from './plugins/outData'
 
 export default defineConfig({
-  plugins: [react(), outData({ outDir: '../out' })],
+  // tic-ac17: 'vcall serve --dev' points the plugin at the store it was given
+  // through VCALL_OUT_DIR; unset keeps '../out', so `npm run dev` is unchanged.
+  plugins: [react(), outData({ outDir: resolveOutDir(process.env.VCALL_OUT_DIR) })],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {
-    port: 5175,
+    // tic-ac17: 5175 + strictPort is what `npm run dev` and the F5 launch config
+    // expect, so it stays the default.  'vcall serve --dev' replaces the port
+    // through VCALL_PORT -- and strictPort stays *on* for it: the port either
+    // binds or Vite fails loudly, because the CLI printed that port as the URL
+    // and silently moving to another one would make the URL a lie.
+    port: resolvePort(process.env.VCALL_PORT),
     strictPort: true,
+    host: resolveHost(process.env.VCALL_HOST),
   },
   build: {
     sourcemap: true,

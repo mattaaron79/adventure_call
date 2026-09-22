@@ -21,6 +21,13 @@ which is the only other server for this app:
 * everything else comes from the bundle; an unknown path with no file extension
   is a client-side route and answers with ``index.html``.
 
+``serve --dev`` is the other half of the same command (tic-ac17): the store discovery,
+the freshness rules and the teardown promise are the ones above, but the page is served
+by the checkout's own ``npm run dev``, so HMR, React refresh and Vite's error overlay
+are the ones a frontend change is iterated against.  It is a source-checkout feature by
+construction -- a wheel ships a bundle, not the frontend sources -- and the dev server is
+always stopped with the command, never left behind.
+
 Limits worth knowing: one store per invocation, and a live tab is only told about a
 change the *server* noticed (a browser that cannot reach ``/data/events`` -- a plain
 static deployment -- keeps working, it just needs a manual reload).  The payload is
@@ -35,15 +42,18 @@ from __future__ import annotations
 import http.server
 import json
 import logging
+import os
 import posixpath
 import shutil
 import signal
+import socket
+import subprocess
 import threading
 import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable, Mapping, cast
 
 from adventure_call import __version__, webassets
 from adventure_call.store import Store, StoreError
@@ -603,12 +613,7 @@ def run(
             "(a wheel install ships one, a checkout without Node does not)"
         )
     gate = gate or RefreshGate(store, no_refresh=no_refresh)
-    if host not in LOOPBACK_HOSTS:
-        logger.warning(
-            "adventure-call: serving on %s, beyond loopback -- symbol_registry.json embeds the "
-            "project's source code and paths",
-            host,
-        )
+    _warn_beyond_loopback(host)
     try:
         server = build_server(store, bundle, gate, host=host, port=port, access_log=verbose)
     except OSError as exc:
@@ -659,3 +664,346 @@ def _restore_sigterm(previous: Any) -> None:
         signal.signal(signal.SIGTERM, previous)
     except (ValueError, OSError):  # pragma: no cover
         pass
+
+
+def _warn_beyond_loopback(host: str) -> None:
+    """Say so when the payload is about to be reachable beyond this machine."""
+    if host not in LOOPBACK_HOSTS:
+        logger.warning(
+            "adventure-call: serving on %s, beyond loopback -- symbol_registry.json embeds the "
+            "project's source code and paths",
+            host,
+        )
+
+
+# -- the dev server (tic-ac17) ---------------------------------------------------
+
+
+#: How long Vite gets to accept connections before ``--dev`` gives up.  A cold
+#: Vite start is seconds, not minutes, and the child's own output is streaming the
+#: whole while -- so a timeout is reported with a pointer to it, not waited out.
+DEV_START_TIMEOUT = 20.0
+#: How often the readiness probe dials the port while Vite starts.
+DEV_PROBE_INTERVAL = 0.1
+#: How long the child is given to exit after SIGTERM before it is SIGKILLed.
+DEV_STOP_GRACE = 5.0
+#: The checkout's own dev script, run through npm: the command here is the one a
+#: developer runs by hand, so a change to ``web/package.json`` is picked up for
+#: free instead of being mirrored in this module.
+DEV_SCRIPT = ("run", "dev")
+
+#: The seam the dev-mode tests spawn a fake child through.  Assigning the stdlib
+#: attribute instead would be visible to every other test in the process.
+_popen = subprocess.Popen
+
+
+def checkout_root() -> Path:
+    """The directory holding ``adventure_call/`` -- a checkout's root."""
+    return Path(__file__).resolve().parent.parent
+
+
+def dev_checkout(root: Path | None = None) -> Path:
+    """The ``web/`` frontend checkout to run, or a readable :class:`ServeError`.
+
+    Found relative to this module rather than from the cwd, because ``--dev``
+    needs the *sources*: a wheel install ships a built bundle and no ``web/``, and
+    downloading a frontend is not something this command will ever do.  So this is
+    the check that says the machine cannot run ``--dev`` at all, and it names the
+    path it looked at.
+    """
+    web = (checkout_root() if root is None else Path(root)) / "web"
+    if not (web / "package.json").is_file():
+        raise ServeError(
+            f"no frontend checkout at {web}: --dev runs the Vite dev server from a source "
+            "checkout of adventure-call, and an installed wheel has no web/ to run "
+            "(use plain 'adventure-call serve' there)"
+        )
+    return web
+
+
+def npm_executable() -> str:
+    """The npm to spawn, or a readable :class:`ServeError` when it is missing."""
+    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    if npm is None:
+        raise ServeError(
+            "npm was not found on PATH: --dev needs Node.js and npm to run the Vite dev "
+            "server (install Node.js, then run 'npm ci' in the web/ checkout)"
+        )
+    return npm
+
+
+def require_node_modules(web: Path) -> None:
+    """Refuse a checkout whose dependencies were never installed."""
+    if not (web / "node_modules").is_dir():
+        raise ServeError(f"{web}/node_modules is missing -- run 'npm ci' in {web} first")
+
+
+def dev_environment(store: Store, *, port: int, host: str | None = None) -> dict[str, str]:
+    """The environment the dev server is spawned with (tic-ac17).
+
+    Two things vary per run and neither belongs in the checkout's committed
+    ``vite.config.ts``: where the exports Vite serves live (``VCALL_OUT_DIR``, the
+    store directory, absolute because the child's cwd is ``web/``) and which port
+    to bind (``VCALL_PORT``, because this side has already resolved one and must
+    print the port the page is really on).  ``VCALL_HOST`` is set only when an
+    address was asked for, so Vite's own default stands otherwise.  Everything
+    else is the caller's environment unchanged, which is what keeps PATH, npm
+    configuration and colours behaving as they do in a terminal.
+    """
+    env = dict(os.environ)
+    env["VCALL_OUT_DIR"] = str(store.path)
+    env["VCALL_PORT"] = str(port)
+    if host:
+        env["VCALL_HOST"] = host
+    return env
+
+
+def dev_command() -> list[str]:
+    """The argv for the dev server: the checkout's own ``npm run dev``.
+
+    Everything that varies per run travels in the environment (see
+    :func:`dev_environment`) rather than as extra argv, so the process spawned is
+    exactly the one a developer spawns and there is no second place to keep the
+    frontend's script name in step.
+    """
+    return [npm_executable(), *DEV_SCRIPT]
+
+
+def spawn_dev_server(web: Path, env: Mapping[str, str]) -> Any:
+    """Start the checkout's dev server in its own process group, onto this terminal.
+
+    ``start_new_session`` is what makes the "never left behind" promise keepable:
+    ``npm run dev`` runs Vite as a child of its own, so signalling npm alone can
+    leave Vite holding the port.  A separate group is a tree :func:`stop_child` can
+    tear down in one syscall.  stdout and stderr are inherited rather than piped --
+    Vite rewrites its own progress lines, so a pipe would turn interactive output
+    into buffered blocks, and there is nothing of ours to interleave with it --
+    while stdin goes to ``/dev/null``, since the child is not in the terminal's
+    foreground group and must never block on a read.
+    """
+    return _popen(
+        dev_command(),
+        cwd=str(web),
+        env=dict(env),
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def free_port(host: str = "127.0.0.1") -> int:
+    """A port the OS says is free, for a run that did not pin one.
+
+    The banner has to name the port the page is on, and "move to the next free
+    port" is exactly what :data:`strictPort` turns off, so this side picks one the
+    same way ``--port 0`` would and hands it over.  The port is free when it is
+    probed, not when Vite binds it; that race is Vite's own "port is already in
+    use" error, reported in its output like any other start failure.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        probe.bind((host, 0))
+        return int(probe.getsockname()[1])
+
+
+def dial_host(host: str) -> str:
+    """The address to dial (and to open in a browser) for a bind address."""
+    if host in ("", "0.0.0.0"):
+        return "127.0.0.1"
+    return "::1" if host in ("::", "[::]") else host
+
+
+def display_url(host: str, port: int) -> str:
+    """``http://host:port`` as a browser needs it -- bracketed when it is IPv6."""
+    shown = dial_host(host)
+    return f"http://[{shown}]:{port}" if ":" in shown else f"http://{shown}:{port}"
+
+
+def dev_port_open(host: str, port: int, *, timeout: float = 0.25) -> bool:
+    """True once something accepts a TCP connection on ``host:port``."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_port(
+    host: str,
+    port: int,
+    *,
+    process: Any = None,
+    timeout: float = DEV_START_TIMEOUT,
+    interval: float = DEV_PROBE_INTERVAL,
+    probe: Callable[..., bool] = dev_port_open,
+) -> None:
+    """Wait until the dev server accepts connections; raise ``ServeError`` if it never does.
+
+    A port that answers is the only readiness signal worth trusting: Vite prints
+    its banner before it is necessarily listening, and a config error means it
+    never will be.  ``process`` is polled on the same loop, so a child that died
+    is reported at once with its exit code instead of after the whole timeout --
+    which is what makes a failed start an error message rather than a hang.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if process is not None and process.poll() is not None:
+            raise ServeError(
+                f"the Vite dev server exited (code {process.returncode}) before "
+                f"{display_url(host, port)} accepted connections; its output is above"
+            )
+        if probe(host, port):
+            return
+        if time.monotonic() >= deadline:
+            raise ServeError(
+                f"the Vite dev server did not start listening on {display_url(host, port)} "
+                f"within {timeout:.0f}s; its output is above"
+            )
+        time.sleep(interval)
+
+
+def _kill_group(process: Any, sig: int) -> None:
+    """Signal the child's whole process group -- npm *and* the Vite under it."""
+    try:
+        os.killpg(process.pid, sig)
+    except (AttributeError, OSError):
+        # A platform without process groups, or a fake process in a test with no
+        # real pid: fall back to signalling the child alone, best effort.
+        try:
+            process.send_signal(sig)
+        except (AttributeError, OSError, ValueError):
+            logger.debug("adventure-call: could not signal the dev server", exc_info=True)
+
+
+def stop_child(
+    process: Any,
+    *,
+    grace: float = DEV_STOP_GRACE,
+    kill: Callable[[Any, int], None] | None = None,
+) -> None:
+    """Terminate the dev server and everything it started; never leave Vite behind.
+
+    SIGTERM first, so Vite closes its port and npm's own handler runs, then
+    SIGKILL after ``grace`` seconds: a test run, a Ctrl-C and the next invocation
+    all have to be able to start again, and the one unacceptable outcome is a
+    child that outlives the command.  Idempotent, because the failed-start path and
+    the shutdown path both call it.  ``kill`` is the signalling seam the tests
+    replace -- resolved here rather than as a default, so patching the module's
+    helper is enough.
+    """
+    signal_group = kill if kill is not None else _kill_group
+    if process is None or process.poll() is not None:
+        return
+    signal_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        logger.warning("adventure-call: the dev server ignored SIGTERM; killing it")
+    signal_group(process, signal.SIGKILL)
+    try:
+        process.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        logger.warning("adventure-call: the dev server (pid %s) is still running", process.pid)
+
+
+class _RefreshPoller:
+    """Keep the store current while Vite serves it (tic-ac17).
+
+    The served-bundle path re-checks the store from each ``/data/*`` request
+    through :meth:`RefreshGate.check`; with ``--dev`` no Python request ever
+    arrives, because Vite answers -- so the same throttled check is driven from a
+    daemon thread instead.  A re-analysis rewrites the exports, which is what the
+    ``outData`` plugin watches, so the change still reaches the browser over HMR.
+    A store with nothing parseable is warned about once and does not kill the
+    loop: the page keeps serving what is on disk, exactly as the event stream does.
+    """
+
+    def __init__(self, gate: RefreshGate, *, interval: float = STALENESS_INTERVAL) -> None:
+        self.gate = gate
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="adventure-call refresh", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        """End the loop and wait for the thread, so a shutdown never races a scan."""
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def _run(self) -> None:
+        warned = False
+        while not self._stop.wait(self.interval):
+            try:
+                self.gate.check()
+            except StoreError as exc:
+                if not warned:
+                    logger.warning("adventure-call: cannot refresh: %s", exc)
+                    warned = True
+            else:
+                warned = False
+
+
+def run_dev(
+    store: Store,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 0,
+    no_refresh: bool = False,
+    open_browser: bool = True,
+    verbose: bool = False,
+    root: Path | None = None,
+    start_timeout: float = DEV_START_TIMEOUT,
+    probe: Callable[..., bool] = dev_port_open,
+) -> str:
+    """Run the checkout's Vite dev server against ``store`` until interrupted (tic-ac17).
+
+    The other half of ``serve``: the store is discovered, made current and then
+    kept current the same way, the port and browser behave the same way, and the
+    child is torn down on Ctrl-C, SIGTERM and every failure path alike.  What
+    differs is who serves the page -- ``npm run dev`` in the checkout's ``web/``,
+    so HMR, React refresh and Vite's own error overlay are the ones a frontend
+    change is iterated against.  Returns the URL that was printed; raises
+    :class:`ServeError` when it cannot start.
+    """
+    web = dev_checkout(root)
+    require_node_modules(web)
+    chosen = port if port else free_port(host)
+    gate = RefreshGate(store, no_refresh=no_refresh)
+    try:
+        # The exports Vite is about to read are made current before it starts,
+        # exactly as the served path does before its first response.
+        gate.check(force=True)
+    except StoreError as exc:
+        raise ServeError(str(exc)) from exc
+    env = dev_environment(store, port=chosen, host=host)
+    _warn_beyond_loopback(host)
+    if verbose:
+        logger.info("adventure-call: %s (cwd %s)", " ".join(dev_command()), web)
+    poller = _RefreshPoller(gate)
+    process = spawn_dev_server(web, env)
+    poller.start()
+    previous = _catch_sigterm()
+    url = display_url(host, chosen)
+    try:
+        wait_for_port(dial_host(host), chosen, process=process, timeout=start_timeout, probe=probe)
+        print(f"serving {store.path} at {url} (vite dev; Ctrl-C to stop)", flush=True)
+        if open_browser:
+            open_in_browser(url)
+        # Vite exiting on its own -- a config error, a port it lost after the
+        # probe -- is a failed command, not a normal shutdown.
+        code = process.wait()
+        raise ServeError(f"the Vite dev server exited (code {code}); see its output above")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_child(process)
+        poller.stop()
+        _restore_sigterm(previous)
+    logger.info("stopped")
+    return url

@@ -14,20 +14,25 @@ import contextlib
 import http.client
 import json
 import logging
+import os
 import re
 import select
 import shutil
+import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from adventure_call import cli, serve, webassets
-from adventure_call.store import STORE_DIRNAME, Store
+from adventure_call.store import STORE_DIRNAME, Store, StoreError
 
 
 # -- fixtures --------------------------------------------------------------------
@@ -617,3 +622,308 @@ def test_shutting_the_server_down_ends_every_open_stream(store, bundle):
         lambda: not [t for t in threading.enumerate() if t.name.startswith("adventure-call events")],
         what="the event writer threads to finish",
     )
+
+
+# -- serve --dev (tic-ac17) -------------------------------------------------------
+
+
+class FakeProcess:
+    """A stand-in for the spawned dev server: a scripted ``poll``, ``wait`` and Ctrl-C.
+
+    The pid is one no process can have, so a ``_kill_group`` a test forgot to
+    replace still cannot reach a real one, and ``send_signal`` fails loudly if the
+    non-POSIX fallback is ever taken against this fake.
+    """
+
+    def __init__(
+        self,
+        *,
+        code: int | None = None,
+        wait_timeouts: int = 0,
+        interrupts: int = 0,
+        pid: int = 2**31 - 1,
+    ) -> None:
+        self.pid = pid
+        self.code = code
+        self.returncode = code
+        self.waits: list[float | None] = []
+        self._wait_timeouts = wait_timeouts
+        self._interrupts = interrupts
+
+    def poll(self) -> int | None:
+        return self.code
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waits.append(timeout)
+        if self._interrupts:
+            self._interrupts -= 1
+            raise KeyboardInterrupt
+        if self._wait_timeouts:
+            self._wait_timeouts -= 1
+            raise subprocess.TimeoutExpired("vite", timeout or 0)
+        return self.code or 0
+
+    def send_signal(self, sig: int) -> None:
+        raise AssertionError("the fake child must be signalled through its group")
+
+
+class FakeGate:
+    """The one method :class:`serve._RefreshPoller` drives; no throttle to wait on."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls = 0
+        self.error = error
+
+    def check(self, *, force: bool = False) -> None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.fixture
+def checkout(tmp_path) -> Path:
+    """A stand-in source checkout: ``web/`` with its dependencies installed."""
+    web = tmp_path / "checkout" / "web"
+    (web / "node_modules").mkdir(parents=True)
+    (web / "package.json").write_text('{"scripts": {"dev": "vite"}}', encoding="utf-8")
+    return web
+
+
+def test_the_dev_environment_hands_the_store_and_port_to_the_plugin(store, monkeypatch):
+    monkeypatch.setenv("VCALL_MARKER", "kept")
+    env = serve.dev_environment(store, port=5180)
+    assert env["VCALL_OUT_DIR"] == str(store.path)
+    assert Path(env["VCALL_OUT_DIR"]).is_absolute()  # the child's cwd is web/
+    assert env["VCALL_PORT"] == "5180"
+    assert env["VCALL_MARKER"] == "kept"  # the caller's environment is inherited
+    assert "VCALL_HOST" not in env  # Vite's own bind default stands
+    assert serve.dev_environment(store, port=1, host="0.0.0.0")["VCALL_HOST"] == "0.0.0.0"
+    assert "VCALL_OUT_DIR" not in os.environ  # nothing is exported into this process
+
+
+def test_the_dev_command_is_the_checkouts_own_script(monkeypatch):
+    monkeypatch.setattr(serve.shutil, "which", lambda name: "/opt/node/bin/npm")
+    assert serve.dev_command() == ["/opt/node/bin/npm", "run", "dev"]
+
+
+def test_dev_mode_needs_a_frontend_checkout(tmp_path):
+    with pytest.raises(serve.ServeError) as caught:
+        serve.dev_checkout(tmp_path)
+    message = str(caught.value)
+    assert "source checkout" in message and "web" in message
+
+
+def test_dev_mode_needs_npm_on_path(monkeypatch):
+    monkeypatch.setattr(serve.shutil, "which", lambda name: None)
+    with pytest.raises(serve.ServeError) as caught:
+        serve.npm_executable()
+    assert "npm ci" in str(caught.value)  # the actionable half of the message
+
+
+def test_dev_mode_needs_the_checkouts_installed_dependencies(checkout):
+    assert serve.dev_checkout(checkout.parent) == checkout
+    shutil.rmtree(checkout / "node_modules")
+    with pytest.raises(serve.ServeError) as caught:
+        serve.require_node_modules(checkout)
+    assert "npm ci" in str(caught.value)
+    (checkout / "node_modules").mkdir()
+    serve.require_node_modules(checkout)  # installed: nothing raised
+
+
+def test_the_child_is_spawned_in_its_own_group_with_the_environment(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(serve.shutil, "which", lambda name: "/opt/node/bin/npm")
+    seen: dict[str, Any] = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = argv
+        seen.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(serve, "_popen", fake_popen)
+    web = tmp_path / "web"
+    web.mkdir()
+    env = serve.dev_environment(store, port=5180, host="127.0.0.1")
+    process = serve.spawn_dev_server(web, env)
+    assert isinstance(process, FakeProcess)
+    assert seen["argv"] == ["/opt/node/bin/npm", "run", "dev"]
+    assert seen["cwd"] == str(web)
+    assert seen["env"] == env and seen["env"] is not env  # copied, never shared
+    assert seen["start_new_session"] is True  # teardown signals the whole tree
+    assert seen["stdin"] is subprocess.DEVNULL
+
+
+def test_a_stopping_child_is_signalled_once_and_waited_for():
+    process = FakeProcess()
+    signals: list[int] = []
+    serve.stop_child(process, grace=1.0, kill=lambda p, sig: signals.append(sig))
+    assert signals == [signal.SIGTERM]
+    assert process.waits == [1.0]
+
+
+def test_a_child_that_ignores_sigterm_is_killed():
+    process = FakeProcess(wait_timeouts=1)
+    signals: list[int] = []
+    serve.stop_child(process, grace=0.1, kill=lambda p, sig: signals.append(sig))
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert process.waits == [0.1, 0.1]
+
+
+def test_a_child_that_already_exited_is_left_alone():
+    signals: list[int] = []
+    serve.stop_child(None, kill=lambda p, sig: signals.append(sig))
+    serve.stop_child(FakeProcess(code=0), kill=lambda p, sig: signals.append(sig))
+    assert signals == []
+
+
+def test_the_kill_seam_reaches_a_real_process_group():
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
+    try:
+        serve._kill_group(child, signal.SIGTERM)
+        assert child.wait(timeout=5) == -signal.SIGTERM  # the group took the signal
+    finally:
+        if child.poll() is None:  # pragma: no cover - the assertion above failed
+            serve._kill_group(child, signal.SIGKILL)
+            child.wait(timeout=5)
+
+
+def test_the_wait_ends_when_the_port_answers():
+    probes: list[tuple[str, int]] = []
+
+    def probe(host: str, port: int) -> bool:
+        probes.append((host, port))
+        return len(probes) == 3  # a cold Vite: two refusals, then a listener
+
+    serve.wait_for_port(
+        "127.0.0.1", 5199, process=FakeProcess(), timeout=1.0, interval=0.001, probe=probe
+    )
+    assert probes == [("127.0.0.1", 5199)] * 3
+
+
+def test_a_child_that_died_before_the_port_opened_is_reported_with_its_code():
+    with pytest.raises(serve.ServeError) as caught:
+        serve.wait_for_port(
+            "127.0.0.1",
+            5199,
+            process=FakeProcess(code=3),
+            timeout=1.0,
+            interval=0.001,
+            probe=lambda host, port: False,
+        )
+    assert "code 3" in str(caught.value)
+
+
+def test_a_port_that_never_opens_times_out():
+    started = time.monotonic()
+    with pytest.raises(serve.ServeError) as caught:
+        serve.wait_for_port(
+            "127.0.0.1",
+            5199,
+            process=FakeProcess(),
+            timeout=0.05,
+            interval=0.005,
+            probe=lambda host, port: False,
+        )
+    assert "did not start listening" in str(caught.value)
+    assert time.monotonic() - started < 5  # it gave up, it did not hang
+
+
+def test_dev_mode_tears_the_child_down_when_the_start_fails(store, checkout, monkeypatch):
+    process = FakeProcess()  # alive, but its port never opens
+    monkeypatch.setattr(serve, "_popen", lambda argv, **kwargs: process)
+    signals: list[int] = []
+    monkeypatch.setattr(serve, "_kill_group", lambda p, sig: signals.append(sig))
+    with pytest.raises(serve.ServeError) as caught:
+        serve.run_dev(
+            store,
+            root=checkout.parent,
+            port=5199,
+            open_browser=False,
+            start_timeout=0.05,
+            probe=lambda host, port: False,
+        )
+    assert "did not start listening" in str(caught.value)
+    assert signals == [signal.SIGTERM]  # the child did not outlive the failure
+    assert process.waits == [serve.DEV_STOP_GRACE]
+
+
+def test_dev_mode_returns_the_url_and_stops_the_child_on_interrupt(
+    store, checkout, monkeypatch, capsys
+):
+    process = FakeProcess(interrupts=1)  # Ctrl-C while the child is awaited
+    monkeypatch.setattr(serve, "_popen", lambda argv, **kwargs: process)
+    signals: list[int] = []
+    monkeypatch.setattr(serve, "_kill_group", lambda p, sig: signals.append(sig))
+    opened: list[str] = []
+    monkeypatch.setattr(serve, "open_in_browser", opened.append)
+    url = serve.run_dev(
+        store, root=checkout.parent, port=5199, start_timeout=1.0, probe=lambda host, port: True
+    )
+    assert url == "http://127.0.0.1:5199"
+    assert opened == [url]
+    assert signals == [signal.SIGTERM]
+    assert "serving" in capsys.readouterr().out
+    assert not [t for t in threading.enumerate() if t.name == "adventure-call refresh"]
+
+
+def test_the_dev_poller_keeps_the_store_current_until_it_is_stopped():
+    gate = FakeGate()
+    poller = serve._RefreshPoller(gate, interval=0.01)
+    poller.start()
+    try:
+        wait_until(lambda: gate.calls >= 2, what="the store to be re-checked")
+    finally:
+        poller.stop()
+    assert not poller.running()
+
+
+def test_the_dev_poller_warns_once_about_a_store_it_cannot_refresh():
+    gate = FakeGate(StoreError("no parseable source files"))
+    with log_lines(logging.WARNING) as lines:
+        poller = serve._RefreshPoller(gate, interval=0.01)
+        poller.start()
+        try:
+            wait_until(lambda: gate.calls >= 3, what="three ticks to pass")
+        finally:
+            poller.stop()
+    assert sum(1 for line in lines if "cannot refresh" in line) == 1  # warned, kept going
+
+
+def test_the_address_helpers_make_a_dialable_url():
+    assert serve.dial_host("0.0.0.0") == "127.0.0.1"
+    assert serve.dial_host("127.0.0.1") == "127.0.0.1"
+    assert serve.display_url("127.0.0.1", 5180) == "http://127.0.0.1:5180"
+    assert serve.display_url("::1", 5180) == "http://[::1]:5180"
+    port = serve.free_port()  # the OS hands one out, and it is bindable straight away
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+def test_the_cli_maps_dev_onto_the_dev_server(store, monkeypatch):
+    calls: list[tuple[Store, dict[str, Any]]] = []
+
+    def fake_run_dev(target, **options):
+        calls.append((target, options))
+        return "http://127.0.0.1:5199"
+
+    monkeypatch.setattr(serve, "run_dev", fake_run_dev)
+    assert cli.main(["serve", "--dev", "--no-open", "--port", "5199", "--no-refresh"]) == 0
+    assert len(calls) == 1
+    target, options = calls[0]
+    assert target.path == store.path  # the store discovery is the served path's
+    assert options == {
+        "host": "127.0.0.1",
+        "port": 5199,
+        "no_refresh": True,
+        "open_browser": False,
+        "verbose": False,
+    }
+
+
+def test_a_dev_mode_failure_is_a_message_and_a_non_zero_exit(store, monkeypatch):
+    def fail(target, **options):
+        raise serve.ServeError("npm was not found on PATH: run 'npm ci' in the web/ checkout")
+
+    monkeypatch.setattr(serve, "run_dev", fail)
+    assert cli.main(["serve", "--dev", "--no-open"]) == 1

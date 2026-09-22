@@ -80,6 +80,7 @@ cd /path/to/project
 vcall serve                     # opens http://127.0.0.1:<port> in a browser
 vcall serve --no-open           # ...without opening one (headless, CI)
 vcall serve --port 5173         # pin the port instead of taking a free one
+vcall serve --dev               # the checkout's Vite dev server (frontend work)
 ```
 
 `serve` runs the same workspace the Vite dev server shows, straight from the `.adventure-call/`
@@ -94,6 +95,12 @@ An open tab refreshes itself too: `/data/events` is a Server-Sent Events stream 
 pushes the same `adventure-call:data-changed` notification the Vite dev server sends over HMR, so
 a re-analysis reaches the page without a manual reload. A deployment that cannot reach that
 endpoint -- a static file server -- still works, it just needs F5.
+
+`--dev` is the other mode, for working on the frontend itself: the same store, port options and
+teardown, but the page is served by `npm run dev` in this checkout's `web/`, with the store handed
+to its `/data` plugin, so HMR, React refresh and Vite's own error overlay are the ones in play.
+It needs Node, npm and `npm ci` in `web/`, and only works from a source checkout; Vite's output is
+forwarded, and `Ctrl-C` stops Vite with it.
 
 Limits: one store per run, and only a change the server noticed is announced. The payload is your
 source code -- the registry embeds full function bodies -- so the bind address is loopback unless
