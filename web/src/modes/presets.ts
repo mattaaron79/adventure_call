@@ -11,7 +11,10 @@
  * across versions of the app, so a stale or hand-mangled entry degrades to
  * "no presets" rather than taking the picker down with it.
  */
+import { scopedKey } from '../state/persist'
 
+/** The unsuffixed key; the project namespace is applied by [`scopedKey()`]
+ *  (tic-168b), so a preset saved for one project never arrives in another. */
 export const PRESETS_STORAGE_KEY = 'adventure-call:presets'
 
 export interface Preset {
@@ -58,7 +61,7 @@ function isPreset(value: unknown): value is Preset {
 export function readPresets(): Preset[] {
   let raw: string | null | undefined
   try {
-    raw = storage()?.getItem(PRESETS_STORAGE_KEY)
+    raw = storage()?.getItem(scopedKey(PRESETS_STORAGE_KEY))
   } catch {
     return []
   }
@@ -81,7 +84,7 @@ export function readPresets(): Preset[] {
 
 export function writePresets(presets: readonly Preset[]): void {
   try {
-    storage()?.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets))
+    storage()?.setItem(scopedKey(PRESETS_STORAGE_KEY), JSON.stringify(presets))
   } catch {
     // Persistence is a convenience; the in-memory list still applies.
   }

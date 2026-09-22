@@ -8,6 +8,7 @@
  * relative to the graph root) and are applied before any derivation runs, so
  * an excluded file never reaches the tree, the symbol index or the edges.
  */
+import { scopedKey } from '../state/persist'
 
 export const DEFAULT_EXCLUDES: readonly string[] = [
   '.pytest_tmp/**',
@@ -15,6 +16,8 @@ export const DEFAULT_EXCLUDES: readonly string[] = [
   '**/__pycache__/**',
 ]
 
+/** The unsuffixed key; the project namespace is applied by [`scopedKey()`]
+ *  (tic-168b), so one project's excludes cannot hide another project's files. */
 export const EXCLUDES_STORAGE_KEY = 'adventure-call:excludes'
 
 const SPECIAL = /[.+^${}()|[\]\\]/g
@@ -98,7 +101,7 @@ function storage(): Storage | null {
 /** The persisted list, or {@link DEFAULT_EXCLUDES} when nothing is stored. */
 export function readExcludes(): string[] {
   try {
-    const raw = storage()?.getItem(EXCLUDES_STORAGE_KEY)
+    const raw = storage()?.getItem(scopedKey(EXCLUDES_STORAGE_KEY))
     if (!raw) return [...DEFAULT_EXCLUDES]
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed) || !parsed.every((p) => typeof p === 'string')) {
@@ -112,7 +115,7 @@ export function readExcludes(): string[] {
 
 export function writeExcludes(patterns: readonly string[]): void {
   try {
-    storage()?.setItem(EXCLUDES_STORAGE_KEY, JSON.stringify(patterns))
+    storage()?.setItem(scopedKey(EXCLUDES_STORAGE_KEY), JSON.stringify(patterns))
   } catch {
     // Persistence is a convenience; the in-memory list still applies.
   }
@@ -121,7 +124,7 @@ export function writeExcludes(patterns: readonly string[]): void {
 /** Forget the override so {@link readExcludes} falls back to the defaults. */
 export function clearExcludes(): void {
   try {
-    storage()?.removeItem(EXCLUDES_STORAGE_KEY)
+    storage()?.removeItem(scopedKey(EXCLUDES_STORAGE_KEY))
   } catch {
     // as above
   }

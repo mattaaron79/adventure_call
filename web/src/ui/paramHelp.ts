@@ -10,8 +10,11 @@
  * store, a key some other tool wrote a number into -- because the failure of
  * a reading preference must be "the help is closed", never a broken sidebar.
  */
+import { scopedKey } from '../state/persist'
 
-/** The localStorage key.  Shares the app's prefix, outside the per-mode space. */
+/** The localStorage key.  Shares the app's prefix, outside the per-mode space.
+ *  The unsuffixed name is what a build with no project uses; with one, the reads
+ *  and writes below go through [`scopedKey()`] (tic-168b). */
 export const HELP_PINNED_KEY = 'adventure-call:ui:help-pinned'
 
 function storage(): Storage | null {
@@ -26,7 +29,7 @@ function storage(): Storage | null {
  *  is stored. */
 export function readHelpPinned(): boolean {
   try {
-    return storage()?.getItem(HELP_PINNED_KEY) === 'true'
+    return storage()?.getItem(scopedKey(HELP_PINNED_KEY)) === 'true'
   } catch {
     return false
   }
@@ -36,7 +39,7 @@ export function readHelpPinned(): boolean {
  *  the session still works, it just forgets. */
 export function writeHelpPinned(pinned: boolean): void {
   try {
-    storage()?.setItem(HELP_PINNED_KEY, pinned ? 'true' : 'false')
+    storage()?.setItem(scopedKey(HELP_PINNED_KEY), pinned ? 'true' : 'false')
   } catch {
     /* quota, or a store that refuses writes */
   }

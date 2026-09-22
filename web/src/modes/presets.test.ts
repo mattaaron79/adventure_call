@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setProjectKey } from '../state/persist'
 import { memoryStorage } from '../testing/memoryStorage'
 import {
   PRESETS_STORAGE_KEY,
@@ -15,6 +16,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // The project key is module state; do not leave the next suite namespaced.
+  setProjectKey(null)
   vi.unstubAllGlobals()
 })
 
@@ -104,5 +107,27 @@ describe('presets', () => {
     vi.stubGlobal('localStorage', undefined)
     expect(() => writePresets([preset('a')])).not.toThrow()
     expect(readPresets()).toEqual([])
+  })
+})
+
+describe('presets are namespaced by project (tic-168b)', () => {
+  it('does not offer one project the presets saved for another', () => {
+    writePresets([preset('unnamespaced view')])
+
+    setProjectKey('carnot-70249695')
+    // Nothing stored for this project: the unnamespaced list is invisible, and
+    // the first save lands under this project's key.
+    expect(readPresets()).toEqual([])
+    writePresets([preset('carnot view', { filters: ['only/mine/**'] })])
+    expect(readPresets().map((p) => p.name)).toEqual(['carnot view'])
+    expect(JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY)!)).toEqual([
+      preset('unnamespaced view'),
+    ])
+
+    setProjectKey('other-1234abcd')
+    expect(readPresets()).toEqual([])
+
+    setProjectKey('carnot-70249695')
+    expect(readPresets()).toEqual([preset('carnot view', { filters: ['only/mine/**'] })])
   })
 })

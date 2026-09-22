@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { scopedKey, setProjectKey } from '../state/persist'
 import { HELP_PINNED_KEY, readHelpPinned, writeHelpPinned } from './paramHelp'
 
 /** A localStorage stand-in; the node test environment has none. */
@@ -22,6 +23,8 @@ function install(storage: unknown) {
 }
 
 afterEach(() => {
+  // The project key is module state; do not leave the next suite namespaced.
+  setProjectKey(null)
   vi.unstubAllGlobals()
 })
 
@@ -71,5 +74,29 @@ describe('help-pinned preference (tic-ec97)', () => {
     vi.stubGlobal('localStorage', undefined)
     expect(readHelpPinned()).toBe(false)
     expect(() => writeHelpPinned(true)).not.toThrow()
+  })
+})
+
+describe('help pin is namespaced by project (tic-168b)', () => {
+  it('does not carry one project reading preference into another', () => {
+    const store = fakeStorage()
+    install(store)
+    writeHelpPinned(true)
+    expect(store.map.get(HELP_PINNED_KEY)).toBe('true')
+
+    setProjectKey('carnot-70249695')
+    // The unnamespaced pin is not read, and this project's own choice lands
+    // under its own key without disturbing the entry above.
+    expect(readHelpPinned()).toBe(false)
+    expect(store.map.get(scopedKey(HELP_PINNED_KEY))).toBeUndefined()
+    writeHelpPinned(true)
+    expect(store.map.get(scopedKey(HELP_PINNED_KEY))).toBe('true')
+    expect(store.map.get(HELP_PINNED_KEY)).toBe('true')
+
+    setProjectKey('other-1234abcd')
+    expect(readHelpPinned()).toBe(false)
+
+    setProjectKey('carnot-70249695')
+    expect(readHelpPinned()).toBe(true)
   })
 })

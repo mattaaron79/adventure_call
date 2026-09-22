@@ -3,13 +3,17 @@ import { MIN_SCALE } from '../canvas/viewport'
 import { memoryStorage } from '../testing/memoryStorage'
 import {
   EXCURSION_STORAGE_KEY,
+  STORAGE_PREFIX,
   UI_STORAGE_KEY,
   createDebouncedWriter,
   clearModeState,
   emptyModeState,
+  getProjectKey,
   readExcursion,
   readModeState,
   readUiPrefs,
+  scopedKey,
+  setProjectKey,
   storageKey,
   writeExcursion,
   writeModeState,
@@ -21,6 +25,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // The project key is module state: a suite that names a project must not
+  // leave the next one namespaced.
+  setProjectKey(null)
   vi.unstubAllGlobals()
 })
 
@@ -258,5 +265,107 @@ describe('excursion provenance (tic-53f7)', () => {
     writeExcursion({ modeId: 'fs-tree', focusPath: 'src' })
     expect(localStorage.getItem(UI_STORAGE_KEY)).toBeNull()
     expect(localStorage.getItem(storageKey('fs-tree'))).toBeNull()
+  })
+})
+
+describe('project namespace (tic-168b)', () => {
+  const CARNOT = 'carnot-70249695'
+  const OTHER = 'other-1234abcd'
+
+  it('namespaces mode state, so one project cannot read another camera', () => {
+    setProjectKey(CARNOT)
+    writeModeState('fs-tree', STATE)
+    expect(storageKey('fs-tree')).toBe(`adventure-call:${CARNOT}:workspace:fs-tree`)
+    expect(readModeState('fs-tree')).toEqual(STATE)
+
+    setProjectKey(OTHER)
+    expect(readModeState('fs-tree')).toBeNull()
+    writeModeState('fs-tree', { ...STATE, focusPath: 'src/other' })
+    expect(readModeState('fs-tree')?.focusPath).toBe('src/other')
+
+    // Both entries sit side by side, and each project reads its own back.
+    setProjectKey(CARNOT)
+    expect(readModeState('fs-tree')).toEqual(STATE)
+    expect(readModeState('fs-tree')?.focusPath).toBe('src/app')
+  })
+
+  it('namespaces the ui preferences and the excursion record', () => {
+    writeUiPrefs({ inspectorCollapsed: true, animateAllEdges: false })
+    writeExcursion({ modeId: 'fs-tree', focusPath: 'src' })
+
+    setProjectKey(CARNOT)
+    // Nothing stored for this project yet: the unnamespaced entries are not read.
+    expect(readUiPrefs()).toEqual({ inspectorCollapsed: false, animateAllEdges: false })
+    expect(readExcursion()).toBeNull()
+    expect(localStorage.getItem(scopedKey(UI_STORAGE_KEY))).toBeNull()
+
+    writeUiPrefs({ inspectorCollapsed: false, animateAllEdges: true })
+    expect(localStorage.getItem(scopedKey(UI_STORAGE_KEY))).toBe(
+      JSON.stringify({ inspectorCollapsed: false, animateAllEdges: true }),
+    )
+    writeExcursion({ modeId: 'call-flow', focusPath: '' })
+    expect(readExcursion()).toEqual({ modeId: 'call-flow', focusPath: '' })
+    // The unnamespaced entries were neither rewritten nor deleted.
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({
+      inspectorCollapsed: true,
+      animateAllEdges: false,
+    })
+    expect(JSON.parse(localStorage.getItem(EXCURSION_STORAGE_KEY)!)).toEqual({
+      modeId: 'fs-tree',
+      focusPath: 'src',
+    })
+
+    setProjectKey(null)
+    expect(readUiPrefs().inspectorCollapsed).toBe(true)
+    expect(readExcursion()).toEqual({ modeId: 'fs-tree', focusPath: 'src' })
+  })
+
+  it('falls back to the unnamespaced keys when there is no project', () => {
+    expect(getProjectKey()).toBeNull()
+    expect(scopedKey('adventure-call:ui')).toBe('adventure-call:ui')
+    expect(storageKey('fs-tree')).toBe(`${STORAGE_PREFIX}fs-tree`)
+    writeModeState('fs-tree', STATE)
+    expect(localStorage.getItem(`${STORAGE_PREFIX}fs-tree`)).not.toBeNull()
+    expect(readModeState('fs-tree')).toEqual(STATE)
+  })
+
+  it('treats a blank key as no project at all', () => {
+    setProjectKey(CARNOT)
+    setProjectKey('')
+    expect(getProjectKey()).toBeNull()
+    expect(storageKey('fs-tree')).toBe(`${STORAGE_PREFIX}fs-tree`)
+  })
+
+  it('leaves an entry written before the key arrived untouched, rather than migrating it', () => {
+    // A static build writes the unnamespaced keys; when a project later turns up
+    // (a reload against a server) that data is neither moved nor corrupted -- it
+    // simply stops being read, which is the intended cleanup.
+    writeModeState('fs-tree', STATE)
+    setProjectKey(CARNOT)
+    expect(readModeState('fs-tree')).toBeNull()
+    expect(JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}fs-tree`)!)).toEqual(STATE)
+
+    setProjectKey(null)
+    expect(readModeState('fs-tree')).toEqual(STATE)
+  })
+
+  it('degrades junk under a namespaced key exactly as it does under the legacy one', () => {
+    setProjectKey(CARNOT)
+    localStorage.setItem(storageKey('fs-tree'), 'not json')
+    expect(readModeState('fs-tree')).toBeNull()
+
+    localStorage.setItem(storageKey('fs-tree'), JSON.stringify({ focusPath: 7 }))
+    expect(readModeState('fs-tree')).toEqual(emptyModeState())
+
+    // Junk at the unnamespaced key is not read once a project is known.
+    localStorage.setItem(`${STORAGE_PREFIX}fs-tree`, 'not json')
+    expect(readModeState('fs-tree')).toEqual(emptyModeState())
+  })
+
+  it('is a no-op when storage is unavailable, project or not', () => {
+    setProjectKey(CARNOT)
+    vi.stubGlobal('localStorage', undefined)
+    expect(() => writeModeState('fs-tree', STATE)).not.toThrow()
+    expect(readModeState('fs-tree')).toBeNull()
   })
 })

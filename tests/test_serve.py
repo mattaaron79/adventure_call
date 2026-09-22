@@ -174,23 +174,67 @@ def test_meta_reports_the_absolute_analysed_root(live):
     status, headers, body = fetch(live, "/data/meta.json")
     assert status == 200
     assert headers["cache-control"] == "no-store"
-    assert json.loads(body) == {"root": live.store.root.resolve().as_posix()}
+    root = live.store.root.resolve().as_posix()
+    assert json.loads(body) == {"root": root, "project": serve.project_id(root)}
+
+
+def test_meta_names_the_project_of_the_store_it_serves(live):
+    """The project the page namespaces its saved state by (tic-168b)."""
+    _, _, body = fetch(live, "/data/meta.json")
+    payload = json.loads(body)
+    assert payload["project"]  # non-empty: a served store always names one
+    assert payload["project"] == serve.project_id(payload["root"])
+
+    # Stable across requests, because the browser keys localStorage by it and a
+    # moving id would strand everything a session had saved.
+    _, _, again = fetch(live, "/data/meta.json")
+    assert json.loads(again)["project"] == payload["project"]
+
+
+def test_two_stores_over_two_roots_answer_two_projects(bundle, tmp_path, sample_root):
+    """Two served stores must not share one browser's saved state."""
+    projects = {}
+    for name in ("one", "two"):
+        root = tmp_path / name
+        shutil.copytree(sample_root, root)
+        assert cli.main(["init", str(root), "-q"]) == 0
+        with running(Store(root / STORE_DIRNAME), bundle) as server:
+            _, _, body = fetch(server, "/data/meta.json")
+        payload = json.loads(body)
+        assert payload["root"] == root.resolve().as_posix()
+        projects[name] = payload["project"]
+
+    assert None not in projects.values()
+    assert projects["one"] != projects["two"]
+
+
+def test_project_id_is_derived_from_the_analysed_path():
+    assert serve.project_id("/repo/projects/carnot") == "carnot-70249695"
+    # Two same-named projects are still two projects: the whole path is hashed.
+    assert serve.project_id("/repo/projects/deploy") != serve.project_id("/repo/other/deploy")
+    # Nothing to hash -- an unreadable graph, an empty root -- names no project,
+    # which leaves the client on its unnamespaced keys.
+    assert serve.project_id(None) is None
+    assert serve.project_id("") is None
+    # A root with no directory name to slug still gets a stable id.
+    assert serve.project_id("/") == "8a5edab2"
 
 
 def test_meta_falls_back_to_the_store_root_and_never_raises(live):
     graph = live.store.path / "codebase_graph.json"
+    root = live.store.root.resolve().as_posix()
 
     graph.write_text(json.dumps({"graph": {"root": "."}}), encoding="utf-8")
     _, _, body = fetch(live, "/data/meta.json")
-    assert json.loads(body) == {"root": live.store.root.resolve().as_posix()}
+    assert json.loads(body) == {"root": root, "project": serve.project_id(root)}
 
     graph.write_text("{not json", encoding="utf-8")
     _, _, body = fetch(live, "/data/meta.json")
-    assert json.loads(body) == {"root": None}
+    assert json.loads(body) == {"root": None, "project": None}
 
     graph.unlink()
     _, _, body = fetch(live, "/data/meta.json")
-    assert json.loads(body) == {"root": None}
+    assert json.loads(body) == {"root": None, "project": None}
 
 
 # -- the bundle ------------------------------------------------------------------

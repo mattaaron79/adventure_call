@@ -88,7 +88,12 @@ store in the current directory or above it: the built frontend ships inside the 
 Node, npm or second terminal is needed. It binds loopback on an ephemeral port, streams
 `codebase_graph.json` and `symbol_registry.json` out of the store, and answers `/data/meta.json`
 with the absolute analysed root, which is what lets the inspector's `vscode://` icons open the
-real files. Edit a source file and reload the page: the store is re-analysed first
+real files, plus a `project` id derived from that root. The page namespaces everything it saves
+in the browser -- camera, dragged nodes, focus, file excludes, presets, help pin -- by that id
+(tic-168b), so two stores opened in one browser (two ports, or one Vite dev server pointed at
+another store) keep their own views instead of dragging one project's filter into the other.
+Without a meta document the old unnamespaced keys are used, exactly as before. Edit a source
+file and reload the page: the store is re-analysed first
 (`--no-refresh` warns instead of analysing). `Ctrl-C` stops it, and `-v` adds an access log.
 
 An open tab refreshes itself too: `/data/events` is a Server-Sent Events stream (tic-70f3) that

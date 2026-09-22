@@ -55,18 +55,46 @@ export function registryRequested(): boolean {
   return registryPromise !== null
 }
 
-/** The dev-server meta document (tic-4b0a): the absolute analysed root, so the
- *  inspector can build `vscode://file/...` links the browser could not resolve
- *  on its own.  Null when unavailable -- a static build without the `outData`
- *  middleware, or an export that never wrote a root -- and the caller then
- *  degrades to plain text. */
-export async function loadAbsoluteRoot(): Promise<string | null> {
+/** The bootstrap document both servers answer, as the client reads it
+ *  (tic-4b0a, tic-168b). */
+export interface MetaDocument {
+  /** The absolute analysed root, for the inspector's `vscode://` links. */
+  root: string | null
+  /**
+   * The project the persisted state belongs to (tic-168b), or null when the
+   * server named none -- a static build, or an export predating the field --
+   * in which case the storage layer keeps its unnamespaced keys.
+   */
+  project: string | null
+}
+
+/** What an unreadable meta document means: no root, no project. */
+const NO_META: MetaDocument = { root: null, project: null }
+
+/**
+ * `/data/meta.json`, served by the dev server's plugin and by `vcall serve`.
+ *
+ * Never rejects: a static deployment without either server 404s, and both callers
+ * -- the `vscode://` links and the bootstrap that names the project -- have a
+ * sane answer for "the server told us nothing".
+ */
+export async function loadMeta(): Promise<MetaDocument> {
   try {
-    const meta = await getJSON<{ root: string | null }>(META_URL)
-    return meta.root || null
+    const meta = await getJSON<{ root?: unknown; project?: unknown }>(META_URL)
+    return {
+      root: typeof meta.root === 'string' && meta.root ? meta.root : null,
+      project: typeof meta.project === 'string' && meta.project ? meta.project : null,
+    }
   } catch {
-    return null
+    return NO_META
   }
+}
+
+/** The absolute analysed root alone (tic-4b0a), so the inspector can build
+ *  `vscode://file/...` links the browser could not resolve on its own.  Null when
+ *  unavailable, and the caller then degrades to plain text. */
+export async function loadAbsoluteRoot(): Promise<string | null> {
+  return (await loadMeta()).root
 }
 
 /** The slice of `EventSource` the fallback uses, so a test can stand in for it:

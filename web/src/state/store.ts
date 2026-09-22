@@ -171,6 +171,14 @@ function enterFocus(mode: ModeState, path: string): ModeState | null {
   return { ...mode, focusPath: path, overrides: {}, expanded }
 }
 
+/**
+ * Hydrated at module evaluation, on purpose, which is why the project key must
+ * already be known when this module is first imported (the bootstrap in
+ * src/main.tsx sets it, tic-168b).  Every `readModeState`/`readUiPrefs`/
+ * `readExcursion` below runs exactly once, so a key that arrived later would need
+ * every consumer of a persisted key to re-read -- the reason the key is set before
+ * the import instead.
+ */
 export const useWorkspace = create<WorkspaceState>((set, get) => {
   const initial = readModeState(DEFAULT_MODE_ID)
 

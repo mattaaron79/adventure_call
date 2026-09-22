@@ -13,7 +13,8 @@ which is the only other server for this app:
   ever names a path of its own -- with ``Content-Length`` and
   ``Cache-Control: no-store``, because ``update()`` rewrites them wholesale;
 * ``GET /data/meta.json`` is synthetic: the absolute analysed root, which is what
-  makes the inspector's ``vscode://`` links work (tic-4b0a);
+  makes the inspector's ``vscode://`` links work (tic-4b0a), plus the project id
+  the page namespaces its persisted workspace state with (tic-168b);
 * ``GET /data/events`` is a Server-Sent Events stream (tic-70f3): it pushes the
   same ``adventure-call:data-changed`` event the Vite plugin pushes over HMR, so a
   tab that is already open refetches after a re-analysis instead of keeping stale
@@ -39,11 +40,13 @@ through ``store.update()``.
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
 import logging
 import os
 import posixpath
+import re
 import shutil
 import signal
 import socket
@@ -121,12 +124,33 @@ class ServeError(Exception):
 
 
 def meta_payload(store: Store) -> dict[str, Any]:
-    """The ``/data/meta.json`` document, as the client's ``loadAbsoluteRoot`` reads it.
+    """The ``/data/meta.json`` document, as the client's ``loadMeta`` reads it.
 
-    Its own function on purpose: a later ticket adds a ``project`` field to this
-    same document (tic-168b) without going near the request handler.
+    ``root`` is the absolute analysed root the inspector's ``vscode://`` links are
+    built from (tic-4b0a).  ``project`` (tic-168b) is the id the page namespaces
+    every persisted preference by, so two stores served from one origin -- two
+    ``vcall serve`` runs on two ports -- cannot read each other's camera, dragged
+    positions, excludes or presets.
     """
-    return {"root": analysed_root(store)}
+    root = analysed_root(store)
+    return {"root": root, "project": project_id(root)}
+
+
+def project_id(root: str | None) -> str | None:
+    """A stable, short id for an analysed root, or ``None`` when there is none.
+
+    Derived from the path so one project always hashes to the same id and two
+    projects never do: the directory name slugged for a human reading devtools,
+    plus the first 8 hex of the path's SHA-256.  ``web/plugins/outData.ts`` derives
+    it the same way for the Vite dev server, so a project reached both ways keeps
+    one set of saved state.  ``None`` -- no root to hash -- leaves the client on its
+    unnamespaced keys, which is exactly the pre-tic-168b behaviour.
+    """
+    if not root:
+        return None
+    digest = hashlib.sha256(root.encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^a-z0-9]+", "-", posixpath.basename(root.rstrip("/")).lower()).strip("-")[:32]
+    return f"{slug}-{digest}" if slug else digest
 
 
 def analysed_root(store: Store) -> str | None:

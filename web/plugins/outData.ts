@@ -8,6 +8,7 @@
  * we send a custom HMR message and the client refetches in place.  No second
  * server, no polling, no extra dependency.
  */
+import { createHash } from 'node:crypto'
 import { createReadStream, readFileSync, statSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
@@ -17,7 +18,8 @@ import { DATA_CHANGED_EVENT } from '../src/data/events'
 const SERVED = ['codebase_graph.json', 'symbol_registry.json'] as const
 
 /** Synthetic endpoint: exposes the absolute analysed root for `vscode://` links
- *  (tic-4b0a).  Not a file on disk, so it is handled explicitly below. */
+ *  (tic-4b0a) and the project id the page namespaces its saved state with
+ *  (tic-168b).  Not a file on disk, so it is handled explicitly below. */
 const META_NAME = 'meta.json'
 
 /**
@@ -37,6 +39,33 @@ export function resolveAbsoluteRoot(
   if (rootAbs !== '') return rootAbs.replace(/\\/g, '/')
   const root = typeof graph?.root === 'string' ? graph.root : ''
   return root === '' ? null : resolve(dir, root)
+}
+
+/**
+ * The project namespace for the meta document (tic-168b).
+ *
+ * `vcall serve` derives the same id from the same root in Python
+ * (`serve.project_id`), so a project reached through this dev server and through
+ * a served bundle keeps one set of saved state: the directory name slugged for a
+ * human reading devtools, plus the first 8 hex of the path's SHA-256.  A null or
+ * empty root has no project to name, which leaves the client on its unnamespaced
+ * keys.  Exported for tests.
+ */
+export function projectIdFromRoot(root: string | null): string | null {
+  if (root === null || root === '') return null
+  const digest = createHash('sha256').update(root, 'utf8').digest('hex').slice(0, 8)
+  const name = root.replace(/\/+$/, '').split('/').pop() ?? ''
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+  return slug === '' ? digest : `${slug}-${digest}`
+}
+
+/** The `/data/meta.json` body: the analysed root, and the project it names. */
+export function metaDocument(root: string | null): { root: string | null; project: string | null } {
+  return { root, project: projectIdFromRoot(root) }
 }
 
 export interface OutDataOptions {
@@ -107,7 +136,7 @@ export function outData({ outDir = '../out' }: OutDataOptions = {}): Plugin {
         if (name === META_NAME) {
           res.setHeader('Content-Type', 'application/json; charset=utf-8')
           res.setHeader('Cache-Control', 'no-store')
-          res.end(JSON.stringify({ root: absoluteRoot() }))
+          res.end(JSON.stringify(metaDocument(absoluteRoot())))
           return
         }
         if (!(SERVED as readonly string[]).includes(name)) return next()

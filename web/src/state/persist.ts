@@ -36,9 +36,59 @@ export interface ModeState {
   focusPath: string
 }
 
+/** The prefix every persisted key shares; the project namespace slots in after it. */
+const APP_PREFIX = 'adventure-call:'
+
+/**
+ * The project this browser's saved state belongs to (tic-168b), or null.
+ *
+ * One origin can host several projects -- two `vcall serve` runs on two ports, or
+ * one Vite dev server pointed at another store -- and a camera, a focus path or a
+ * dragged position only means anything for the project whose scene produced it.
+ * An exclude list is worse than meaningless in the wrong project: it hides files.
+ * So every key below is namespaced by the id `/data/meta.json` reports for the
+ * analysed root, which the app sets during bootstrap (src/main.tsx) -- before the
+ * store hydrates at import time, so the first read is already scoped.
+ *
+ * Null -- a static build with no meta document, or one that failed to load --
+ * keeps the unnamespaced keys of tic-168b's predecessors, so those deployments
+ * behave exactly as they did before.
+ */
+let projectKey: string | null = null
+
+/** Name the project the saved state belongs to; null or '' forgets it again. */
+export function setProjectKey(key: string | null | undefined): void {
+  projectKey = key ? key : null
+}
+
+/** The current project namespace, or null when there is none. */
+export function getProjectKey(): string | null {
+  return projectKey
+}
+
+/**
+ * `legacyKey` namespaced by the current project, or unchanged without one.
+ *
+ * The namespace goes straight after the app prefix, so a mode slice reads
+ * `adventure-call:<project>:workspace:<modeId>` and the chrome keys become
+ * `adventure-call:<project>:ui` and friends.
+ *
+ * The keys written before tic-168b -- `adventure-call:workspace:<modeId>` and the
+ * rest of the unsuffixed set -- are deliberately neither migrated nor deleted:
+ * with a project known they stop being read, which is the intended cleanup, and
+ * the app never deletes user data it does not understand.  Without a project they
+ * are still the keys in use, which is what makes a static build work.
+ */
+export function scopedKey(legacyKey: string): string {
+  if (projectKey === null) return legacyKey
+  const rest = legacyKey.startsWith(APP_PREFIX) ? legacyKey.slice(APP_PREFIX.length) : legacyKey
+  return `${APP_PREFIX}${projectKey}:${rest}`
+}
+
+/** The unsuffixed key for a mode: what a build with no project still uses. */
 export const STORAGE_PREFIX = 'adventure-call:workspace:'
 
-export const storageKey = (modeId: string) => `${STORAGE_PREFIX}${modeId}`
+export const storageKey = (modeId: string) => scopedKey(`${STORAGE_PREFIX}${modeId}`)
 
 export function emptyModeState(): ModeState {
   return {
@@ -153,6 +203,9 @@ export function clearModeState(modeId: string): void {
  * the chrome, not what is visualised, so they live under their own key --
  * never inside a mode's `ModeState` and never inside a saved preset
  * (src/modes/presets.ts).
+ *
+ * The name is the pre-tic-168b key; the reads and writes below go through
+ * [`scopedKey()`], so the entry belongs to the project that set it.
  */
 export const UI_STORAGE_KEY = 'adventure-call:ui'
 
@@ -175,7 +228,7 @@ export function emptyUiPrefs(): UiPrefs {
 export function readUiPrefs(): UiPrefs {
   let raw: string | null | undefined
   try {
-    raw = storage()?.getItem(UI_STORAGE_KEY)
+    raw = storage()?.getItem(scopedKey(UI_STORAGE_KEY))
   } catch {
     return emptyUiPrefs()
   }
@@ -195,7 +248,7 @@ export function readUiPrefs(): UiPrefs {
 
 export function writeUiPrefs(prefs: UiPrefs): void {
   try {
-    storage()?.setItem(UI_STORAGE_KEY, JSON.stringify(prefs))
+    storage()?.setItem(scopedKey(UI_STORAGE_KEY), JSON.stringify(prefs))
   } catch {
     // Persistence is a convenience; the in-memory state still applies.
   }
@@ -212,6 +265,10 @@ export function writeUiPrefs(prefs: UiPrefs): void {
  * The same reasoning that gave the UI preferences their own key gives this
  * one, and it must never reach a saved preset, which captures a view rather
  * than the trip taken to it.
+ *
+ * The name is the pre-tic-168b key; the reads and writes below go through
+ * [`scopedKey()`], so a return path recorded in one project is never offered
+ * in another.
  */
 export const EXCURSION_STORAGE_KEY = 'adventure-call:excursion'
 
@@ -226,7 +283,7 @@ export interface Excursion {
 export function readExcursion(): Excursion | null {
   let raw: string | null | undefined
   try {
-    raw = storage()?.getItem(EXCURSION_STORAGE_KEY)
+    raw = storage()?.getItem(scopedKey(EXCURSION_STORAGE_KEY))
   } catch {
     return null
   }
@@ -247,8 +304,8 @@ export function readExcursion(): Excursion | null {
 /** Record an excursion, or clear it with null. */
 export function writeExcursion(excursion: Excursion | null): void {
   try {
-    if (excursion === null) storage()?.removeItem(EXCURSION_STORAGE_KEY)
-    else storage()?.setItem(EXCURSION_STORAGE_KEY, JSON.stringify(excursion))
+    if (excursion === null) storage()?.removeItem(scopedKey(EXCURSION_STORAGE_KEY))
+    else storage()?.setItem(scopedKey(EXCURSION_STORAGE_KEY), JSON.stringify(excursion))
   } catch {
     // Persistence is a convenience; the in-memory state still applies.
   }
