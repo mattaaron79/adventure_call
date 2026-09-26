@@ -26,3 +26,4 @@ web/.vite/
 web/*.tsbuildinfo
 runs/
 summaries/
+.arbite/coordination
