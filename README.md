@@ -67,6 +67,15 @@ adventure-call tests             # which tests the uncommitted change might affe
 adventure-call update            # re-analyse (queries also refresh automatically on change)
 ```
 
+`tree`, `imports` and `calls` -- the CLI counterparts of the web views -- also take
+`--format mermaid`, which prints the same view as a Mermaid flowchart instead of JSON (tic-3998):
+
+```bash
+vcall calls api.handle_login --depth 3 --externals --format mermaid > flow.mmd   # call flow
+vcall imports src/api.py --depth 2 --format mermaid > imports.mmd                # import Local View
+vcall tree src --depth 3 --format mermaid > tree.mmd                             # files tree
+```
+
 For a project you should not write to, add `--ephemeral` to any query (or to `init`, `update`,
 `serve`): the store goes under a per-user directory in the system temp dir
 (`$TMPDIR/vcall-$USER/<project>-<hash>/`, mode 0700), keyed by the project root's absolute path.

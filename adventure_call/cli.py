@@ -23,7 +23,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from adventure_call import __version__, serve
+from adventure_call import __version__, mermaid, serve
 from adventure_call.graph import CALLS, CONTAINS, IMPORTS, SymbolNotFoundError
 from adventure_call.parser import DEFAULT_MAX_FILE_BYTES
 from adventure_call.query import CLOSURE_BUDGET, CONE_BUDGET, QueryError, Workspace
@@ -323,13 +323,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "The directory tree (the fs-tree and sunburst views). Directories end in '/' and carry "
         "'_total'; files map to their size. Directories deeper than --depth collapse to their "
         "total.",
-        "examples:\n  adventure-call tree --depth 1\n  adventure-call tree src/pkg --metric lines",
+        "examples:\n  adventure-call tree --depth 1\n  adventure-call tree src/pkg --metric lines\n"
+        "  adventure-call tree src --format mermaid > tree.mmd",
     )
     p.add_argument("dir", nargs="?", default="", help="subdirectory to root the tree at (default: project root)")
     p.add_argument("--depth", type=int, default=2, help="directory levels to expand (default: 2)")
     p.add_argument("--metric", choices=("symbols", "lines", "files"), default="symbols",
                    help="what a file's size counts (default: symbols)")
-    p.set_defaults(handler=_query(lambda ws, a: ws.tree(a.dir, depth=a.depth, metric=a.metric)))
+    _format_option(p)
+    p.set_defaults(handler=_query(lambda ws, a: ws.tree(a.dir, depth=a.depth, metric=a.metric),
+                                  lambda ws, payload: mermaid.tree(payload)))
 
     p = query_parser(
         "imports", "file import graph: whole, or local view around one file",
@@ -338,7 +341,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "each mapped to its hop count, plus every import edge between the files shown and any "
         "import cycles touching them. Without FILE: every edge and every cycle.",
         "examples:\n  adventure-call imports src/api.py --depth 2\n  adventure-call imports "
-        "src/api.py --direction in\n  adventure-call imports --cycles",
+        "src/api.py --direction in\n  adventure-call imports --cycles\n"
+        "  adventure-call imports src/api.py --format mermaid > imports.mmd",
     )
     p.add_argument("file", nargs="?", help="centre file (path or any symbol inside it)")
     p.add_argument("--depth", type=int, default=1, help="import hops from the centre (default: 1)")
@@ -347,7 +351,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbols", action="store_true", help="append the imported names to each edge")
     p.add_argument("--cycles", action="store_true", help="whole graph: print only the import cycles")
     p.add_argument("--limit", type=int, default=400, help="most edges to print (default: 400)")
-    p.set_defaults(handler=_query(_imports))
+    _format_option(p)
+    p.set_defaults(handler=_query(_imports, lambda ws, payload: mermaid.imports(payload)))
 
     p = query_parser(
         "calls", "call-flow cone from a symbol: what it reaches / what reaches it",
@@ -357,7 +362,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "grows by whole levels and stops before exceeding --budget call components; 'truncated' "
         "and 'beyond' (count just outside the view) say what was left out.",
         "examples:\n  adventure-call calls api.handle_login --depth 3\n  adventure-call calls "
-        "models.make_user --direction up",
+        "models.make_user --direction up\n  adventure-call calls api.handle_login --format mermaid > flow.mmd",
     )
     p.add_argument("id", help=_ID_HELP)
     p.add_argument("--depth", type=int, default=2, help="call hops in each direction (default: 2)")
@@ -366,7 +371,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--externals", action="store_true", help="add the external modules each node calls")
     p.add_argument("--budget", type=int, default=CONE_BUDGET,
                    help=f"most call components to include (default: {CONE_BUDGET})")
-    p.set_defaults(handler=_query(lambda ws, a: ws.calls(a.id, depth=a.depth, direction=a.direction, externals=a.externals, budget=a.budget)))
+    _format_option(p)
+    p.set_defaults(handler=_query(
+        lambda ws, a: ws.calls(a.id, depth=a.depth, direction=a.direction, externals=a.externals, budget=a.budget),
+        lambda ws, payload: mermaid.calls(payload, ws),
+    ))
 
     p = query_parser(
         "entries", "where execution enters: entry points ranked by reach",
@@ -701,7 +710,16 @@ def _open_workspace(args: argparse.Namespace) -> Workspace:
     return Workspace.load(store.path)
 
 
-def _query(run: Callable[[Workspace, argparse.Namespace], Any]) -> Callable[[argparse.Namespace], int]:
+def _format_option(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--format", choices=("json", "mermaid"), default="json",
+                   help="json (default), or a Mermaid flowchart of the same view on stdout "
+                   "(errors stay JSON)")
+
+
+def _query(
+    run: Callable[[Workspace, argparse.Namespace], Any],
+    diagram: Callable[[Workspace, Any], mermaid.Diagram] | None = None,
+) -> Callable[[argparse.Namespace], int]:
     def handler(args: argparse.Namespace) -> int:
         try:
             ws = _open_workspace(args)
@@ -712,7 +730,11 @@ def _query(run: Callable[[Workspace, argparse.Namespace], Any]) -> Callable[[arg
             _emit(exc.payload, pretty=args.pretty)
             return exc.exit_code
         try:
-            _emit(run(ws, args), pretty=args.pretty)
+            payload = run(ws, args)
+            if diagram is not None and getattr(args, "format", "json") == "mermaid":
+                _emit_mermaid(diagram(ws, payload))
+            else:
+                _emit(payload, pretty=args.pretty)
         except QueryError as exc:
             _emit(exc.payload, pretty=args.pretty)
             return exc.exit_code
@@ -841,6 +863,17 @@ def cmd_source(args: argparse.Namespace) -> int:
 
 
 # -- output -----------------------------------------------------------------------
+
+
+def _emit_mermaid(diagram: mermaid.Diagram) -> None:
+    text = diagram.render()
+    if len(diagram.edges) > mermaid.MAX_EDGES or len(text) > mermaid.MAX_TEXT:
+        logger.warning(
+            "adventure-call: %d edges, %d chars -- over Mermaid's default limits (%d edges, %d chars); "
+            "narrow the view (--depth, a subdirectory, a centre file)",
+            len(diagram.edges), len(text), mermaid.MAX_EDGES, mermaid.MAX_TEXT,
+        )
+    sys.stdout.write(text)
 
 
 def _emit(payload: Any, *, pretty: bool) -> None:
