@@ -67,6 +67,13 @@ adventure-call tests             # which tests the uncommitted change might affe
 adventure-call update            # re-analyse (queries also refresh automatically on change)
 ```
 
+For a project you should not write to, add `--ephemeral` to any query (or to `init`, `update`,
+`serve`): the store goes under a per-user directory in the system temp dir
+(`$TMPDIR/vcall-$USER/<project>-<hash>/`, mode 0700), keyed by the project root's absolute path.
+The first query analyses the project; later ones reuse the cached analysis and refresh it on
+change exactly as a `.vcall/` store does, and it disappears when the temp dir is cleared (on most
+Linux systems, at reboot).
+
 `init` writes `.vcall/AGENTS.md` describing every query for agents (also printed by
 `adventure-call guide`); point the project's `CLAUDE.md`/`AGENTS.md` at it. Every command has
 full `-h` help. The queries are Python ports of the web views' derivations

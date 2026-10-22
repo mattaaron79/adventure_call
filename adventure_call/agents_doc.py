@@ -24,7 +24,8 @@ prints plain text). If sources changed since the last analysis, the next query
 re-analyses first (a few seconds; notice on stderr). Do NOT run `analyze` for
 queries: it writes standalone JSON that queries never read. Use `update` only
 after changing analysis options. `-h` on any command gives full options. `vcall`
-is a short alias for `adventure-call`.
+is a short alias for `adventure-call`. With no `.vcall/` store, pass `--ephemeral`
+to every query: the first one analyses the project into a temp-dir store.
 
 ## Commands
 

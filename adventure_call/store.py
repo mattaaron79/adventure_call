@@ -2,7 +2,10 @@
 
 ``adventure-call init`` creates the store at a project root and ``update``
 refreshes it; every query command finds it by walking up from the current
-directory, the way git finds ``.git``.  The store holds:
+directory, the way git finds ``.git``.  With ``--ephemeral`` the store lives
+under the system temp dir instead, keyed by the project root, so the project
+tree is never written and the analysis goes when the temp dir is cleared
+(tic-ed55).  The store holds:
 
 ==================  ==========================================================
 config.json         the analysis options, so ``update`` reruns the same run
@@ -16,11 +19,15 @@ AGENTS.md           how an agent uses the CLI; regenerated on every update
 
 from __future__ import annotations
 
+import getpass
+import hashlib
 import json
 import os
 import subprocess
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -120,15 +127,38 @@ def _parser(root: Path, options: AnalysisOptions) -> CodebaseParser:
 # -- the store ----------------------------------------------------------------
 
 
-class Store:
-    """A ``.vcall/`` directory and the project root it describes."""
+def ephemeral_base() -> Path:
+    """The per-user directory that holds every ``--ephemeral`` store."""
+    try:
+        user = getpass.getuser()
+    except (OSError, KeyError):
+        user = str(os.getpid())
+    return Path(tempfile.gettempdir()) / f"vcall-{user}"
 
-    def __init__(self, path: Path) -> None:
+
+class Store:
+    """A ``.vcall/`` directory and the project root it describes.
+
+    ``root`` defaults to the directory holding the store; an ephemeral store,
+    which lives elsewhere, records it in config.json.
+    """
+
+    def __init__(self, path: Path, root: Path | None = None) -> None:
         self.path = Path(path).resolve()
+        if root is not None:
+            self.__dict__["root"] = Path(root).resolve()
+
+    @cached_property
+    def root(self) -> Path:
+        try:
+            recorded = json.loads(self.config_path.read_text(encoding="utf-8")).get("root")
+        except (OSError, ValueError, AttributeError):
+            recorded = None
+        return Path(recorded) if isinstance(recorded, str) and recorded else self.path.parent
 
     @property
-    def root(self) -> Path:
-        return self.path.parent
+    def ephemeral(self) -> bool:
+        return self.root != self.path.parent
 
     @property
     def config_path(self) -> Path:
@@ -150,8 +180,26 @@ class Store:
             if (candidate / CONFIG_FILENAME).is_file():
                 return cls(candidate)
         raise StoreError(
-            f"no {STORE_DIRNAME}/ found at or above {here}; run 'adventure-call init' at the project root"
+            f"no {STORE_DIRNAME}/ found at or above {here}; run 'adventure-call init' at the project "
+            "root, or pass --ephemeral to analyse without writing to the project"
         )
+
+    @classmethod
+    def for_ephemeral(cls, root: Path) -> "Store":
+        """The ephemeral store for ``root``, whether or not it exists yet."""
+        root = Path(root).resolve()
+        digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+        return cls(ephemeral_base() / f"{root.name or 'root'}-{digest}", root=root)
+
+    @classmethod
+    def find_ephemeral(cls, start: Path | str | None = None) -> "Store":
+        """The ephemeral store of the nearest directory at or above ``start``."""
+        here = Path(start or os.getcwd()).resolve()
+        for directory in (here, *here.parents):
+            store = cls.for_ephemeral(directory)
+            if store.exists():
+                return store
+        raise StoreError(f"no ephemeral store for {here} or above it")
 
     @staticmethod
     def default_root(start: Path | str | None = None) -> Path:
@@ -181,8 +229,13 @@ class Store:
         return AnalysisOptions.from_dict(data.get("options", {}))
 
     def save_options(self, options: AnalysisOptions) -> None:
+        if self.ephemeral:
+            # The analysis embeds source code: keep the shared temp dir private.
+            self.path.parent.mkdir(mode=0o700, exist_ok=True)
         self.path.mkdir(parents=True, exist_ok=True)
-        payload = {"adventure_call": __version__, "options": asdict(options)}
+        payload: dict[str, Any] = {"adventure_call": __version__, "options": asdict(options)}
+        if self.ephemeral:
+            payload["root"] = str(self.root)
         self.config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         gitignore = self.path / ".gitignore"
         if not gitignore.exists():

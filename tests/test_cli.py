@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import getpass
 import json
 import os
 import shutil
@@ -288,3 +290,61 @@ def test_guide_matches_generated_agents_md(initialised, capsys):
     _, out, _ = run(capsys, "guide")
     assert out == (initialised / STORE_DIRNAME / "AGENTS.md").read_text(encoding="utf-8")
     assert "Do NOT run `analyze`" in out
+
+
+# -- --ephemeral (tic-ed55) ---------------------------------------------------------
+
+
+@pytest.fixture
+def temp_base(tmp_path, monkeypatch) -> Path:
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path / "systemp"))
+    (tmp_path / "systemp").mkdir()
+    return tmp_path / "systemp"
+
+
+def test_ephemeral_query_analyses_into_temp_dir_on_first_use(project, temp_base, capsys):
+    code, out, err = run(capsys, "symbol", "login_user", "--ephemeral")
+    assert code == 0 and json.loads(out)["id"] == "src.auth.login_user"
+    assert "analysing" in err
+    assert not (project / STORE_DIRNAME).exists()
+    [store_dir] = (temp_base / f"vcall-{getpass.getuser()}").iterdir()
+    assert store_dir.name.startswith("proj-")
+    store = Store(store_dir)
+    assert store.ephemeral and store.root == project.resolve()
+    # Cached: a second query neither re-analyses nor touches the project.
+    code, _, err = run(capsys, "overview", "--ephemeral")
+    assert code == 0 and err == ""
+    assert not (project / STORE_DIRNAME).exists()
+
+
+def test_ephemeral_store_found_from_subdirectory_and_refreshed(project, temp_base, capsys, monkeypatch):
+    assert run(capsys, "overview", "--ephemeral")[0] == 0
+    monkeypatch.chdir(project / "src")
+    (project / "src" / "extra.py").write_text("def brand_new():\n    return 1\n", encoding="utf-8")
+    code, out, err = run(capsys, "find", "brand_new", "--ephemeral")
+    assert code == 0 and "re-analysing" in err
+    assert json.loads(out)["matches"][0].startswith("src.extra.brand_new")
+    assert len(list((temp_base / f"vcall-{getpass.getuser()}").iterdir())) == 1
+
+
+def test_init_and_update_ephemeral(project, temp_base, capsys):
+    code, summary = run_json(capsys, "init", "--ephemeral", "--exclude", "broken.py", "-q")
+    assert code == 0 and summary["root"] == str(project.resolve()) and "next" not in summary
+    assert run(capsys, "init", "--ephemeral")[0] == 1
+    code, summary = run_json(capsys, "update", "--ephemeral", "-q")
+    assert code == 0 and summary["files"] == 4
+    assert Store(summary["store"]).load_options().exclude == ["broken.py"]
+    assert not (project / STORE_DIRNAME).exists()
+
+
+def test_ephemeral_rejects_store(initialised, temp_base, capsys):
+    code, out = run_json(capsys, "overview", "--ephemeral", "--store", str(initialised))
+    assert code == 3 and "cannot be combined" in out["error"]
+
+
+def test_serve_ephemeral_resolves_root_store(project, temp_base, capsys, monkeypatch):
+    monkeypatch.chdir(temp_base)
+    args = argparse.Namespace(ephemeral=True, root=project, store=None)
+    store = cli._serve_store(args)
+    assert store.root == project.resolve() and store.exists()
+    assert not (project / STORE_DIRNAME).exists()

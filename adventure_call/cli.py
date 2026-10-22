@@ -65,6 +65,8 @@ Start at a project root:
 
 Query commands find .vcall/ by walking up from the current directory,
 refresh it automatically when sources changed, and print compact JSON.
+Add --ephemeral to keep the store in a per-user temp dir instead, so the
+project is never written; the first query analyses it.
 Run 'adventure-call COMMAND -h' for each command's options."""
 
 _TOP_EPILOG = """\
@@ -124,6 +126,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     group.add_argument("--store", type=Path, metavar="DIR",
                        help=f"use this {STORE_DIRNAME}/ (or the project root holding one) instead of "
                        "searching upward from the current directory")
+    group.add_argument("--ephemeral", action="store_true",
+                       help="use the ephemeral store of the nearest analysed directory above the "
+                       "cwd, analysing the project into one on first use (see 'init --ephemeral')")
     group.add_argument("--no-refresh", action="store_true",
                        help="do not re-analyse when sources changed since the last update; a "
                        "warning is printed to stderr instead")
@@ -162,7 +167,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "generated files, and AGENTS.md describing how an agent uses the query commands. "
         "Then run the first analysis.\n\nPrints a one-line JSON summary on stdout.",
         epilog="examples:\n  adventure-call init\n  adventure-call init ~/code/app --strip-prefix src "
-        "--exclude-dir fixtures\n\nTo let agents discover it, add a line such as\n"
+        "--exclude-dir fixtures\n  adventure-call init --ephemeral\n\nTo let agents discover it, add a line such as\n"
         f"  'Code navigation: read {STORE_DIRNAME}/AGENTS.md'\nto the project's CLAUDE.md or AGENTS.md.",
     )
     p.add_argument("root", type=Path, nargs="?",
@@ -170,6 +175,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    "directory)")
     p.add_argument("--force", action="store_true",
                    help="re-initialise an existing store, replacing its saved options")
+    p.add_argument("--ephemeral", action="store_true",
+                   help=f"keep the store in a per-user temp dir instead of {STORE_DIRNAME}/, keyed by "
+                   "the project root: cached between runs, gone when the temp dir is cleared")
     p.set_defaults(handler=cmd_init)
 
     p = sub.add_parser(
@@ -183,6 +191,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         epilog="examples:\n  adventure-call update\n  adventure-call update --exclude-dir generated",
     )
     p.add_argument("--store", type=Path, metavar="DIR", help=f"the {STORE_DIRNAME}/ to update")
+    p.add_argument("--ephemeral", action="store_true",
+                   help="update the ephemeral store instead (created on first use)")
     p.add_argument("--if-stale", action="store_true",
                    help="only re-analyse when sources changed since the last update")
     p.set_defaults(handler=cmd_update)
@@ -216,6 +226,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    "the current directory)")
     p.add_argument("--store", type=Path, metavar="DIR",
                    help=f"the {STORE_DIRNAME}/ to serve (or the project root holding one)")
+    p.add_argument("--ephemeral", action="store_true",
+                   help="serve ROOT's ephemeral store instead (analysed on first use)")
     p.add_argument("--port", type=int, default=0, metavar="N",
                    help="port to bind (default: 0, which lets the OS pick a free one)")
     p.add_argument("--host", default="127.0.0.1", metavar="H",
@@ -540,7 +552,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not root.is_dir():
         logger.error("not a directory: %s", root)
         return EXIT_NOT_FOUND
-    store = Store(root / STORE_DIRNAME)
+    store = Store.for_ephemeral(root) if args.ephemeral else Store(root / STORE_DIRNAME)
     if store.exists() and not args.force:
         logger.error("%s already exists; run 'adventure-call update' (or 'init --force' to reset "
                      "its options)", store.path)
@@ -552,7 +564,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_update(args: argparse.Namespace) -> int:
     try:
-        store = _find_store(args.store)
+        store = _ephemeral_store(None, args.store) if args.ephemeral else _find_store(args.store)
     except StoreError as exc:
         logger.error("%s", exc)
         return EXIT_NO_STORE
@@ -576,7 +588,9 @@ def _run_update(store: Store, options: AnalysisOptions, args: argparse.Namespace
         "symbols": result.stats["symbols"],
         "seconds": round(result.seconds, 2),
     }
-    if created:
+    if store.ephemeral:
+        summary["root"] = str(store.root)
+    elif created:
         summary["next"] = f"point agents at {STORE_DIRNAME}/AGENTS.md from CLAUDE.md or AGENTS.md"
     _emit(summary, pretty=False)
     return EXIT_OK
@@ -594,6 +608,8 @@ def cmd_guide(args: argparse.Namespace) -> int:
 
 def _serve_store(args: argparse.Namespace) -> Store:
     """The store to serve: ROOT or --store, else the nearest one above the cwd."""
+    if args.ephemeral:
+        return _ephemeral_store(args.root, args.store)
     given = args.store if args.store is not None else args.root
     if given is None:
         return Store.find()
@@ -645,8 +661,34 @@ def _find_store(given: Path | None) -> Store:
     return store
 
 
+def _ephemeral_store(root: Path | None, store_arg: Path | None) -> Store:
+    """ROOT's ephemeral store, else the nearest above the cwd, analysed on first use.
+
+    With neither, the store belongs to the enclosing git work tree (or the cwd),
+    as for ``init``.
+    """
+    if store_arg is not None:
+        raise StoreError("--store and --ephemeral cannot be combined")
+    if root is not None:
+        store = Store.for_ephemeral(root.expanduser())
+    else:
+        try:
+            return Store.find_ephemeral()
+        except StoreError:
+            store = Store.for_ephemeral(Store.default_root())
+    if not store.exists():
+        if not store.root.is_dir():
+            raise StoreError(f"not a directory: {store.root}")
+        logger.warning("adventure-call: analysing %s into %s...", store.root, store.path)
+        options = AnalysisOptions()
+        store.save_options(options)
+        if store.update(options) is None:
+            raise StoreError(f"no parseable source files under {store.root}")
+    return store
+
+
 def _open_workspace(args: argparse.Namespace) -> Workspace:
-    store = _find_store(args.store)
+    store = _ephemeral_store(None, args.store) if args.ephemeral else _find_store(args.store)
     changes = store.staleness()
     if changes:
         counts = ", ".join(f"{len(v)} {k}" for k, v in changes.items())
