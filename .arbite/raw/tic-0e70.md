@@ -12,7 +12,7 @@ assignee: null
 depends_on: []
 blocked_by: null
 created: '2026-09-20T23:50:14'
-updated: '2026-09-20T23:50:14'
+updated: '2026-10-21T19:06:02'
 closed: null
 ---
 
@@ -31,3 +31,4 @@ What still needs to be done -- human or agent triage, which `arbite fetch` start
 - status -- `arbite promote <id> ...` classifies these fields in place and moves the ticket to `open` (or claims it in the same command with `--agent <your-id>`) so it becomes workable via `arbite list next`; the same fields can still be written by hand with `arbite set`
 
 ## Notes
+- 2026-10-21T19:06:02 matt: Can this ticket be classified?
