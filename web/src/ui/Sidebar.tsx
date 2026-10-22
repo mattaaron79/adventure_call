@@ -88,7 +88,11 @@ export function Sidebar({
         </p>
       )}
 
-      <ModePicker filters={effectiveFilters} onApplyFilters={onApplyPresetFilters} />
+      <ModePicker
+        filters={effectiveFilters}
+        onApplyFilters={onApplyPresetFilters}
+        workspace={workspace}
+      />
 
       {status.phase === 'ready' && workspace && (
         <>

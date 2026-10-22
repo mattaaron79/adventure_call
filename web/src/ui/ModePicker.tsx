@@ -25,6 +25,13 @@
  * and it should not reset when the mode changes.
  */
 import { useState } from 'react'
+import type { Workspace } from '../data/derive'
+import {
+  exportModeMermaid,
+  MERMAID_MAX_EDGES,
+  MERMAID_MAX_TEXT,
+  type MermaidExport,
+} from '../modes/mermaid'
 import { MODES, modeById } from '../modes/registry'
 import { readHelpPinned, writeHelpPinned } from './paramHelp'
 import {
@@ -42,9 +49,21 @@ interface Props {
   filters: readonly string[]
   /** Applies a preset's filters; App owns the exclude state. */
   onApplyFilters: (filters: string[]) => void
+  /** The derived data the Mermaid export renders from; null until loaded. */
+  workspace: Workspace | null
 }
 
-export function ModePicker({ filters, onApplyFilters }: Props) {
+/** What the last Mermaid export did, for the line under its buttons. */
+function exportNote(out: MermaidExport, action: string): string {
+  const size = `${out.nodes} nodes, ${out.edges} edges`
+  const big = out.text.length > MERMAID_MAX_TEXT || out.edges > MERMAID_MAX_EDGES
+  return big
+    ? `${action} ${size} -- over Mermaid's default limits (${MERMAID_MAX_EDGES} edges, ` +
+        `${MERMAID_MAX_TEXT / 1000}k chars); focus or collapse to shrink it.`
+    : `${action} ${size}.`
+}
+
+export function ModePicker({ filters, onApplyFilters, workspace }: Props) {
   const modeId = useWorkspace((s) => s.modeId)
   const savedParams = useWorkspace((s) => activeMode(s).params)
   const expanded = useWorkspace((s) => activeMode(s).expanded)
@@ -57,6 +76,31 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
   const [presets, setPresets] = useState<Preset[]>(readPresets)
   const [name, setName] = useState('')
   const [helpPinned, setHelpPinned] = useState<boolean>(readHelpPinned)
+  const [mermaidNote, setMermaidNote] = useState<string | null>(null)
+
+  const mermaid = () =>
+    workspace ? exportModeMermaid(mode, workspace, params, { expanded, focusPath }) : null
+
+  const copyMermaid = () => {
+    const out = mermaid()
+    if (!out) return
+    navigator.clipboard.writeText(out.text).then(
+      () => setMermaidNote(exportNote(out, 'Copied')),
+      () => setMermaidNote('The browser refused clipboard access; use Download.'),
+    )
+  }
+
+  const downloadMermaid = () => {
+    const out = mermaid()
+    if (!out) return
+    const url = URL.createObjectURL(new Blob([out.text], { type: 'text/vnd.mermaid' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${mode.id}.mmd`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setMermaidNote(exportNote(out, 'Saved'))
+  }
 
   const toggleHelp = () => {
     const next = !helpPinned
@@ -193,6 +237,17 @@ export function ModePicker({ filters, onApplyFilters }: Props) {
           {helpFor(param.help)}
         </div>
       ))}
+
+      <h2>Export</h2>
+      <div className="preset-save" title="This view as a Mermaid flowchart, at full detail whatever the zoom">
+        <button type="button" onClick={copyMermaid} disabled={!workspace}>
+          Copy Mermaid
+        </button>
+        <button type="button" onClick={downloadMermaid} disabled={!workspace}>
+          Download .mmd
+        </button>
+      </div>
+      {mermaidNote && <p className="param-help">{mermaidNote}</p>}
 
       <h2>Presets</h2>
       <div className="preset-save">

@@ -46,7 +46,7 @@ function fakeStorage(initial: Record<string, string> = {}) {
 const render = (pinned: boolean) => {
   vi.stubGlobal('localStorage', fakeStorage(pinned ? { [HELP_PINNED_KEY]: 'true' } : {}))
   return renderToStaticMarkup(
-    createElement(ModePicker, { filters: [], onApplyFilters: () => {} }),
+    createElement(ModePicker, { filters: [], onApplyFilters: () => {}, workspace: null }),
   )
 }
 
@@ -113,5 +113,13 @@ describe('ModePicker help', () => {
     const markup = text(render(true))
     expect(markup).toContain(fsTreeMode.paramToggles![0].help)
     expect(markup).not.toContain(callFlowMode.paramToggles![0].help)
+  })
+})
+
+describe('ModePicker Mermaid export (tic-ca91)', () => {
+  it('offers copy and download, disabled until the data has loaded', () => {
+    const markup = render(false)
+    expect(markup).toMatch(/<button type="button" disabled="">Copy Mermaid<\/button>/)
+    expect(markup).toMatch(/<button type="button" disabled="">Download \.mmd<\/button>/)
   })
 })

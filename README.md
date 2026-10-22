@@ -114,6 +114,14 @@ to its `/data` plugin, so HMR, React refresh and Vite's own error overlay are th
 It needs Node, npm and `npm ci` in `web/`, and only works from a source checkout; Vite's output is
 forwarded, and `Ctrl-C` stops Vite with it.
 
+The sidebar's **Export** buttons copy or download the current view as a Mermaid flowchart
+(`web/src/modes/mermaid.ts`, tic-ca91): the elements, containment and connections the view
+shows -- with its focus, excludes, expanded containers and overlays -- at full detail whatever
+the zoom, with edge and accent colours from the view's style. Geometry (the sunburst's angles,
+the tree's placement) does not survive: Mermaid lays the graph out itself. Most renderers refuse
+a diagram over 500 edges or 50k characters, which the export warns about; focus or collapse
+first.
+
 Limits: one store per run, and only a change the server noticed is announced. The payload is your
 source code -- the registry embeds full function bodies -- so the bind address is loopback unless
 you ask for another, and asking for another warns.
