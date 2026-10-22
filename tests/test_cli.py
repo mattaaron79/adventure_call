@@ -174,7 +174,7 @@ def test_symbol_code_appends_plain_source_after_json(initialised, capsys):
 def test_analyze_warns_when_a_store_already_exists(initialised, capsys):
     code, _, err = run(capsys, "analyze", str(initialised), "--no-write")
     assert code == 0
-    assert "queries use .adventure-call/ and refresh automatically" in err
+    assert "queries use .vcall/ and refresh automatically" in err
 
 
 def test_exit_codes(initialised, capsys, tmp_path, monkeypatch):

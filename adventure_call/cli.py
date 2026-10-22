@@ -4,7 +4,7 @@ Three kinds of command:
 
 * ``analyze ROOT`` -- the original one-shot pipeline (also reached by the bare
   ``adventure-call ROOT ...`` form, kept for compatibility).
-* ``init`` / ``update`` -- keep a ``.adventure-call/`` store beside a project
+* ``init`` / ``update`` -- keep a ``.vcall/`` store beside a project
   (tic-49da).
 * query commands -- read the store and print compact JSON for agents
   (tic-34c1).  See :mod:`adventure_call.query` for what each one computes.
@@ -58,17 +58,17 @@ Static dependency graph of a Python codebase (Tree-sitter + NetworkX), with
 JSON queries over it for agents.
 
 Start at a project root:
-  adventure-call init                  analyse the project into .adventure-call/
+  adventure-call init                  analyse the project into .vcall/
   adventure-call overview              one-shot map of the codebase (JSON)
   adventure-call guide                 how to use the query commands
   adventure-call serve                 open the workspace UI in a browser (no Node)
 
-Query commands find .adventure-call/ by walking up from the current directory,
+Query commands find .vcall/ by walking up from the current directory,
 refresh it automatically when sources changed, and print compact JSON.
 Run 'adventure-call COMMAND -h' for each command's options."""
 
 _TOP_EPILOG = """\
-exit codes: 0 ok, 1 error / ambiguous id, 2 not found, 3 no .adventure-call/ store
+exit codes: 0 ok, 1 error / ambiguous id, 2 not found, 3 no .vcall/ store
 
 compatibility: 'adventure-call ROOT [options]' still works and means 'analyze ROOT'."""
 
@@ -189,7 +189,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "guide", formatter_class=_RAW, help="print the agent guide (AGENTS.md) to stdout",
-        description="Print the agent guide that init writes to .adventure-call/AGENTS.md.",
+        description="Print the agent guide that init writes to .vcall/AGENTS.md.",
     )
     p.set_defaults(handler=cmd_guide)
 

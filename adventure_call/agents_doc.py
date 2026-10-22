@@ -1,4 +1,4 @@
-"""The AGENTS.md written into every ``.adventure-call/`` store (tic-49da).
+"""The AGENTS.md written into every ``.vcall/`` store (tic-49da).
 
 Kept as a template in the package, not hand-edited in stores: ``update``
 rewrites the file, so a store always documents the CLI version that wrote it.
@@ -81,7 +81,7 @@ function's `unresolved` calls. Confirm with the source before deleting or renami
 - Trace a feature: `find TEXT` -> `calls ID --depth 3` -> `source` the relevant nodes.
 - Find consumers of a field: `refs FIELD --kind attr` (then confirm name-based hits in source).
 - Orient in an unfamiliar area: `tree DIR --depth 1`, `file PATH`, `imports PATH`.
-- Exit codes: 0 ok, 1 error/ambiguous, 2 not found, 3 no `.adventure-call/` (run `adventure-call init`).
+- Exit codes: 0 ok, 1 error/ambiguous, 2 not found, 3 no `.vcall/` (run `adventure-call init`).
 """
 
 

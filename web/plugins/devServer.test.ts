@@ -9,7 +9,7 @@ describe('resolveOutDir', () => {
   })
 
   it('takes the store directory the CLI hands over, trimmed and verbatim', () => {
-    expect(resolveOutDir('/media/matt/proj/.adventure-call')).toBe('/media/matt/proj/.adventure-call')
+    expect(resolveOutDir('/media/matt/proj/.vcall')).toBe('/media/matt/proj/.vcall')
     expect(resolveOutDir('  C:/proj/out ')).toBe('C:/proj/out')
   })
 })

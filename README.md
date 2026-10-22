@@ -57,7 +57,7 @@ To install `adventure-call` globally (usable from any directory), see
 
 ```bash
 cd /path/to/project
-adventure-call init              # creates .adventure-call/ at the git root and analyses
+adventure-call init              # creates .vcall/ at the git root and analyses
 adventure-call overview          # codebase map, compact JSON
 adventure-call symbol auth.login_user
 adventure-call imports src/api.py --depth 2
@@ -67,7 +67,7 @@ adventure-call tests             # which tests the uncommitted change might affe
 adventure-call update            # re-analyse (queries also refresh automatically on change)
 ```
 
-`init` writes `.adventure-call/AGENTS.md` describing every query for agents (also printed by
+`init` writes `.vcall/AGENTS.md` describing every query for agents (also printed by
 `adventure-call guide`); point the project's `CLAUDE.md`/`AGENTS.md` at it. Every command has
 full `-h` help. The queries are Python ports of the web views' derivations
 ([`query.py`](adventure_call/query.py)), plus `tests`, which is CLI-only: it reads the changed
@@ -83,7 +83,7 @@ vcall serve --port 5173         # pin the port instead of taking a free one
 vcall serve --dev               # the checkout's Vite dev server (frontend work)
 ```
 
-`serve` runs the same workspace the Vite dev server shows, straight from the `.adventure-call/`
+`serve` runs the same workspace the Vite dev server shows, straight from the `.vcall/`
 store in the current directory or above it: the built frontend ships inside the package, so no
 Node, npm or second terminal is needed. It binds loopback on an ephemeral port, streams
 `codebase_graph.json` and `symbol_registry.json` out of the store, and answers `/data/meta.json`

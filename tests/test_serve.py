@@ -349,7 +349,7 @@ class _FakeStore:
     """The two ``Store`` methods the gate uses, and how often it used them."""
 
     def __init__(self, changes: dict[str, list[str]] | None = None) -> None:
-        self.path = Path("/nowhere/.adventure-call")
+        self.path = Path("/nowhere/.vcall")
         self.root = Path("/nowhere")
         self.changes = changes or {}
         self.scans = 0

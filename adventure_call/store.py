@@ -1,4 +1,4 @@
-"""The ``.adventure-call/`` store: a project's analysis, kept beside it (tic-49da).
+"""The ``.vcall/`` store: a project's analysis, kept beside it (tic-49da).
 
 ``adventure-call init`` creates the store at a project root and ``update``
 refreshes it; every query command finds it by walking up from the current
@@ -30,7 +30,7 @@ from adventure_call.parser import DEFAULT_MAX_FILE_BYTES, CodebaseParser
 from adventure_call.resolver import SymbolResolver
 from adventure_call.writer import OutputWriter
 
-STORE_DIRNAME = ".adventure-call"
+STORE_DIRNAME = ".vcall"
 CONFIG_FILENAME = "config.json"
 MANIFEST_FILENAME = "manifest.json"
 AGENTS_FILENAME = "AGENTS.md"
@@ -121,7 +121,7 @@ def _parser(root: Path, options: AnalysisOptions) -> CodebaseParser:
 
 
 class Store:
-    """A ``.adventure-call/`` directory and the project root it describes."""
+    """A ``.vcall/`` directory and the project root it describes."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).resolve()

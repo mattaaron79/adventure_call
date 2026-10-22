@@ -1,7 +1,7 @@
 """Serve a store's workspace over loopback HTTP (tic-c336).
 
 ``adventure-call serve`` starts a throwaway web server for one
-``.adventure-call/`` store: the same workspace the Vite dev server shows, from
+``.vcall/`` store: the same workspace the Vite dev server shows, from
 the bundle :mod:`adventure_call.webassets` locates, with no Node, npm or second
 terminal.  It exists for humans -- agents keep to the JSON query commands.
 
